@@ -1,0 +1,79 @@
+{
+  "audc": 0.1898,
+  "cells": [
+    {
+      "acc": 0.5,
+      "chance": 0.5,
+      "distractor_tokens": 0,
+      "n_pairs": 2,
+      "n_queries": 2
+    },
+    {
+      "acc": 0.5312,
+      "chance": 0.5,
+      "distractor_tokens": 128,
+      "n_pairs": 2,
+      "n_queries": 2
+    },
+    {
+      "acc": 0.2383,
+      "chance": 0.25,
+      "distractor_tokens": 0,
+      "n_pairs": 4,
+      "n_queries": 4
+    },
+    {
+      "acc": 0.2109,
+      "chance": 0.25,
+      "distractor_tokens": 128,
+      "n_pairs": 4,
+      "n_queries": 4
+    },
+    {
+      "acc": 0.1211,
+      "chance": 0.125,
+      "distractor_tokens": 0,
+      "n_pairs": 8,
+      "n_queries": 4
+    },
+    {
+      "acc": 0.1094,
+      "chance": 0.125,
+      "distractor_tokens": 128,
+      "n_pairs": 8,
+      "n_queries": 4
+    },
+    {
+      "acc": 0.082,
+      "chance": 0.0625,
+      "distractor_tokens": 0,
+      "n_pairs": 16,
+      "n_queries": 4
+    },
+    {
+      "acc": 0.0469,
+      "chance": 0.0625,
+      "distractor_tokens": 128,
+      "n_pairs": 16,
+      "n_queries": 4
+    },
+    {
+      "acc": 0.0352,
+      "chance": 0.03125,
+      "distractor_tokens": 0,
+      "n_pairs": 32,
+      "n_queries": 4
+    },
+    {
+      "acc": 0.0234,
+      "chance": 0.03125,
+      "distractor_tokens": 128,
+      "n_pairs": 32,
+      "n_queries": 4
+    }
+  ],
+  "chance": 0.19375,
+  "d50": 2,
+  "seed": 0,
+  "vocab": 256
+}

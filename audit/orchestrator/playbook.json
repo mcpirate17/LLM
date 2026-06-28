@@ -1,0 +1,73 @@
+{
+  "_comment": "Audit passes (read-only, fanned across all models for diverse opinions) + triage + fix templates. Prompts are derived from CLAUDE.md and GLOBAL_DEV_PROMPT.md and are repo-generic (no hard-coded ARIA targets). {targets} and {findings} are filled by the orchestrator. Edit freely; orchestrate.py only reads this file.",
+
+  "preamble": "You are auditing the LLM monorepo. Authoritative standards live in CLAUDE.md and GLOBAL_DEV_PROMPT.md at the repo root — read BOTH first and judge strictly against them. Thresholds: god file > 1250 lines, god function > 100 lines. Hard rules: no dead code, no duplication, no silent fallbacks/swallowed exceptions, Polars over Pandas, fail fast and loud. NATIVE-FIRST MANDATE (weight this heavily): per the project Language Hierarchy, hot compute MUST be Rust (PyO3) or C++ (pybind11); array ops Numba/Triton; plain Python is for glue/CLI ONLY. Treat plain-Python numeric/hot-path code as a DEFECT to migrate, not a style nit — strongly prefer C / C++ / Rust / Cython / vectorized-compiled over Python anywhere performance matters, and rank such findings above hygiene findings. Always name the concrete native target (Rust+PyO3, C++ +pybind11, Cython typed memoryview, Numba/Triton kernel) and why it beats the Python. Do NOT cargo-cult native rewrites of genuinely cold glue code. MISSION CONTEXT (do not undermine): this repo exists to beat frontier/softmax models with NOVEL non-QKV mechanisms — never recommend cutting a novel mechanism or reverting to attention/softmax; a gate that abandons the novel branch is a bug to FIX. Scope: {targets}. This is READ-ONLY: do not edit, create, or delete any file. Output a single Markdown report only.",
+
+  "audit_passes": [
+    {
+      "id": "dead_code",
+      "difficulty": "medium",
+      "title": "Dead / unused code by real evidence",
+      "severity": "medium",
+      "prompt": "Find dead code: unused functions, methods, classes, modules, imports, constants, config entries, CLI commands, unreachable branches, deprecated paths, and duplicate implementations where one should be deleted. Use the code-review-graph MCP (importers_of / callers_of) AND string/entry-point/registry grep — many things resolve dynamically (string dispatch, entry points, registries), so treat 'no static caller' as INCONCLUSIVE unless string resolution is ALSO empty. For each candidate give file:path, symbol, confidence (high/med/low), the evidence, and delete-vs-quarantine. Do NOT propose deleting anything under archive/."
+    },
+    {
+      "id": "god_files",
+      "difficulty": "hard",
+      "title": "God files (>1250 lines) with split boundaries",
+      "severity": "high",
+      "prompt": "List every .py/.rs/.cpp/.js file over 1250 lines in {targets}. For each: its mixed responsibilities, exact split boundaries (which functions/classes move to which new module), how to separate IO / domain / orchestration / utility, and the call sites the split changes. Concrete, behavior-preserving splits only — no speculative layering."
+    },
+    {
+      "id": "god_functions",
+      "difficulty": "medium",
+      "title": "God functions (>100 lines) with extraction plan",
+      "severity": "high",
+      "prompt": "List functions over 100 lines in {targets}. For each: the multiple responsibilities, where to split (decision blocks, transform stages, side-effect boundaries), which pure helpers to extract, repeated logic to remove, and nesting to flatten. Prioritize functions inside already-tested modules (safer to split). Give file:line, name, current length, and the extraction plan."
+    },
+    {
+      "id": "duplication",
+      "difficulty": "medium",
+      "title": "Duplicate logic to consolidate",
+      "severity": "medium",
+      "prompt": "Find duplicated logic: copy-pasted function bodies, parallel implementations, repeated scaffolding/fixtures. For each cluster classify identical / parameterized-variation / coincidentally-distinct, and propose merges ONLY for the first two. In architecture-search code, two ops that look alike are NOT necessarily the same op — be conservative and require a shared behavioral contract. List every call site each merge touches and whether parity tests guard it."
+    },
+    {
+      "id": "silent_fallbacks",
+      "difficulty": "hard",
+      "title": "Silent fallbacks / swallowed exceptions (correctness fire)",
+      "severity": "critical",
+      "prompt": "Find every try/except (and native/kernel guard) that silently degrades: reference fallback, no-op, swallowed exception, bare except, silent default on ABI/compile/dtype/shape/NaN failure. For each give file:line, what it guards, what the except branch does, and classify (a) legitimate runtime degradation (e.g. no GPU -> CPU) — fix = loud structured warning + a per-run fallback counter in the run record; or (b) masking a fault — fix = fail-loud raise with context. State whether existing parity/equivalence tests would actually catch a wrong-path result. This is the highest-priority class per CLAUDE.md fail-fast-and-loud."
+    },
+    {
+      "id": "perf_hotspots",
+      "difficulty": "hard",
+      "title": "Native-first hotspots: plain Python where C/C++/Rust/Cython belongs",
+      "severity": "high",
+      "prompt": "NATIVE-FIRST performance audit (weight native migration heavily — this is a funded priority, not hygiene). Per the project Language Hierarchy hot compute belongs in Rust (PyO3) or C++ (pybind11), array ops in Numba/Triton; plain Python is glue/CLI only. Find: Python loops over numeric arrays/tensors, per-row dataframe iteration, hand-rolled math that should be a compiled kernel, repeated regex/JSON parsing, accidental quadratic behavior, N+1 / repeated DB queries, unbounded caches, heavy import-time work slowing cold start, sync where concurrency clearly wins. For EACH hotspot give file:line, why it is slow, and the EXACT native target ranked first: Rust+PyO3 / C++ +pybind11 / Cython typed-memoryview / Numba / Triton — vectorized-NumPy only when a kernel is overkill, and Polars-over-Pandas for hot dataframe paths (leave one-shot report Pandas alone). Estimate the expected speedup and name any existing native module in the repo it should join rather than duplicate. Rank native-migration candidates ABOVE pure-Python micro-opts. Prefer measured evidence (cProfile/py-spy); mark unprofiled items 'suspected' but still list them. Do NOT cargo-cult: cold glue code stays Python."
+    },
+    {
+      "id": "imports_deps",
+      "difficulty": "easy",
+      "title": "Import & dependency hygiene",
+      "severity": "low",
+      "prompt": "Find unused imports (ruff F401), unused declared dependencies (cross-check pyproject/requirements vs actual usage), circular imports, and heavyweight top-level imports (torch, native extensions, CUDA) that should be lazy to speed CLI cold start. Give a trim list and the specific lazy-import moves with file:line."
+    },
+    {
+      "id": "compliance",
+      "difficulty": "easy",
+      "title": "CLAUDE.md / file-placement compliance",
+      "severity": "medium",
+      "prompt": "Audit compliance with CLAUDE.md structural rules: scripts outside research/tools or aria_designer/tools, data/reports/JSON at repo root, JSON/CSV inside research/notes (md-only), SQLite DBs at root, missing type hints, commented-out code, effort-signaling boilerplate. Give file:path and the exact rule violated."
+    }
+  ],
+
+  "triage": {
+    "title": "Synthesize all model findings into an ordered, deduplicated fix plan",
+    "prompt": "You are the orchestrator brain. Below are read-only audit reports from multiple models ({models}) for round {round}. Read CLAUDE.md and GLOBAL_DEV_PROMPT.md. Produce a SINGLE deduplicated, prioritized fix plan as STRICT JSON (no prose, no markdown fences) matching this schema:\n{\"tasks\": [{\"slug\": \"kebab-id\", \"title\": \"...\", \"severity\": \"critical|high|medium|low\", \"difficulty\": \"easy|medium|hard\", \"files\": [\"path\", ...], \"instruction\": \"precise, self-contained fix instruction citing exact file:line and the target end-state\"}]}\nRules: (1) Merge findings multiple models agree on; prefer their consensus. (2) Order by ROI: silent-fallback correctness fires first, then NATIVE-FIRST migrations (plain Python on hot paths -> Rust/C++/Cython/Numba/Triton — these are a funded priority, rank them high), then god-file/god-function splits and dead-code removal, then duplication, then remaining perf, then hygiene. (3) difficulty=hard for risky refactors touching untested core, scoring, native kernels, or any change that could move scoring numbers; difficulty=easy for mechanical deletions/trim/lazy-imports. (4) Each task must be independently committable and gated. (5) NEVER propose reverting a novel mechanism to softmax/attention. (6) Emit at most {max_tasks} tasks this round, highest-ROI first. Output ONLY the JSON object.\n\n--- FINDINGS ---\n{findings}"
+  },
+
+  "fix": {
+    "prompt": "Apply EXACTLY this one fix and nothing else. Read CLAUDE.md and GLOBAL_DEV_PROMPT.md first. Before editing, use the code-review-graph MCP (semantic_search_nodes / query_graph) to check callers/dependents/duplicates. Make the minimal correct change, preserve behavior, keep type hints, add no dead code. Do NOT touch files outside the listed set. Do NOT revert any novel mechanism to softmax/attention — if a gate abandons the novel branch, that is the bug to fix, not to follow. When done, briefly state what changed. The change will be gated by smoke tests + a fixed-seed scoring diff; if you cannot make the change safely within the listed files, STOP and explain instead of guessing.\n\nTASK: {title}\nSEVERITY: {severity}\nFILES: {files}\nINSTRUCTION:\n{instruction}"
+  }
+}

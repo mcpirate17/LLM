@@ -1,0 +1,95 @@
+# Autonomous multi-model audit orchestrator — configuration.
+# Python 3.11+ (stdlib tomllib). Everything the loop needs to run unattended.
+
+[repo]
+# LLM repo root, relative to this file (audit/orchestrator/ -> LLM/), or absolute.
+root = "../.."
+
+[loop]
+# Hard ceiling on audit->fix rounds. The loop normally stops earlier, when a round's
+# deterministic violation count stops dropping (see roi_min_improvement).
+max_rounds = 8
+# Stop when a full round reduces the weighted violation count by fewer than this.
+# 1 = keep going while we remove even a single god-file/dup/dead-symbol; raise to be greedier.
+roi_min_improvement = 1
+# Subdirectories audited. Empty = whole repo. These are the "all directories under LLM".
+targets = ["research", "component_fab", "aria_core", "aria_designer", "conductor"]
+# Never audit/fix inside these (frozen / generated / vendored).
+exclude = ["archive", ".git", ".venv", "node_modules", "__pycache__", ".run", "audit"]
+
+[audit]
+# Read-only fan-out pool. All of these run every audit pass for diverse opinions;
+# the cheap ones carry the broad sweeps to save tokens. Order is display-only.
+models = ["claude", "codex", "haiku", "agy", "minimax"]
+# Concurrent CLI invocations during the audit phase (read-only, parallel-safe).
+max_parallel = 4
+# Per-invocation wall-clock cap (seconds).
+timeout = 1200
+
+# Capability-based routing. Democratized BUT matched to model strength: a 480M model
+# auditing 1.6K-file research/ wastes tokens. Each model audits a pass only if the pass
+# difficulty is in its `difficulties` AND it audits the subset of targets whose size is in
+# its `sizes`. The scope it sees in the prompt is exactly its eligible targets.
+[audit.target_sizes]
+research = "large"
+component_fab = "medium"
+aria_designer = "medium"
+aria_core = "small"
+conductor = "small"
+
+# claude/codex = full strength: every difficulty, every size (+ the only fixers).
+[audit.routing.claude]
+difficulties = ["easy", "medium", "hard"]
+sizes = ["small", "medium", "large"]
+[audit.routing.codex]
+difficulties = ["easy", "medium", "hard"]
+sizes = ["small", "medium", "large"]
+# haiku = cheap/fast mechanical sweeps: easy+medium passes across all sizes.
+[audit.routing.haiku]
+difficulties = ["easy", "medium"]
+sizes = ["small", "medium", "large"]
+# agy (Antigravity) = good for ideas; read-only audits on medium targets+difficulty.
+[audit.routing.agy]
+difficulties = ["easy", "medium"]
+sizes = ["small", "medium"]
+# minimax (480M) = smallest model: easy passes, small targets only.
+[audit.routing.minimax]
+difficulties = ["easy"]
+sizes = ["small"]
+
+[triage]
+# The orchestrator brain that reads ALL model findings and emits the ordered fix plan.
+# Per spec this is claude.
+model = "claude"
+timeout = 900
+
+[fix]
+# Only these two ever mutate code. Easy/medium -> codex (cheaper); hard -> claude.
+easy_model = "codex"
+hard_model = "claude"
+# A triage task is routed to hard_model when its severity is in this set OR triage
+# explicitly labels difficulty="hard".
+hard_severity = ["critical", "high"]
+timeout = 1800
+# Max fix tasks attempted per round (safety bound on unattended spend).
+max_tasks_per_round = 12
+
+[gate]
+# Interpreter with torch + the project deps. The repo's torch lives in this venv, NOT in
+# uv's `.venv` (the daily-audit hook uses the same path). Change if your env differs.
+python = "/home/tim/venvs/llm/bin/python"
+# REQUIRED. Smoke subset that must stay green after every fix. Real, existing tests.
+smoke_cmd = "/home/tim/venvs/llm/bin/python -m pytest -q -p no:cacheprovider component_fab/tests/test_platform_contracts.py research/tests/test_gmqar.py research/tests/test_module_native_autograd_parity.py research/tests/test_nano_contract.py"
+# REQUIRED (user chose smoke + scoring diff). A FIXED-SEED scoring run emitting
+# deterministic JSON via the real gMQAR scoring path (the AR metric of record).
+# reference_score.py drives score_model_gmqar with a seeded model; same code -> same JSON.
+reference_cmd = "/home/tim/venvs/llm/bin/python audit/orchestrator/reference_score.py --seed 0 --vocab 256 --out audit/orchestrator/state/reference_run.json"
+reference_out = "audit/orchestrator/state/reference_run.json"
+reference_baseline = "audit/orchestrator/state/reference_baseline.json"
+
+[merge]
+# auto  = gate-passing fixes merge to master, branch deleted; gate-failing branch kept.
+# branch = each fix left on its own branch (no merge); you merge selectively.
+# accumulate = all fixes land on one sweep branch you review once.
+mode = "auto"
+base_branch = "master"

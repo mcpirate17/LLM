@@ -1,0 +1,9 @@
+# Transient orchestrator run artifacts — kept on disk, not committed.
+orchestrator/state/reference_run.json
+orchestrator/state/ledger.jsonl
+findings/round-*/
+orchestrator_run_summary_*.md
+orchestrator/__pycache__/
+
+# The frozen scoring baseline IS the gate's source of truth — keep it tracked.
+!orchestrator/state/reference_baseline.json
