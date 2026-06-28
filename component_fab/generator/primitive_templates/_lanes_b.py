@@ -28,34 +28,40 @@ class CalculusAugmentedLane(nn.Module):
         return self.calculus(self.base(x))
 
 
-class LowRankAdapterLane(nn.Module):
+class _ResidualAdapterLane(nn.Module):
+    """Wrap a base lane with a residual adapter sub-lane.
+
+    ``forward`` is ``y = base(x); y + (adapter(y) - y)``. Subclasses construct
+    their adapter, pass it up, and may record adapter-derived attributes after
+    ``super().__init__``. (base, adapter) register in that order, matching the
+    pre-extraction per-lane definitions byte-for-byte.
+    """
+
+    def __init__(self, base: nn.Module, adapter: nn.Module, dim: int) -> None:
+        super().__init__()
+        self.base = base
+        self.adapter = adapter
+        self.dim = dim
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        y = self.base(x)
+        return y + (self.adapter(y) - y)
+
+
+class LowRankAdapterLane(_ResidualAdapterLane):
     """Wrap a base lane with a low-rank residual adapter."""
 
     def __init__(self, base: nn.Module, dim: int, rank: int | None = None) -> None:
-        super().__init__()
-        self.base = base
-        self.adapter = LowRankFactorizedLane(dim, rank=rank)
-        self.dim = dim
+        super().__init__(base, LowRankFactorizedLane(dim, rank=rank), dim)
         self.rank = self.adapter.rank
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        y = self.base(x)
-        return y + (self.adapter(y) - y)
 
-
-class SparseBandedAdapterLane(nn.Module):
+class SparseBandedAdapterLane(_ResidualAdapterLane):
     """Wrap a base lane with a causal sparse-banded residual adapter."""
 
     def __init__(self, base: nn.Module, dim: int, bandwidth: int = 4) -> None:
-        super().__init__()
-        self.base = base
-        self.adapter = SparseBandedMatrixLane(dim, bandwidth=bandwidth)
-        self.dim = dim
+        super().__init__(base, SparseBandedMatrixLane(dim, bandwidth=bandwidth), dim)
         self.bandwidth = bandwidth
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        y = self.base(x)
-        return y + (self.adapter(y) - y)
 
 
 class RandomFeatureKernelLane(nn.Module):
@@ -154,51 +160,32 @@ class GraphDiffusionLane(nn.Module):
         return x + state
 
 
-class RandomFeatureKernelAdapterLane(nn.Module):
+class RandomFeatureKernelAdapterLane(_ResidualAdapterLane):
     """Wrap a base lane with a random-feature kernel residual adapter."""
 
     def __init__(
         self, base: nn.Module, dim: int, n_features: int | None = None
     ) -> None:
-        super().__init__()
-        self.base = base
-        self.adapter = RandomFeatureKernelLane(dim, n_features=n_features)
-        self.dim = dim
+        super().__init__(base, RandomFeatureKernelLane(dim, n_features=n_features), dim)
         self.n_features = self.adapter.n_features
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        y = self.base(x)
-        return y + (self.adapter(y) - y)
 
-
-class MultiscaleWaveletAdapterLane(nn.Module):
+class MultiscaleWaveletAdapterLane(_ResidualAdapterLane):
     """Wrap a base lane with causal multiscale residual mixing."""
 
     def __init__(self, base: nn.Module, dim: int, n_scales: int = 3) -> None:
-        super().__init__()
-        self.base = base
-        self.adapter = MultiscaleWaveletLane(dim, n_scales=n_scales)
-        self.dim = dim
+        super().__init__(base, MultiscaleWaveletLane(dim, n_scales=n_scales), dim)
         self.n_scales = n_scales
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        y = self.base(x)
-        return y + (self.adapter(y) - y)
 
-
-class GraphDiffusionAdapterLane(nn.Module):
+class GraphDiffusionAdapterLane(_ResidualAdapterLane):
     """Wrap a base lane with causal graph-diffusion residual mixing."""
 
     def __init__(self, base: nn.Module, dim: int, diffusion_steps: int = 2) -> None:
-        super().__init__()
-        self.base = base
-        self.adapter = GraphDiffusionLane(dim, diffusion_steps=diffusion_steps)
-        self.dim = dim
+        super().__init__(
+            base, GraphDiffusionLane(dim, diffusion_steps=diffusion_steps), dim
+        )
         self.diffusion_steps = diffusion_steps
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        y = self.base(x)
-        return y + (self.adapter(y) - y)
 
 
 class CliffordAttention(nn.Module):
@@ -546,48 +533,27 @@ class TuckerDecompLane(nn.Module):
         return self.out(z)
 
 
-class FisherAdapterLane(nn.Module):
+class FisherAdapterLane(_ResidualAdapterLane):
     """Wrap a base lane with a Fisher-affinity residual adapter."""
 
     def __init__(self, base: nn.Module, dim: int) -> None:
-        super().__init__()
-        self.base = base
-        self.adapter = FisherAttention(dim)
-        self.dim = dim
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        y = self.base(x)
-        return y + (self.adapter(y) - y)
+        super().__init__(base, FisherAttention(dim), dim)
 
 
-class ChebyshevAdapterLane(nn.Module):
+class ChebyshevAdapterLane(_ResidualAdapterLane):
     """Wrap a base lane with Chebyshev spectral residual mixing."""
 
     def __init__(self, base: nn.Module, dim: int, n_terms: int = 5) -> None:
-        super().__init__()
-        self.base = base
-        self.adapter = ChebyshevSpectralLane(dim, n_terms=n_terms)
-        self.dim = dim
+        super().__init__(base, ChebyshevSpectralLane(dim, n_terms=n_terms), dim)
         self.n_terms = n_terms
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        y = self.base(x)
-        return y + (self.adapter(y) - y)
 
-
-class TuckerAdapterLane(nn.Module):
+class TuckerAdapterLane(_ResidualAdapterLane):
     """Wrap a base lane with Tucker-decomposed channel mixing."""
 
     def __init__(self, base: nn.Module, dim: int, rank: int | None = None) -> None:
-        super().__init__()
-        self.base = base
-        self.adapter = TuckerDecompLane(dim, rank=rank)
-        self.dim = dim
+        super().__init__(base, TuckerDecompLane(dim, rank=rank), dim)
         self.rank = self.adapter.rank
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        y = self.base(x)
-        return y + (self.adapter(y) - y)
 
 
 class QuaternionAttention(nn.Module):
