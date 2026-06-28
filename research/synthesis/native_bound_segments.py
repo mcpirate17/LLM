@@ -1,24 +1,18 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, Iterable, List
+from typing import Dict, Iterable
 
 import torch
 
 from ._json_compat import dumps_json
 from .compiler_op_utils import _get_stacked_params
-from .graph import ComputationGraph
 from .native_bound_common import (
     rows_for_bound_tensor,
     runtime_shape_key,
     supports_bound_input,
 )
-from .native_segments import NativeChainSegment, _unique_consumers
-from .native_support import (
-    BOUND_PARAM_OPS,
-    BOUND_POINTWISE_OPS,
-)
-from .primitives import PRIMITIVE_REGISTRY
+from .native_support import BOUND_POINTWISE_OPS
 from ..scientist.native.dispatch import dispatch_graph_native_multi_input_cached
 from ..scientist.native.tensor_bridge import supports_host_array_bridge
 
@@ -451,134 +445,3 @@ class BoundNativeChainDispatcher:
             payloads,
             output_shape=plan.output_shape,
         )
-
-
-def _bound_eligible_node(
-    graph: ComputationGraph,
-    flat_ops: list[torch.nn.Module | None],
-    node_id_to_ir_idx: Dict[int, int],
-    node_id: int,
-    *,
-    supported_ops: set[str],
-) -> bool:
-    node = graph.nodes[node_id]
-    if node.is_input or len(node.input_ids) != 1 or not node.output_shape.is_standard:
-        return False
-    op_name = node.op_name
-    if (
-        op_name not in BOUND_POINTWISE_OPS | BOUND_PARAM_OPS
-        or op_name not in supported_ops
-    ):
-        return False
-    primitive = PRIMITIVE_REGISTRY.get(op_name)
-    if primitive is None:
-        return False
-    ir_idx = node_id_to_ir_idx.get(node_id)
-    module = None if ir_idx is None else flat_ops[ir_idx]
-    if module is None:
-        return False
-    parent = graph.nodes.get(node.input_ids[0])
-    return parent is not None and parent.output_shape.is_standard
-
-
-def build_bound_native_chain_segments(
-    graph: ComputationGraph,
-    *,
-    flat_ops: list[torch.nn.Module | None],
-    ir_node_ids: List[int],
-    exec_plan_node_indices: List[int],
-    supported_ops: set[str],
-) -> list[NativeChainSegment]:
-    if not supported_ops:
-        return []
-
-    consumers = _unique_consumers(graph)
-    topo = graph.topological_order()
-    reachable_node_ids = set(ir_node_ids)
-    node_id_to_ir_idx = {int(node_id): idx for idx, node_id in enumerate(ir_node_ids)}
-    node_id_to_plan_idx = {
-        int(ir_node_ids[node_idx]): plan_idx
-        for plan_idx, node_idx in enumerate(exec_plan_node_indices)
-    }
-    visited: set[int] = set()
-    segments: list[NativeChainSegment] = []
-
-    for node_id in topo:
-        if node_id in visited or node_id not in reachable_node_ids:
-            continue
-        if not _bound_eligible_node(
-            graph, flat_ops, node_id_to_ir_idx, node_id, supported_ops=supported_ops
-        ):
-            continue
-
-        parent_id = graph.nodes[node_id].input_ids[0]
-        if parent_id in reachable_node_ids and _bound_eligible_node(
-            graph,
-            flat_ops,
-            node_id_to_ir_idx,
-            parent_id,
-            supported_ops=supported_ops,
-        ):
-            continue
-
-        chain_node_ids = [node_id]
-        current_id = node_id
-        has_param_op = graph.nodes[node_id].op_name in BOUND_PARAM_OPS
-        while True:
-            next_ids = consumers.get(current_id, [])
-            if len(next_ids) != 1:
-                break
-            next_id = next_ids[0]
-            if next_id in visited or next_id not in reachable_node_ids:
-                break
-            next_node = graph.nodes[next_id]
-            if len(next_node.input_ids) != 1 or next_node.input_ids[0] != current_id:
-                break
-            if not _bound_eligible_node(
-                graph,
-                flat_ops,
-                node_id_to_ir_idx,
-                next_id,
-                supported_ops=supported_ops,
-            ):
-                break
-            chain_node_ids.append(next_id)
-            has_param_op = has_param_op or next_node.op_name in BOUND_PARAM_OPS
-            current_id = next_id
-
-        if len(chain_node_ids) < 2 or not has_param_op:
-            continue
-
-        plan_indices = [node_id_to_plan_idx[current] for current in chain_node_ids]
-        start_plan_index = plan_indices[0]
-        if any(
-            plan_idx != start_plan_index + offset
-            for offset, plan_idx in enumerate(plan_indices)
-        ):
-            continue
-
-        dispatcher = BoundNativeChainDispatcher(
-            _BoundChainNode(
-                op_name=graph.nodes[current].op_name,
-                module=flat_ops[node_id_to_ir_idx[current]],
-            )
-            for current in chain_node_ids
-        )
-        for current in chain_node_ids:
-            visited.add(current)
-
-        segments.append(
-            NativeChainSegment(
-                start_plan_index=start_plan_index,
-                end_plan_index=plan_indices[-1],
-                input_ir_idx=node_id_to_ir_idx[parent_id],
-                input_consume_count=1,
-                output_ir_idx=node_id_to_ir_idx[chain_node_ids[-1]],
-                release_ir_counts=tuple(
-                    (node_id_to_ir_idx[current], 1) for current in chain_node_ids[:-1]
-                ),
-                dispatcher=dispatcher,
-            )
-        )
-
-    return segments
