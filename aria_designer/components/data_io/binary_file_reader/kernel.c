@@ -1,17 +1,6 @@
 #include "../_json_config.h"
 int component_validate(const ComponentConfig* config, char* error_buf, int buf_size) {
-    char path[1024] = {0};
-    if (config && config->json_config) {
-        json_get_string(config->json_config, "file_path", path, sizeof(path));
-    }
-    if (path[0] == '\0') {
-        if (error_buf && buf_size > 0) {
-            strncpy(error_buf, "file_path is required", (size_t)buf_size - 1);
-            error_buf[buf_size - 1] = '\0';
-        }
-        return -1;
-    }
-    return 0;
+    return validate_file_path_config(config, error_buf, buf_size);
 }
 
 int component_forward(const TensorView* inputs, int n_inputs,
