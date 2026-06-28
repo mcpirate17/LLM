@@ -8,44 +8,9 @@ from research.scientist.leaderboard_scoring import (
     prefetch_program_results,
 )
 from research.scientist.notebook import LabNotebook
-from research.scientist.runner._helpers import program_result_kwargs_from_s1
+from research.tests._program_result_test_support import stage1_kwargs as _stage1_kwargs
 
 pytestmark = pytest.mark.api
-
-
-def _stage1_kwargs(
-    loss_ratio: float,
-    novelty_score: float,
-    *,
-    model_source: str = "graph_synthesis",
-) -> dict:
-    s1 = {
-        "passed": True,
-        "final_loss": 4.5,
-        "loss_ratio": loss_ratio,
-        "wikitext_perplexity": 150.0,
-        "wikitext_score": 0.55,
-        "screening_wikitext_metric_version": "unit_test_wikitext_v1",
-        "hellaswag_acc": 0.31,
-        "hellaswag_status": "ran",
-        "blimp_overall_accuracy": 0.55,
-        "blimp_status": "ran",
-        "induction_screening_auc": 0.21,
-        "binding_screening_auc": 0.18,
-        "binding_screening_composite": 0.12,
-        "ar_legacy_auc": 0.06,
-    }
-    return program_result_kwargs_from_s1(
-        s1,
-        model_source=model_source,
-        extra={
-            "stage1_passed": True,
-            "novelty_score": novelty_score,
-            "data_mode": "random",
-            "tokenizer_mode": "byte",
-            "vocab_size": 256,
-        },
-    )
 
 
 def test_discoveries_endpoint_accepts_fingerprint_for_cross_run_stability(tmp_path):
