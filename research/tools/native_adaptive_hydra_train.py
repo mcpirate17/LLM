@@ -163,7 +163,11 @@ def _lm_loss(logits: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
 
 
 def _parse_gate_aux_probes(raw: str) -> tuple[str, ...]:
-    aliases = {"associative": "ar", "associative_recall": "ar", "refinement": "surprise"}
+    aliases = {
+        "associative": "ar",
+        "associative_recall": "ar",
+        "refinement": "surprise",
+    }
     probes: list[str] = []
     for item in raw.split(","):
         probe = aliases.get(item.strip().lower(), item.strip().lower())
@@ -187,7 +191,12 @@ def _gate_aux_native_target(block_idx: int, n_blocks: int) -> float:
 
 
 def _gate_aux_target_dist(
-    probe: str, block_idx: int, n_blocks: int, *, device: torch.device, dtype: torch.dtype
+    probe: str,
+    block_idx: int,
+    n_blocks: int,
+    *,
+    device: torch.device,
+    dtype: torch.dtype,
 ) -> torch.Tensor:
     native = _gate_aux_native_target(block_idx, n_blocks)
     remaining = max(1.0 - native, 0.0)
@@ -245,12 +254,17 @@ def _mean_gate_aux_rows(rows: list[dict[str, Any]]) -> dict[str, Any]:
         by_block.setdefault(str(row["block"]), []).append(row)
     return {
         "by_probe": {
-            probe: round(sum(vals) / len(vals), 6) for probe, vals in sorted(by_probe.items())
+            probe: round(sum(vals) / len(vals), 6)
+            for probe, vals in sorted(by_probe.items())
         },
         "by_block": {
             block: {
                 "raw_gate_mean": [
-                    round(sum(float(r["raw_gate_mean"][i]) for r in block_rows) / len(block_rows), 5)
+                    round(
+                        sum(float(r["raw_gate_mean"][i]) for r in block_rows)
+                        / len(block_rows),
+                        5,
+                    )
                     for i in range(3)
                 ],
                 "effective_gate_mean": [
@@ -262,7 +276,8 @@ def _mean_gate_aux_rows(rows: list[dict[str, Any]]) -> dict[str, Any]:
                     for i in range(3)
                 ],
                 "gate_entropy": round(
-                    sum(float(r["gate_entropy"]) for r in block_rows) / len(block_rows), 5
+                    sum(float(r["gate_entropy"]) for r in block_rows) / len(block_rows),
+                    5,
                 ),
                 "weighted_branch_rms": [
                     round(
@@ -302,7 +317,9 @@ def _gate_aux_loss(
     for block_idx, lane in enumerate(lanes):
         handles.append(
             lane.gate.register_forward_hook(
-                lambda _module, _inputs, output, idx=block_idx: captured.append((idx, output))
+                lambda _module, _inputs, output, idx=block_idx: captured.append(
+                    (idx, output)
+                )
             )
         )
 
@@ -313,7 +330,10 @@ def _gate_aux_loss(
         for probe in probes:
             for difficulty in range(1, args.gate_aux_max_batches + 1):
                 batch = _make_gate_aux_probe_batch(
-                    probe, batch=args.gate_aux_batch, difficulty=difficulty, device=device
+                    probe,
+                    batch=args.gate_aux_batch,
+                    difficulty=difficulty,
+                    device=device,
                 )
                 captured.clear()
                 model(batch.ids)
@@ -334,7 +354,9 @@ def _gate_aux_loss(
                             "probe": probe,
                             "difficulty": difficulty,
                             "block": block_idx,
-                            "target_dist": [round(float(v), 5) for v in target.detach().cpu()],
+                            "target_dist": [
+                                round(float(v), 5) for v in target.detach().cpu()
+                            ],
                             "aux_loss": float(block_loss.detach().cpu()),
                             "raw_gate_mean": [
                                 round(float(v), 5)
@@ -342,12 +364,18 @@ def _gate_aux_loss(
                             ],
                             "effective_gate_mean": [
                                 round(float(v), 5)
-                                for v in metrics.get("effective_gate_mean", torch.zeros(3))
+                                for v in metrics.get(
+                                    "effective_gate_mean", torch.zeros(3)
+                                )
                             ],
-                            "gate_entropy": round(float(metrics.get("gate_entropy", 0.0)), 5),
+                            "gate_entropy": round(
+                                float(metrics.get("gate_entropy", 0.0)), 5
+                            ),
                             "weighted_branch_rms": [
                                 round(float(v), 5)
-                                for v in metrics.get("weighted_branch_rms", torch.zeros(3))
+                                for v in metrics.get(
+                                    "weighted_branch_rms", torch.zeros(3)
+                                )
                             ],
                         }
                     )
@@ -895,6 +923,19 @@ def _record_step(args, model, train_loader, val_loader, started, step, metrics):
             "loss_after_aux": gate_aux["loss_after_aux"],
             "summary": gate_aux["summary"],
         }
+    # Per-block gradient-flow ratio [native, reciprocal, slot] — grads are still
+    # live here (zeroed only next step), so the backward hooks have fired. Sits
+    # next to gate_entropy/effective_gate_mean: confirms each branch is actually
+    # receiving gradient, not just holding gate weight via its floor.
+    grad_flow = [
+        lane.pop_grad_flow_ratio()
+        for lane in model.modules()
+        if isinstance(lane, NativeAdaptiveReciprocalSlotDeltaLane)
+    ]
+    if any(g is not None for g in grad_flow):
+        row["gate_grad_flow"] = [
+            [round(v, 5) for v in g] if g is not None else None for g in grad_flow
+        ]
     if should_eval:
         row["eval"] = _eval_loss(
             model,

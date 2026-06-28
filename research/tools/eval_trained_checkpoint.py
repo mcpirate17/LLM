@@ -36,6 +36,7 @@ def _alarm_handler(signum, frame):  # noqa: ANN001 — signal handler signature
 
 
 from research.defaults import VOCAB_SIZE
+from research.eval.gmqar import score_model_gmqar
 from research.eval.ar_curriculum_probe import ar_curriculum_probe, ARCurriculumConfig
 from research.eval.binding_curriculum import curriculum_binding_range_profile
 from research.eval.binding_intermediate_probe import run_binding_intermediate
@@ -94,6 +95,33 @@ def _fine_tune_budget(probe_timeout: int) -> float:
     return float(probe_timeout) - 30.0 if probe_timeout and probe_timeout > 0 else 1e9
 
 
+# gMQAR KV ids are drawn from a well-trained low-id range so the probe measures
+# the binding MECHANISM, not embedding quality of rare tokens (matches the
+# calibrated_ar_probe convention). Candidate scoring already restricts the argmax
+# to in-context values.
+_GMQAR_TOKEN_POOL = 2048
+
+
+def _gmqar_recall(model: torch.nn.Module, device: str) -> dict[str, Any]:
+    """PRIMARY associative-recall metric: zero-shot graded multi-query AR.
+
+    No fine-tuning and no deepcopy, so it is free of the optimization artifacts
+    that distort the fine-tuned ar_validation / ar_curriculum probes on annealed
+    checkpoints (the reason ar_legacy was retired). Reports AUDC (area under the
+    difficulty curve) and D50 (largest KV-pair count still recalled >= 50%)."""
+    res = score_model_gmqar(
+        model, vocab_size=VOCAB_SIZE, device=device, token_pool=_GMQAR_TOKEN_POOL
+    )
+    return {
+        "gmqar_audc": res.audc,
+        "gmqar_d50": res.d50,
+        "gmqar_chance": res.chance,
+        "gmqar_token_pool": _GMQAR_TOKEN_POOL,
+        "scoring": "candidate",
+        "cells": res.cells,
+    }
+
+
 def _dispatch_recall_probes(
     safe,  # callable(label: str, fn: Callable) -> None
     model: torch.nn.Module,
@@ -102,8 +130,15 @@ def _dispatch_recall_probes(
     seed: int,
     probe_timeout: int = 1800,
 ) -> None:
-    """Fire induction and AR probes (first half of the standard battery)."""
+    """Fire induction and AR probes (first half of the standard battery).
+
+    gMQAR runs FIRST and is the recall metric of record: zero-shot, cheap, and
+    artifact-free. The fine-tuned ar_curriculum / ar_validation probes that follow
+    are kept as secondary learnability diagnostics (and ar_validation remains a
+    required write-gate field), but they are no longer the headline recall number.
+    """
     budget = _fine_tune_budget(probe_timeout)
+    safe("gmqar", lambda: _gmqar_recall(model, device))
     safe(
         "induction_intermediate",
         lambda: run_induction_intermediate(
@@ -218,6 +253,65 @@ def _dispatch_probes(
     _dispatch_binding_probes(safe, model, dev, probe_timeout)
 
 
+def _preflight_check(model: torch.nn.Module, device: str) -> dict[str, Any]:
+    """Cheap forward+backward sanity check run BEFORE the expensive battery.
+
+    Validates the contract every probe relies on: ``model(ids)`` returns logits of
+    shape ``(B, S, VOCAB_SIZE)``, all-finite, and a backward populates finite
+    gradients (the fine-tuned probes deepcopy then train). Catches the silent
+    failure class — wrong vocab dim, NaN forward, dead gradient — in ~1s on a real
+    eval-length sequence instead of after minutes of wasted probes. It does NOT
+    validate full-scale memory at every probe's batch size; it exercises one
+    eval-length sequence so seq-dependent shape/OOM bugs surface early."""
+    dev = torch.device(device)
+    b, s = 4, 320
+    g = torch.Generator().manual_seed(0)
+    ids = torch.randint(0, VOCAB_SIZE, (b, s), generator=g).to(dev)
+    try:
+        out = model(ids)
+        logits = out[0] if isinstance(out, tuple) else out
+    except Exception as e:
+        return {
+            "ok": False,
+            "stage": "forward",
+            "error": f"{type(e).__name__}: {str(e)[:200]}",
+        }
+    shape = tuple(logits.shape)
+    if (logits.dim(), shape[0], shape[1], shape[-1]) != (3, b, s, VOCAB_SIZE):
+        return {
+            "ok": False,
+            "stage": "shape",
+            "logits_shape": shape,
+            "expected": (b, s, VOCAB_SIZE),
+        }
+    if not bool(torch.isfinite(logits).all()):
+        return {"ok": False, "stage": "finite_forward", "logits_shape": shape}
+    try:
+        logits.float().pow(2).mean().backward()
+    except Exception as e:
+        model.zero_grad(set_to_none=True)
+        return {
+            "ok": False,
+            "stage": "backward",
+            "error": f"{type(e).__name__}: {str(e)[:200]}",
+        }
+    n_grad = sum(
+        1
+        for p in model.parameters()
+        if p.grad is not None and bool(torch.isfinite(p.grad).all())
+    )
+    n_trainable = sum(1 for p in model.parameters() if p.requires_grad)
+    model.zero_grad(set_to_none=True)
+    if n_grad == 0:
+        return {"ok": False, "stage": "no_gradient", "n_trainable": n_trainable}
+    return {
+        "ok": True,
+        "logits_shape": shape,
+        "n_params_with_grad": n_grad,
+        "n_trainable": n_trainable,
+    }
+
+
 def _run_probes(
     model: torch.nn.Module, device: str, seed: int, probe_timeout: int = 1800
 ) -> dict[str, Any]:
@@ -230,6 +324,14 @@ def _run_probes(
     completes (and any downstream shutdown can fire).
     """
     out: dict[str, Any] = {}
+    out["_preflight"] = _preflight_check(model, device)
+    if not out["_preflight"]["ok"]:
+        print(
+            f"  PREFLIGHT FAILED (stage={out['_preflight'].get('stage')}) — "
+            "skipping the probe battery (model contract is broken)"
+        )
+        return out
+    print(f"  preflight OK (logits {out['_preflight']['logits_shape']})")
     dev = torch.device(device)
     use_alarm = probe_timeout > 0 and hasattr(signal, "SIGALRM")
 
@@ -321,6 +423,11 @@ def main() -> int:
             default=str,
         )
     print(f"wrote {args.output}")
+    # Fail loud: a broken model contract makes the whole battery meaningless, so
+    # exit non-zero even though the diagnostic artifact was written.
+    if not probes.get("_preflight", {}).get("ok", False):
+        print("EXIT non-zero: preflight failed — battery skipped")
+        return 2
     return 0
 
 

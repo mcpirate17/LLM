@@ -198,6 +198,9 @@ class NativeAdaptiveReciprocalSlotDeltaLane(nn.Module):
         )
         self.gate = nn.Linear(dim, 3)
         self.native_gate_floor = float(self.GATE_FLOOR)
+        # Passive per-branch gradient-flow accumulator [native, reciprocal, slot];
+        # populated by backward hooks, drained by pop_grad_flow_ratio().
+        self._grad_flow_sq: list[torch.Tensor | None] | None = None
         with torch.no_grad():
             self.gate.weight.zero_()
             self.gate.bias.copy_(torch.tensor([2.0, -0.5, -0.5]))
@@ -223,6 +226,15 @@ class NativeAdaptiveReciprocalSlotDeltaLane(nn.Module):
         native = self._rms_normalize_branch(native)
         reciprocal = self._rms_normalize_branch(reciprocal)
         slot = self._rms_normalize_branch(slot)
+        if torch.is_grad_enabled() and native.requires_grad:
+            # Passive gradient-flow telemetry: L2 grad-norm reaching each branch
+            # output during backward (= gate weight x downstream gradient). Logged
+            # next to gate_entropy via pop_grad_flow_ratio(). Hooks return None, so
+            # the forward value and gradients are untouched.
+            for _i, _branch in enumerate((native, reciprocal, slot)):
+                _branch.register_hook(
+                    lambda grad, _i=_i: self._accum_grad_flow(_i, grad)
+                )
         weighted_native = weights[..., 0:1] * native
         weighted_reciprocal = weights[..., 1:2] * reciprocal
         weighted_slot = weights[..., 2:3] * slot
@@ -243,6 +255,31 @@ class NativeAdaptiveReciprocalSlotDeltaLane(nn.Module):
                 .cpu(),
             }
         return weighted_native + weighted_reciprocal + weighted_slot
+
+    def _accum_grad_flow(self, idx: int, grad: torch.Tensor) -> None:
+        sq = grad.detach().float().pow(2).sum()
+        buf: list[torch.Tensor | None] | None = self._grad_flow_sq
+        if buf is None:
+            buf = [None, None, None]
+            self._grad_flow_sq = buf
+        prev = buf[idx]
+        buf[idx] = sq if prev is None else prev + sq
+
+    def pop_grad_flow_ratio(self) -> list[float] | None:
+        """Fraction of branch gradient L2-norm per ``[native, reciprocal, slot]``,
+        accumulated across backwards since the last call, then reset. Returns
+        ``None`` until all three branches have received gradient. A starved novel
+        branch shows up here as a near-zero share even when its gate floor keeps
+        its forward weight nonzero — the signal the floor alone cannot reveal."""
+        buf = self._grad_flow_sq
+        if buf is None or any(v is None for v in buf):
+            return None
+        self._grad_flow_sq = None
+        norms = [float(v.sqrt().item()) for v in buf if v is not None]
+        total = sum(norms)
+        if total <= 0.0:
+            return None
+        return [n / total for n in norms]
 
 
 # 2026-05-28: nano-scale BLiMP winners (seq=512 sweet-spot study) — lane name →

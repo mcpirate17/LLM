@@ -2,17 +2,21 @@
 
 from __future__ import annotations
 
+import pytest
 import torch
 
 from research.synthesis.open_discovery import (
     OpenDiscovery,
     ProgramSpec,
+    _frontier_elites,
+    _mutate,
     build_program,
+    calibrate_proxy,
     sample_spec,
 )
 from research.synthesis.parametric_atoms import AtomSpec
 from research.synthesis.parametric_ops import StageSpec
-from research.synthesis.quality_diversity import MapElitesArchive
+from research.synthesis.quality_diversity import Elite, MapElitesArchive
 from research.synthesis.physics_descriptors import physics_behavior_axes
 
 
@@ -59,3 +63,56 @@ def test_run_illuminates_multiple_niches() -> None:
     # leaderboard is fitness-sorted and within the archive.
     board = result.leaderboard(top=5)
     assert board == sorted(board, key=lambda e: e.fitness, reverse=True)
+
+
+# ── P3.3: empty-niche / frontier-biased illumination ──────────────────────────
+
+
+def _elite_at(niche: tuple[int, ...], fitness: float, payload=None) -> Elite:
+    return Elite(
+        key=f"e{niche}",
+        fitness=fitness,
+        niche=niche,
+        descriptors={},
+        payload=payload if payload is not None else _spec(),
+    )
+
+
+def test_frontier_elites_flags_edge_of_explored_space() -> None:
+    arch = MapElitesArchive(axes=physics_behavior_axes())
+    # One lone elite -> all its Hamming-1 neighbours are empty -> it is frontier.
+    lone = _elite_at((0, 0, 0, 0), 0.5)
+    arch._cells[lone.niche] = lone
+    front = _frontier_elites(arch)
+    assert len(front) == 1 and front[0].niche == (0, 0, 0, 0)
+
+
+def test_mutate_push_widens_knob_spread() -> None:
+    gen = torch.Generator().manual_seed(0)
+    base = _spec()
+    pushed = [_mutate(base, gen, push=True).knob_scale for _ in range(20)]
+    plain = [_mutate(base, gen, push=False).knob_scale for _ in range(20)]
+    # push samples knob_scale from [2, 4]; plain from [0.5, 3].
+    assert all(2.0 <= k <= 4.0 for k in pushed)
+    assert min(plain) < 2.0  # plain can go below the push floor
+    assert sum(pushed) / len(pushed) > sum(plain) / len(plain)
+
+
+# ── P3.2: proxy calibration ───────────────────────────────────────────────────
+
+
+def test_calibrate_proxy_monotone_passes() -> None:
+    elites = [_elite_at((i, 0, 0, 0), float(i), payload=float(i)) for i in range(6)]
+    report = calibrate_proxy(elites, real_scorer=lambda p: p, threshold=0.4)
+    assert report.n == 6
+    assert report.rho == 1.0
+    assert report.ok is True
+
+
+def test_calibrate_proxy_warns_when_proxy_does_not_track_real() -> None:
+    elites = [_elite_at((i, 0, 0, 0), float(i), payload=float(i)) for i in range(6)]
+    # real score anti-correlated with proxy fitness -> rho < threshold -> warn.
+    with pytest.warns(UserWarning, match="calibration LOW"):
+        report = calibrate_proxy(elites, real_scorer=lambda p: -p, threshold=0.4)
+    assert report.ok is False
+    assert report.rho < 0.4

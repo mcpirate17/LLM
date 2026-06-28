@@ -95,24 +95,46 @@ class ParametricOptimizer(torch.optim.Optimizer):
 
 
 # --------------------------------------------------------------------------- #
-# Grading harness — a fixed nano problem; score = fractional loss reduction
+# Grading harness — a harder fixed problem, scored by the WHOLE trajectory
+# (Area-Under-Loss-Curve), not the final loss.
+#
+# Why AULC and not final-loss reduction: on an easy problem every non-divergent
+# optimizer drives the final loss to ~0, so final-loss fractional reduction
+# saturates near 1.0 and cannot RANK update rules (the failure noted in
+# name_free_discovery_next_steps). AULC integrates the relative loss over every
+# step, so a faster-converging rule scores higher even when all candidates
+# eventually reach the same floor — convergence SPEED is exactly what separates
+# AdamW / Lion / their blends. The target is also deepened so the landscape has
+# real dynamic range over the horizon rather than collapsing in a few steps.
 # --------------------------------------------------------------------------- #
 def _problem(seed: int, device: str) -> tuple[nn.Module, Tensor, Tensor]:
-    """A small deterministic non-convex regression: 2-layer MLP on fixed data."""
+    """A deterministic deep non-convex regression: 3-layer tanh target, fixed data.
+
+    Deeper than a single hidden layer so it does not saturate within the horizon
+    — the trajectory keeps moving, which is what AULC needs to discriminate.
+    """
     # Reset the global RNG so data, target weights and start point are identical
     # across optimizer candidates (module init draws from the global generator).
     torch.manual_seed(seed)
-    n, d_in, d_hidden = 256, 16, 32
+    n, d_in, d_hidden = 256, 16, 48
     x = torch.randn(n, d_in, device=device)
     target = nn.Sequential(
-        nn.Linear(d_in, d_hidden), nn.Tanh(), nn.Linear(d_hidden, 1)
+        nn.Linear(d_in, d_hidden),
+        nn.Tanh(),
+        nn.Linear(d_hidden, d_hidden),
+        nn.Tanh(),
+        nn.Linear(d_hidden, 1),
     ).to(device)
     for param in target.parameters():
         param.requires_grad_(False)
     with torch.no_grad():
         y = target(x)
     model = nn.Sequential(
-        nn.Linear(d_in, d_hidden), nn.GELU(), nn.Linear(d_hidden, 1)
+        nn.Linear(d_in, d_hidden),
+        nn.GELU(),
+        nn.Linear(d_hidden, d_hidden),
+        nn.GELU(),
+        nn.Linear(d_hidden, 1),
     ).to(device)
     # Deterministic re-init so the starting point is identical across optimizers.
     torch.manual_seed(seed + 1)
@@ -126,23 +148,30 @@ def _problem(seed: int, device: str) -> tuple[nn.Module, Tensor, Tensor]:
 def grade_optimizer(
     spec: UpdateSpec, *, steps: int = 80, seed: int = 0, device: str = "cpu"
 ) -> float:
-    """Fractional loss reduction the update rule achieves on the nano problem.
+    """Area-Under-Loss-Curve score of the update rule on the nano problem.
 
-    1.0 = drove the loss to zero; <=0 = made no progress or diverged. Divergence
-    (non-finite loss) is reported as the measured low score, not raised.
+    ``score = 1 - mean_t(loss_t / loss_0)`` over the optimization trajectory:
+    1.0 = drove the loss to zero immediately, 0 = no progress, <0 = the loss
+    spent the run above its starting point (slow or diverging). A non-finite loss
+    at any step is reported as the measured low score (-1.0), never raised.
+    Higher = converges faster AND lower — the property that ranks update rules.
     """
     model, x, y = _problem(seed, device)
     opt = ParametricOptimizer(model.parameters(), spec)
     loss_fn = nn.MSELoss()
     with torch.no_grad():
         loss0 = float(loss_fn(model(x), y))
+    if loss0 <= 0.0 or not math.isfinite(loss0):
+        return -1.0
+    rel_area = 0.0  # running sum of loss_t / loss_0 across the trajectory
     for _ in range(steps):
         opt.zero_grad()
         loss = loss_fn(model(x), y)
         loss.backward()
         opt.step()
-    with torch.no_grad():
-        lossF = float(loss_fn(model(x), y))
-    if not math.isfinite(lossF):
-        return -1.0
-    return (loss0 - lossF) / (loss0 + 1e-12)
+        with torch.no_grad():
+            lt = float(loss_fn(model(x), y))
+        if not math.isfinite(lt):
+            return -1.0
+        rel_area += lt / loss0
+    return 1.0 - rel_area / steps
