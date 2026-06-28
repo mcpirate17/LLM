@@ -196,3 +196,9 @@ research/data/
 # Local app installs / session artifacts
 codex-desktop-linux/
 .playwright-mcp/
+
+# Model-run reports/data (jsonl/png/csv/json) — regenerable, never commit (127G+)
+research/TEST MODELS/
+
+# Audit tool outputs (jscpd/pmd duplication reports) — auto-pruned, not committed
+tasks/audit/duplication-*
