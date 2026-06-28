@@ -2238,6 +2238,10 @@ class _NotebookCore:
             # Native mode: stop the Rust writer thread but do NOT close
             # the connection — it must stay alive to prevent SHM teardown.
             try:
+                self.flush_writes()
+            except Exception:
+                pass
+            try:
                 self.conn._mgr.stop_writer()
             except Exception:
                 pass

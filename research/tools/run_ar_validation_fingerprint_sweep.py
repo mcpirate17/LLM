@@ -30,6 +30,7 @@ from research.eval.ar_validation import (
     ARValidationConfig,
     ar_validation_size_bucket,
     count_model_parameters,
+    make_ar_validation_config_from_args,
     resolve_stable_ar_validation_config,
     run_ar_validation,
 )
@@ -563,19 +564,11 @@ def main(argv: list[str] | None = None) -> int:
         / f"{run_id}_offset{int(args.offset):04d}_limit{int(args.limit):04d}.csv"
     )
     checkpoint_dir = args.checkpoint_dir or (DEFAULT_OUT_DIR / "checkpoints" / run_id)
-    cfg_kwargs: dict[str, Any] = {
-        "timeout_s": float(args.timeout_s),
-        "copy_model": False if bool(args.legacy_v2) else True,
-        "protocol": "integer_v2"
-        if bool(args.legacy_v2)
-        else STABLE_AR_VALIDATION_PROTOCOL,
-        "auto_size_budget": not bool(args.legacy_v2),
-        "deterministic_episode_bank": not bool(args.legacy_v2),
-        "seed_count": 1 if bool(args.legacy_v2) else 3,
-    }
-    if args.train_steps is not None:
-        cfg_kwargs["train_steps"] = int(args.train_steps)
-    cfg = ARValidationConfig(**cfg_kwargs)
+    cfg = make_ar_validation_config_from_args(
+        legacy_v2=bool(args.legacy_v2),
+        timeout_s=float(args.timeout_s),
+        train_steps=args.train_steps,
+    )
 
     conn = _connect_ro(args.db)
     selected = _query_top_fingerprints(

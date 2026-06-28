@@ -23,11 +23,12 @@ Outputs:
 from __future__ import annotations
 
 import csv
-import math
 import sqlite3
 import sys
 from collections import defaultdict
 from pathlib import Path
+
+from research.stats import wilson_score_interval
 
 REPO = Path(__file__).resolve().parents[2]
 META = REPO / "research/meta_analysis.db"
@@ -41,23 +42,11 @@ DOMINANT_MIN_PASS = 0.60
 CERT_MIN_N = 30
 CERT_PASS_THRESHOLD = 0.60
 CAPABILITY_AUC_MIN = 0.55
-WILSON_Z = 1.96
 
 # op-binding-range-class values that count as "the graph has a mixer".
 # 'full' = full-context mixer (attention, SSM, etc.); 'local' = conv1d_seq;
 # 'medium' = conv variants. 'none' = non-mixer.
 MIXER_BINDING_CLASSES = frozenset({"full", "local", "medium"})
-
-
-def wilson(k: int, n: int, z: float = WILSON_Z) -> tuple[float, float]:
-    # See analytics_grammar._wilson_interval (kept inline for tool isolation).
-    if n == 0:
-        return (0.0, 0.0)
-    p = k / n
-    denom = 1.0 + z * z / n
-    centre = (p + z * z / (2.0 * n)) / denom
-    half = (z * math.sqrt(p * (1.0 - p) / n + z * z / (4.0 * n * n))) / denom
-    return (max(0.0, centre - half), min(1.0, centre + half))
 
 
 def _connect() -> sqlite3.Connection:
@@ -254,7 +243,7 @@ def write_slot_credit_v2(
             pb = a.p_b / a.n_b if a.n_b else 0.0
             pc = a.p_c / a.n_c if a.n_c else 0.0
             pt = a.p_total / a.n_total
-            ci_lo, ci_hi = wilson(a.p_a, a.n_a)
+            ci_lo, ci_hi = wilson_score_interval(a.p_a, a.n_a)
             dominant = a.n_a >= DOMINANT_MIN_N and pa >= DOMINANT_MIN_PASS
             if dominant:
                 n_dom += 1
@@ -361,7 +350,7 @@ def write_op_cert_v2(
         w.writeheader()
         for op, a in sorted(op_acc.items(), key=lambda kv: -kv[1].n_total):
             props = op_catalog.get(op, {})
-            ci_lo, ci_hi = wilson(a.p_solo, a.n_solo)
+            ci_lo, ci_hi = wilson_score_interval(a.p_solo, a.n_solo)
             w.writerow(
                 {
                     "op": op,

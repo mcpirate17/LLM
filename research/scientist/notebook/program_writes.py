@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from typing import Any, Callable, Dict, Iterable, List, Tuple
 
+from research.eval.nano_contract import NANO
 from ._shared import sanitize_for_db
 from .program_provenance import derive_provenance_fields
 
@@ -150,6 +151,48 @@ def _enforce_s1_metric_completeness(
         raise ValueError(msg)
 
 
+def _enforce_nano_floor(
+    *,
+    graph_fingerprint: str,
+    kwargs: Dict[str, Any],
+    logger,
+) -> None:
+    """Refuse to write a stage1_passed=True row for a sub-floor nano model.
+
+    Positive-control evidence (research/eval/nano_contract): a capable 2-layer
+    transformer floors at chance below ~1.2M params, so a model below the nano
+    floor cannot carry screening signal — admitting it (as the old gate did at a
+    100% pass rate) pollutes the leaderboard with noise. Enforced only when a
+    param_count is present; replay/backfill paths are exempt via trust_label.
+
+    Fail loud, not silent.
+    """
+    if not kwargs.get("stage1_passed"):
+        return
+    trust_label = str(kwargs.get("trust_label") or "")
+    if any(trust_label.startswith(p) for p in _TRUST_LABEL_REPLAY_BYPASS_PREFIXES):
+        return
+    raw = kwargs.get("param_count")
+    if raw is None:
+        return
+    try:
+        param_count = int(raw)
+    except (TypeError, ValueError):
+        return
+    if 0 < param_count < NANO.min_params:
+        model_source = str(kwargs.get("model_source") or "unknown")
+        msg = (
+            f"BLOCKED sub-floor nano S1 write: param_count={param_count:,} < nano "
+            f"floor {NANO.min_params:,} (dim {NANO.dim}). A capable 2-layer "
+            "transformer floors at chance below this size, so a sub-floor model "
+            f"cannot be screening-capable. fp={graph_fingerprint[:16]} "
+            f"model_source={model_source}. Use a model at/above the nano floor or "
+            "set stage1_passed=False."
+        )
+        logger.error(msg)
+        raise ValueError(msg)
+
+
 def should_record_program_result(
     *,
     graph_fingerprint: str,
@@ -161,6 +204,11 @@ def should_record_program_result(
     stage1_passed = kwargs.get("stage1_passed")
     loss_ratio = kwargs.get("loss_ratio")
     _enforce_s1_metric_completeness(
+        graph_fingerprint=graph_fingerprint,
+        kwargs=kwargs,
+        logger=logger,
+    )
+    _enforce_nano_floor(
         graph_fingerprint=graph_fingerprint,
         kwargs=kwargs,
         logger=logger,

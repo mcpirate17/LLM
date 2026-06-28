@@ -61,7 +61,7 @@ def _today() -> str:
 
 def _phase_a_bootstrap(quiet: bool) -> dict[str, Any]:
     """Snapshot pre-run ledger size + timestamp."""
-    ledger = Ledger(_LEDGER_PATH)
+    ledger = Ledger(_LEDGER_PATH, include_rotated=True)
     pre_count = sum(
         1 for e in ledger.all_entries() if e.promotion_status == PROMOTION_PROMOTED
     )
@@ -214,7 +214,7 @@ def _phase_b_autonomous(
 
 def _top_promoted(top_k: int, since_iso: str | None) -> list[tuple[str, float]]:
     """Return up to ``top_k`` highest-scoring promoted proposal_ids."""
-    ledger = Ledger(_LEDGER_PATH)
+    ledger = Ledger(_LEDGER_PATH, include_rotated=True)
     rows: list[tuple[str, float]] = []
     for entry in ledger.all_entries():
         if entry.promotion_status != PROMOTION_PROMOTED:

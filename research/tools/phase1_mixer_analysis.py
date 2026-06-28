@@ -30,12 +30,12 @@ from __future__ import annotations
 
 import csv
 import json
-import math
 import sqlite3
 import sys
 from collections import defaultdict
 from pathlib import Path
 
+from research.stats import wilson_score_interval
 from research.scientist.notebook.graph_artifacts import resolve_graph_json_value
 
 REPO = Path(__file__).resolve().parents[2]
@@ -49,7 +49,6 @@ DOMINANT_MIN_N = 30
 DOMINANT_MIN_PASS = 0.60
 CERT_MIN_N = 30
 CERT_PASS_THRESHOLD = 0.60
-WILSON_Z = 1.96
 
 MIXER_SET = frozenset(
     {
@@ -83,18 +82,6 @@ MIXER_CLASS_SET = frozenset(
         "channel_core",
     }
 )
-
-
-def wilson(k: int, n: int, z: float = WILSON_Z) -> tuple[float, float]:
-    # Same formula as analytics_grammar._wilson_interval (kept inline; Phase 1
-    # tools do not depend on the analytics package).
-    if n == 0:
-        return (0.0, 0.0)
-    p = k / n
-    denom = 1.0 + z * z / n
-    centre = (p + z * z / (2.0 * n)) / denom
-    half = (z * math.sqrt(p * (1.0 - p) / n + z * z / (4.0 * n * n))) / denom
-    return (max(0.0, centre - half), min(1.0, centre + half))
 
 
 def is_pass(sa: float | None, failure_op: str | None) -> bool:
@@ -233,7 +220,7 @@ def write_slot_mixer_credit(slot_acc: dict, path: Path) -> tuple[int, int]:
             pa = acc.p_a / acc.n_a if acc.n_a else 0.0
             pb = acc.p_b / acc.n_b if acc.n_b else 0.0
             pc = acc.p_c / acc.n_c if acc.n_c else 0.0
-            ci_lo_a, ci_hi_a = wilson(acc.p_a, acc.n_a)
+            ci_lo_a, ci_hi_a = wilson_score_interval(acc.p_a, acc.n_a)
             dominant = acc.n_a >= DOMINANT_MIN_N and pa >= DOMINANT_MIN_PASS
             if dominant:
                 n_dom += 1
@@ -328,7 +315,7 @@ def write_op_certification(op_acc: dict[str, OpAcc], path: Path) -> int:
         for op, acc in sorted(op_acc.items(), key=lambda kv: -kv[1].n_total):
             if acc.n_total == 0:
                 continue
-            ci_lo, ci_hi = wilson(acc.p_no_other, acc.n_no_other)
+            ci_lo, ci_hi = wilson_score_interval(acc.p_no_other, acc.n_no_other)
             w.writerow(
                 {
                     "op": op,

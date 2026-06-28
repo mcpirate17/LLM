@@ -25,9 +25,9 @@ from typing import Any
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 
-from research.eval.utils import _get_tiktoken_encoder, clip_grad_norm, make_adamw
+from research.eval._probe_utils import next_token_train_step
+from research.eval.utils import _get_tiktoken_encoder, make_adamw
 from research.scientist.notebook.graph_artifacts import resolve_graph_json_value
 from research.scientist.native_runner import compile_model_native_first as compile_model
 from research.synthesis.serializer import graph_from_json
@@ -138,20 +138,9 @@ def _train_steps(
             0, n, (int(batch_size),), generator=rng, device=train_ids.device
         )
         batch = train_ids.index_select(0, idx)
-        opt.zero_grad(set_to_none=True)
-        logits = model(batch)
-        targets = batch[:, 1:].contiguous()
-        pred = logits[:, :-1, :].contiguous()
-        mask = targets != PAD_ID
-        if not bool(mask.any()):
-            continue
-        loss = F.cross_entropy(pred[mask].float(), targets[mask])
-        if not torch.isfinite(loss):
+        if not next_token_train_step(model, batch, opt, pad_id=PAD_ID):
             logger.warning("non-finite loss at training step; aborting train segment")
             return
-        loss.backward()
-        clip_grad_norm(model.parameters(), 1.0)
-        opt.step()
 
 
 def _aggregate(per_prompt: list[dict[str, Any]]) -> dict[str, Any]:

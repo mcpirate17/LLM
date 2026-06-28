@@ -13,7 +13,6 @@ import argparse
 import dataclasses
 import logging
 import re
-import shutil
 import sys
 import time
 from pathlib import Path
@@ -56,6 +55,7 @@ from research.tools.focused_op_deletion_ablation import (  # noqa: E402
     prepare_config,
     select_top_parents,
 )
+from research.tools.db_backup import backup_database  # noqa: E402
 
 
 DB_PATH = PROJECT_ROOT / "research/runs.db"
@@ -688,17 +688,13 @@ def child_meta(
 def make_backups(db_path: Path, *, dry_run: bool) -> dict[str, str]:
     ts = time.strftime("%Y%m%d_%H%M%S")
     backup_name = f"pre_smart_component_replacement_ablation_{ts}"
-    local_dir = PROJECT_ROOT / "research/db_backups" / backup_name
-    google_dir = GOOGLE_BACKUP_ROOT / backup_name
-    local_target = local_dir / db_path.name
-    google_target = google_dir / db_path.name
-    if dry_run:
-        return {"local": str(local_target), "google_drive": str(google_target)}
-    local_dir.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(db_path, local_target)
-    google_dir.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(db_path, google_target)
-    return {"local": str(local_target), "google_drive": str(google_target)}
+    return backup_database(
+        db_path,
+        backup_name,
+        project_root=PROJECT_ROOT,
+        google_backup_root=GOOGLE_BACKUP_ROOT,
+        dry_run=dry_run,
+    )
 
 
 def inventory_payload(

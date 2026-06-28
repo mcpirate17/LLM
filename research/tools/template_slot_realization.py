@@ -18,11 +18,12 @@ from __future__ import annotations
 
 import csv
 import json
-import math
 import sqlite3
 import sys
 from pathlib import Path
 from typing import Iterable
+
+from research.stats import wilson_score_interval
 
 REPO = Path(__file__).resolve().parents[2]
 DB = f"file:{REPO / 'research/runs.db'}?mode=ro&immutable=0"
@@ -33,19 +34,6 @@ PASS_SA = 0.95
 FAIL_SA = 0.30
 NANO_BIND = "nano_bind"
 MIN_N_PUBLISH = 20
-WILSON_Z = 1.96  # 95% CI
-
-
-def wilson(k: int, n: int, z: float = WILSON_Z) -> tuple[float, float]:
-    # Mirrors GrammarAnalytics._wilson_interval (analytics_grammar.py:276); kept
-    # inline here to avoid pulling the analytics package into a one-shot tool.
-    if n == 0:
-        return (0.0, 0.0)
-    p = k / n
-    denom = 1.0 + z * z / n
-    centre = (p + z * z / (2.0 * n)) / denom
-    half = (z * math.sqrt(p * (1.0 - p) / n + z * z / (4.0 * n * n))) / denom
-    return (max(0.0, centre - half), min(1.0, centre + half))
 
 
 def is_pass(sa: float | None, failure_op: str | None) -> bool:
@@ -126,7 +114,7 @@ class SlotAcc:
             self.motif_class = motif_class
 
     def to_record(self) -> dict[str, float | int | str | None]:
-        ci_lo, ci_hi = wilson(self.n_pass, self.n)
+        ci_lo, ci_hi = wilson_score_interval(self.n_pass, self.n)
         return {
             "n": self.n,
             "n_pass": self.n_pass,

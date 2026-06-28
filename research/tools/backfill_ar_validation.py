@@ -22,8 +22,7 @@ import torch
 
 from research.eval.ar_validation import (
     STABLE_AR_VALIDATION_METRIC_VERSION,
-    STABLE_AR_VALIDATION_PROTOCOL,
-    ARValidationConfig,
+    make_ar_validation_config_from_args,
 )
 from research.scientist.notebook.graph_artifacts import resolve_graph_json_value
 from research.tools.check_backup_freshness import main as check_backup_freshness_main
@@ -225,19 +224,11 @@ def run(args: argparse.Namespace, out: TextIO = sys.stdout) -> int:
     conn.row_factory = sqlite3.Row
     run_id = time.strftime("ar_validation_db_backfill_%Y%m%dT%H%M%S")
     out_csv = args.out or (DEFAULT_BACKFILL_OUT_DIR / f"{run_id}.csv")
-    cfg_kwargs: dict[str, Any] = {
-        "timeout_s": float(args.timeout_s),
-        "copy_model": False if bool(args.legacy_v2) else True,
-        "protocol": "integer_v2"
-        if bool(args.legacy_v2)
-        else STABLE_AR_VALIDATION_PROTOCOL,
-        "auto_size_budget": not bool(args.legacy_v2),
-        "deterministic_episode_bank": not bool(args.legacy_v2),
-        "seed_count": 1 if bool(args.legacy_v2) else 3,
-    }
-    if args.train_steps is not None:
-        cfg_kwargs["train_steps"] = int(args.train_steps)
-    cfg = ARValidationConfig(**cfg_kwargs)
+    cfg = make_ar_validation_config_from_args(
+        legacy_v2=bool(args.legacy_v2),
+        timeout_s=float(args.timeout_s),
+        train_steps=args.train_steps,
+    )
     try:
         missing: list[str] = []
         if args.write:

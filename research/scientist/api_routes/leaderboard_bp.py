@@ -1115,6 +1115,7 @@ def register_leaderboard_routes(app, context: ApiRouteContext):
 
         resolved_entry_id = row["entry_id"]
         nb.promote_to_tier(resolved_entry_id, tier)
+        nb.flush_writes()
 
         updated = nb.conn.execute(
             "SELECT entry_id, result_id, tier, timestamp FROM leaderboard WHERE entry_id = ?",
@@ -1151,6 +1152,7 @@ def register_leaderboard_routes(app, context: ApiRouteContext):
             return jsonify({"error": "Leaderboard entry not found"}), 404
 
         nb.set_leaderboard_pin(resolved_entry_id, pinned)
+        nb.flush_writes()
         return jsonify(
             {"success": True, "entry_id": resolved_entry_id, "pinned": pinned}
         )
