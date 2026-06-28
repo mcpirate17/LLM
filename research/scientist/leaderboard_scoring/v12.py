@@ -25,6 +25,7 @@ from .ar_validation import (
     _score_ar_validation_validation_tier,
 )
 from .champion_tiny import _apply_champion_tiny_model_hard_failure_gate
+from ._utils import _first_non_none
 from .v11 import compute_composite_v11
 
 
@@ -50,9 +51,7 @@ def _v12_effective_signal(
     preferred: str,
     fallback: str,
 ) -> Optional[float]:
-    value = kw.get(preferred)
-    if value is None:
-        value = kw.get(fallback)
+    value = _first_non_none(kw.get(preferred), kw.get(fallback))
     if value is None:
         return None
     return float(value)

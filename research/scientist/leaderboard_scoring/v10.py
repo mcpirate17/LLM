@@ -26,7 +26,12 @@ from __future__ import annotations
 from typing import Any, Dict, Optional, Union
 
 from ._config import _LOSS_TIER_BD_KEYS, _UND_TIER_BD_KEYS, _V10_CONFIG
-from ._utils import _cv_penalty_multiplier, _scurve_higher_better, _scurve_lower_better
+from ._utils import (
+    _cv_penalty_multiplier,
+    _effective_probe_pair,
+    _scurve_higher_better,
+    _scurve_lower_better,
+)
 from .ar_validation import _ar_cascade_fraction
 from .generic import _compute_composite_generic
 
@@ -199,16 +204,7 @@ def compute_composite_v10(
 
     ar_legacy_timed_out = kw.get("ar_legacy_timed_out")
     effective_ar = None if ar_legacy_timed_out else kw.get("ar_legacy_auc")
-    eff_ind = (
-        kw.get("induction_intermediate_inv_auc")
-        if kw.get("induction_intermediate_inv_auc") is not None
-        else kw.get("induction_screening_auc")
-    )
-    eff_bind = (
-        kw.get("binding_intermediate_inv_auc")
-        if kw.get("binding_intermediate_inv_auc") is not None
-        else kw.get("binding_screening_auc")
-    )
+    eff_ind, eff_bind = _effective_probe_pair(kw)
 
     cap_pts, cap_bd = _score_capability_tier_v10(
         cfg,

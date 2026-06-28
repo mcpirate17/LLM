@@ -24,6 +24,7 @@ from ._config import (
     _V11_TRUST_INDUCTION_FLOOR,
     _V11_TRUST_PPL_FLOOR,
 )
+from ._utils import _effective_probe_pair
 from .champion_tiny import _apply_champion_tiny_model_hard_failure_gate
 from .v10 import compute_composite_v10
 
@@ -89,16 +90,7 @@ def _v11_trust_ceiling(
     if blimp is not None and float(blimp) >= _V11_TRUST_BLIMP_FLOOR:
         has_understanding = True
 
-    eff_ind = (
-        kw.get("induction_intermediate_inv_auc")
-        if kw.get("induction_intermediate_inv_auc") is not None
-        else kw.get("induction_screening_auc")
-    )
-    eff_bind = (
-        kw.get("binding_intermediate_inv_auc")
-        if kw.get("binding_intermediate_inv_auc") is not None
-        else kw.get("binding_screening_auc")
-    )
+    eff_ind, eff_bind = _effective_probe_pair(kw)
     has_nonlocal_binding = (
         eff_ind is not None
         and eff_bind is not None
@@ -167,16 +159,7 @@ def compute_composite_v11(
     # 2. Breakthrough multiplier — 1.2× understanding tier when both
     #    induction and binding clear their gates.  Uses v2 probes when
     #    populated, falls back to v1.
-    eff_ind = (
-        kw.get("induction_intermediate_inv_auc")
-        if kw.get("induction_intermediate_inv_auc") is not None
-        else kw.get("induction_screening_auc")
-    )
-    eff_bind = (
-        kw.get("binding_intermediate_inv_auc")
-        if kw.get("binding_intermediate_inv_auc") is not None
-        else kw.get("binding_screening_auc")
-    )
+    eff_ind, eff_bind = _effective_probe_pair(kw)
     is_breakthrough = (
         eff_ind is not None
         and eff_ind > 0.3

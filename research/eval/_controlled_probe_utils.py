@@ -2,11 +2,24 @@
 
 from __future__ import annotations
 
+from typing import Sequence
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
 from .utils import _get_tiktoken_encoder
+
+
+def dedupe_lower_words(words: Sequence[str]) -> tuple[str, ...]:
+    seen: set[str] = set()
+    out: list[str] = []
+    for word in words:
+        cleaned = word.strip().lower()
+        if cleaned and cleaned not in seen:
+            seen.add(cleaned)
+            out.append(cleaned)
+    return tuple(out)
 
 
 def encode_controlled_text(

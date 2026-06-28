@@ -15,6 +15,9 @@ from typing import Callable, Protocol, Sequence, TypeVar
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
+
+from .utils import clip_grad_norm
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +38,61 @@ def mean_auc(values: Sequence[float]) -> float:
     if not values:
         return 0.0
     return round(sum(values) / len(values), 4)
+
+
+def probe_steps_to_threshold(
+    learning_curve: Sequence[dict[str, float | int]],
+    *,
+    metric_key: str,
+    threshold: float,
+) -> int | None:
+    for row in learning_curve:
+        if float(row.get(metric_key) or 0.0) >= float(threshold):
+            return int(row["step"])
+    return None
+
+
+def probe_curve_summary(
+    learning_curve: Sequence[dict[str, float | int]],
+    *,
+    metric_key: str,
+    final_step: int,
+) -> tuple[float, float, float, float, float]:
+    if not learning_curve:
+        return 0.0, 0.0, 0.0, 0.0, 0.0
+    early = float(learning_curve[0].get(metric_key) or 0.0)
+    final = float(learning_curve[-1].get(metric_key) or 0.0)
+    best = max(float(row.get(metric_key) or 0.0) for row in learning_curve)
+    auc = sum(float(row.get(metric_key) or 0.0) for row in learning_curve) / float(
+        len(learning_curve)
+    )
+    first_step = int(learning_curve[0].get("step") or 0)
+    span = max(1, int(final_step) - first_step)
+    return early, final, best, auc, (final - early) * 100.0 / float(span)
+
+
+def next_token_train_step(
+    model: nn.Module,
+    batch: torch.Tensor,
+    optimizer: torch.optim.Optimizer,
+    *,
+    pad_id: int,
+    grad_clip: float = 1.0,
+) -> bool:
+    optimizer.zero_grad(set_to_none=True)
+    logits = model(batch)
+    targets = batch[:, 1:].contiguous()
+    pred = logits[:, :-1, :].contiguous()
+    mask = targets != int(pad_id)
+    if not bool(mask.any()):
+        return True
+    loss = F.cross_entropy(pred[mask].float(), targets[mask])
+    if not torch.isfinite(loss):
+        return False
+    loss.backward()
+    clip_grad_norm(model.parameters(), float(grad_clip))
+    optimizer.step()
+    return True
 
 
 def maybe_compile_probe_model(model: nn.Module, *, dynamic: bool) -> nn.Module:

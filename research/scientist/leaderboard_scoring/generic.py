@@ -19,6 +19,7 @@ from .components import (
     _score_understanding_v8,
 )
 from .penalties import _apply_scoring_penalties
+from ._utils import _first_non_none
 
 
 def _compute_composite_generic(
@@ -115,15 +116,13 @@ def _compute_composite_generic(
     _effective_ar_legacy_auc = None if ar_legacy_timed_out else ar_legacy_auc
     # v2 investigation probes override v1 when present. Rows pre-backfill
     # have None v2 values and keep scoring against v1 for continuity.
-    _effective_induction_screening_auc = (
-        induction_intermediate_inv_auc
-        if induction_intermediate_inv_auc is not None
-        else induction_screening_auc
+    _effective_induction_screening_auc = _first_non_none(
+        induction_intermediate_inv_auc,
+        induction_screening_auc,
     )
-    _effective_binding_screening_auc = (
-        binding_intermediate_inv_auc
-        if binding_intermediate_inv_auc is not None
-        else binding_screening_auc
+    _effective_binding_screening_auc = _first_non_none(
+        binding_intermediate_inv_auc,
+        binding_screening_auc,
     )
 
     # Score each component family

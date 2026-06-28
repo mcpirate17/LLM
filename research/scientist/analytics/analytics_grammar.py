@@ -6,6 +6,9 @@ import sqlite3
 from collections import defaultdict
 from typing import Any, Dict, List, Optional, Set, Tuple
 import numpy as np
+
+from research.stats import wilson_score_interval
+
 from ...synthesis.grammar_defaults import default_category_weights
 from ..notebook.graph_artifacts import resolve_graph_json_value
 from .frontier import pareto_mask
@@ -282,14 +285,7 @@ class _GrammarMixin:
         successes: int, total: int, z: float = 1.96
     ) -> Tuple[float, float]:
         """Wilson score interval for Bernoulli proportion."""
-        if total <= 0:
-            return (0.0, 0.0)
-        p = successes / total
-        z2 = z * z
-        denom = 1.0 + z2 / total
-        center = (p + z2 / (2.0 * total)) / denom
-        margin = z * math.sqrt((p * (1.0 - p) + z2 / (4.0 * total)) / total) / denom
-        return (max(0.0, center - margin), min(1.0, center + margin))
+        return wilson_score_interval(successes, total, z=z)
 
     @staticmethod
     def _two_prop_pvalue(

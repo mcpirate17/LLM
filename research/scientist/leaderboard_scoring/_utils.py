@@ -56,6 +56,23 @@ def _first_present(metrics: Dict[str, Any], *names: str) -> tuple[str, Any]:
     return names[0], None
 
 
+def _first_non_none(preferred: Optional[Any], fallback: Optional[Any]) -> Optional[Any]:
+    return preferred if preferred is not None else fallback
+
+
+def _effective_probe_pair(metrics: Dict[str, Any]) -> tuple[Any, Any]:
+    return (
+        _first_non_none(
+            metrics.get("induction_intermediate_inv_auc"),
+            metrics.get("induction_screening_auc"),
+        ),
+        _first_non_none(
+            metrics.get("binding_intermediate_inv_auc"),
+            metrics.get("binding_screening_auc"),
+        ),
+    )
+
+
 def _truthy_flag(value: Any) -> bool:
     if isinstance(value, str):
         return value.strip().lower() in {"1", "true", "yes", "y", "on"}
