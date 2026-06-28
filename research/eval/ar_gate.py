@@ -39,7 +39,7 @@ from research.eval.ar_gate_corpus import (
     build_corpus,
     query_prompt,
 )
-from research.eval._probe_utils import safe_deepcopy_module
+from research.eval._probe_utils import next_token_train_step, safe_deepcopy_module
 from research.tools.nano_corpus_v0 import ADJECTIVES
 
 logger = logging.getLogger(__name__)
@@ -282,24 +282,7 @@ def _train_one_batch(
     batch: torch.Tensor,
     opt: torch.optim.Optimizer,
 ) -> bool:
-    import torch.nn.functional as F
-
-    from research.eval.utils import clip_grad_norm
-
-    opt.zero_grad(set_to_none=True)
-    logits = model(batch)
-    targets = batch[:, 1:].contiguous()
-    pred = logits[:, :-1, :].contiguous()
-    mask = targets != PAD_ID
-    if not bool(mask.any()):
-        return True
-    loss = F.cross_entropy(pred[mask].float(), targets[mask])
-    if not torch.isfinite(loss):
-        return False
-    loss.backward()
-    clip_grad_norm(model.parameters(), 1.0)
-    opt.step()
-    return True
+    return next_token_train_step(model, batch, opt, pad_id=PAD_ID)
 
 
 @torch.no_grad()

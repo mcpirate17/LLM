@@ -39,7 +39,11 @@ from typing import Any, Sequence
 import torch
 import torch.nn as nn
 
-from ._controlled_probe_utils import encode_controlled_text, next_token_loss
+from ._controlled_probe_utils import (
+    dedupe_lower_words as _dedupe_lower,
+    encode_controlled_text as _encode_text,
+    next_token_loss,
+)
 from .choice_scoring import concat_choice_tokens, grouped_choice_scores
 from .utils import _get_tiktoken_encoder, clip_grad_norm, make_adamw
 
@@ -182,17 +186,6 @@ class NanoControlledHoldoutResult:
         }
 
 
-def _dedupe_lower(words: Sequence[str]) -> tuple[str, ...]:
-    seen: set[str] = set()
-    out: list[str] = []
-    for word in words:
-        cleaned = word.strip().lower()
-        if cleaned and cleaned not in seen:
-            seen.add(cleaned)
-            out.append(cleaned)
-    return tuple(out)
-
-
 @lru_cache(maxsize=8)
 def _tokenizer_word_bank(
     target_size: int,
@@ -226,21 +219,6 @@ def _tokenizer_word_bank(
         if len(words) >= cap:
             break
     return tuple(words[:cap])
-
-
-def _encode_text(
-    text: str,
-    *,
-    vocab_size: int,
-    tokenizer: str,
-    tiktoken_encoding: str,
-) -> tuple[int, ...]:
-    return encode_controlled_text(
-        text,
-        vocab_size=vocab_size,
-        tokenizer=tokenizer,
-        tiktoken_encoding=tiktoken_encoding,
-    )
 
 
 def _filter_encodable(

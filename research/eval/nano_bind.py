@@ -38,6 +38,7 @@ from typing import Any
 
 import torch
 
+from research.eval._probe_utils import next_token_train_step
 from research.scientist.native_runner import compile_model_native_first as compile_model
 from research.synthesis.serializer import graph_from_json
 from research.tools.nano_corpus_v0 import (
@@ -198,28 +199,12 @@ def _train_one_step(
     batch_size: int,
 ) -> bool:
     """One AdamW step.  Returns False on non-finite loss."""
-    import torch.nn.functional as F
-    from research.eval.utils import clip_grad_norm
-
     n = train_ids.shape[0]
     idx = torch.randint(
         0, n, (int(batch_size),), generator=rng, device=train_ids.device
     )
     batch = train_ids.index_select(0, idx)
-    opt.zero_grad(set_to_none=True)
-    logits = model(batch)
-    targets = batch[:, 1:].contiguous()
-    pred = logits[:, :-1, :].contiguous()
-    mask = targets != PAD_ID
-    if not bool(mask.any()):
-        return True
-    loss = F.cross_entropy(pred[mask].float(), targets[mask])
-    if not torch.isfinite(loss):
-        return False
-    loss.backward()
-    clip_grad_norm(model.parameters(), 1.0)
-    opt.step()
-    return True
+    return next_token_train_step(model, batch, opt, pad_id=PAD_ID)
 
 
 @torch.no_grad()

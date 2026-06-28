@@ -25,7 +25,11 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from ._probe_runtime import disable_native_probe_dispatch
-from ._probe_utils import safe_deepcopy_module
+from ._probe_utils import (
+    probe_curve_summary,
+    probe_steps_to_threshold,
+    safe_deepcopy_module,
+)
 from .utils import chance_lift, clip01, clip_grad_norm, make_adamw, model_vocab_size
 
 BINDING_MULTISLOT_METRIC_VERSION = "binding_multislot_probe_v4_three_slot"
@@ -447,16 +451,6 @@ def _train_one_batch(
     return loss.detach()
 
 
-def _steps_to_threshold(
-    learning_curve: list[dict[str, float | int]],
-    threshold: float,
-) -> int | None:
-    for row in learning_curve:
-        if float(row.get("held_entity_slot_acc") or 0.0) >= float(threshold):
-            return int(row["step"])
-    return None
-
-
 def _two_plus_chance(slot_chance: float, query_slots: int) -> float:
     n = max(0, int(query_slots))
     p = clip01(slot_chance)
@@ -465,23 +459,6 @@ def _two_plus_chance(slot_chance: float, query_slots: int) -> float:
     p0 = (1.0 - p) ** n
     p1 = n * p * ((1.0 - p) ** (n - 1))
     return max(0.0, min(1.0, 1.0 - p0 - p1))
-
-
-def _curve_summary(
-    learning_curve: list[dict[str, float | int]],
-    steps_done: int,
-) -> tuple[float, float, float, float, float]:
-    if not learning_curve:
-        return 0.0, 0.0, 0.0, 0.0, 0.0
-    early = float(learning_curve[0].get("held_entity_slot_acc") or 0.0)
-    final = float(learning_curve[-1].get("held_entity_slot_acc") or 0.0)
-    best = max(float(row.get("held_entity_slot_acc") or 0.0) for row in learning_curve)
-    auc = sum(
-        float(row.get("held_entity_slot_acc") or 0.0) for row in learning_curve
-    ) / float(len(learning_curve))
-    first_step = int(learning_curve[0].get("step") or 0)
-    span = max(1, int(steps_done) - first_step)
-    return early, final, best, auc, (final - early) * 100.0 / float(span)
 
 
 def _score(
@@ -717,7 +694,11 @@ def binding_multislot_probe(
         class_chance = 0.5
         two_plus_chance = _two_plus_chance(slot_chance, int(cfg.query_slots))
         all_slots_chance = slot_chance ** int(cfg.query_slots)
-        early, final, best, auc, slope = _curve_summary(learning_curve, steps_done)
+        early, final, best, auc, slope = probe_curve_summary(
+            learning_curve,
+            metric_key="held_entity_slot_acc",
+            final_step=steps_done,
+        )
         improvement = final - early
         held_slot_lift = chance_lift(held_slot, slot_chance)
         held_class_lift = chance_lift(held_class, class_chance)
@@ -755,9 +736,10 @@ def binding_multislot_probe(
             auc=round(auc, 4),
             auc_lift=round(auc_lift, 4),
             learning_curve=learning_curve,
-            steps_to_threshold=_steps_to_threshold(
+            steps_to_threshold=probe_steps_to_threshold(
                 learning_curve,
-                float(cfg.threshold),
+                metric_key="held_entity_slot_acc",
+                threshold=float(cfg.threshold),
             ),
             score=_score(
                 held_slot_lift,

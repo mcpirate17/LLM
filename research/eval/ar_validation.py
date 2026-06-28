@@ -267,6 +267,27 @@ def stable_ar_validation_config(
     )
 
 
+def make_ar_validation_config_from_args(
+    *,
+    legacy_v2: bool,
+    timeout_s: float,
+    train_steps: int | None = None,
+) -> ARValidationConfig:
+    cfg_kwargs: dict[str, Any] = {
+        "timeout_s": float(timeout_s),
+        "copy_model": not bool(legacy_v2),
+        "protocol": "integer_v2"
+        if bool(legacy_v2)
+        else STABLE_AR_VALIDATION_PROTOCOL,
+        "auto_size_budget": not bool(legacy_v2),
+        "deterministic_episode_bank": not bool(legacy_v2),
+        "seed_count": 1 if bool(legacy_v2) else DEFAULT_STABLE_SEED_COUNT,
+    }
+    if train_steps is not None:
+        cfg_kwargs["train_steps"] = int(train_steps)
+    return ARValidationConfig(**cfg_kwargs)
+
+
 def resolve_stable_ar_validation_config(
     cfg: ARValidationConfig,
     *,

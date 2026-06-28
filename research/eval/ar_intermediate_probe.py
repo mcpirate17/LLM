@@ -40,7 +40,11 @@ from ._kv_pair import (
     train_kv_one_batch,
 )
 from ._probe_runtime import disable_native_probe_dispatch
-from ._probe_utils import safe_deepcopy_module
+from ._probe_utils import (
+    probe_curve_summary,
+    probe_steps_to_threshold,
+    safe_deepcopy_module,
+)
 from .associative_recall import _get_special_tokens
 from .utils import chance_lift, clip01, make_adamw, model_vocab_size
 
@@ -156,35 +160,6 @@ def build_ar_intermediate_pair_table(
         n_held_pairs=int(cfg.n_held_pairs),
         pairs_per_example=int(cfg.pairs_per_example),
     )
-
-
-def _steps_to_threshold(
-    learning_curve: list[dict[str, float | int]],
-    threshold: float,
-) -> int | None:
-    for row in learning_curve:
-        if float(row.get("held_pair_acc") or 0.0) >= float(threshold):
-            return int(row["step"])
-    return None
-
-
-def _curve_summary(
-    learning_curve: list[dict[str, float | int]],
-    *,
-    final_step: int,
-) -> tuple[float, float, float, float, float]:
-    if not learning_curve:
-        return 0.0, 0.0, 0.0, 0.0, 0.0
-    early = float(learning_curve[0].get("held_pair_acc") or 0.0)
-    final = float(learning_curve[-1].get("held_pair_acc") or 0.0)
-    best = max(float(row.get("held_pair_acc") or 0.0) for row in learning_curve)
-    auc = sum(float(row.get("held_pair_acc") or 0.0) for row in learning_curve) / float(
-        len(learning_curve)
-    )
-    first_step = int(learning_curve[0].get("step") or 0)
-    span = max(1, int(final_step) - first_step)
-    improvement = final - early
-    return early, final, best, auc, improvement * 100.0 / float(span)
 
 
 def _score(
@@ -324,8 +299,9 @@ def ar_intermediate_probe(
         error = loop_result.error
         pair_chance = 1.0 / float(table.value_hi - table.value_lo)
         class_chance = 1.0 / float(table.n_value_classes)
-        early, final, best, auc, slope = _curve_summary(
+        early, final, best, auc, slope = probe_curve_summary(
             learning_curve,
+            metric_key="held_pair_acc",
             final_step=steps_done,
         )
         improvement = final - early
@@ -336,7 +312,11 @@ def ar_intermediate_probe(
             early,
             pair_chance,
         )
-        threshold_step = _steps_to_threshold(learning_curve, float(cfg.threshold))
+        threshold_step = probe_steps_to_threshold(
+            learning_curve,
+            metric_key="held_pair_acc",
+            threshold=float(cfg.threshold),
+        )
         return ARIntermediateResult(
             train_pair_acc=round(train_acc, 4),
             held_pair_acc=round(held_pair, 4),

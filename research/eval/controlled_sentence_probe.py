@@ -35,7 +35,11 @@ from ._real_word_vocab import (
     REAL_WORD_VERBS,
 )
 from .choice_scoring import concat_choice_tokens, grouped_choice_scores
-from ._controlled_probe_utils import encode_controlled_text, next_token_loss
+from ._controlled_probe_utils import (
+    dedupe_lower_words as _dedupe,
+    encode_controlled_text as _encode_text,
+    next_token_loss,
+)
 from .utils import _get_tiktoken_encoder, clip_grad_norm, make_adamw
 
 logger = logging.getLogger(__name__)
@@ -139,17 +143,6 @@ class ControlledSentenceResult:
             "controlled_sentence_tokenizer": self.tokenizer,
             "controlled_sentence_tiktoken_encoding": self.tiktoken_encoding,
         }
-
-
-def _dedupe(words: Sequence[str]) -> tuple[str, ...]:
-    seen: set[str] = set()
-    out: list[str] = []
-    for word in words:
-        cleaned = word.strip().lower()
-        if cleaned and cleaned not in seen:
-            seen.add(cleaned)
-            out.append(cleaned)
-    return tuple(out)
 
 
 def _words(text: str) -> tuple[str, ...]:
@@ -429,21 +422,6 @@ def _tokenizer_word_bank(
         if len(words) >= target:
             break
     return tuple(words[:target])
-
-
-def _encode_text(
-    text: str,
-    *,
-    vocab_size: int,
-    tokenizer: str,
-    tiktoken_encoding: str,
-) -> tuple[int, ...]:
-    return encode_controlled_text(
-        text,
-        vocab_size=vocab_size,
-        tokenizer=tokenizer,
-        tiktoken_encoding=tiktoken_encoding,
-    )
 
 
 def _filter_encodable_words(
