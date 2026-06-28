@@ -6,7 +6,8 @@ from typing import Any, Dict, List
 from fastapi import HTTPException
 
 from . import database as db
-from .runtime_features import HAS_BRIDGE, bridge_component_capability
+from . import runtime_features as _rf
+from .runtime_features import HAS_BRIDGE
 
 logger = logging.getLogger(__name__)
 
@@ -82,7 +83,7 @@ def require_feature(flag: bool, name: str) -> None:
 def _collect_workflow_semantic_warnings(
     workflow_json: Dict[str, Any],
 ) -> List[Dict[str, Any]]:
-    if not (HAS_BRIDGE and bridge_component_capability):
+    if not (HAS_BRIDGE and _rf.bridge_component_capability):
         return []
     warnings: List[Dict[str, Any]] = []
     seen: set[tuple[str, str, str]] = set()
@@ -92,7 +93,7 @@ def _collect_workflow_semantic_warnings(
         if not component_type:
             continue
         try:
-            cap = bridge_component_capability(component_type)
+            cap = _rf.bridge_component_capability(component_type)
         except Exception:
             logger.debug(
                 "Failed to get capability for component %s",

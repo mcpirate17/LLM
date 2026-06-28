@@ -10,7 +10,8 @@ from .. import database as db
 from ..aria_patch_postprocess import postprocess_patched_workflow
 from ..models import ApplyPatchRequest, utc_now_iso as _utc_now
 from ..patcher import apply_patch_ops
-from ..runtime_features import HAS_BRIDGE, bridge_validate
+from .. import runtime_features as _rf
+from ..runtime_features import HAS_BRIDGE
 from ..type_utils import dig, safe_str
 from ..workflow_support import (
     _require_proposal,
@@ -136,7 +137,7 @@ def _validate_patched_workflow(
 ) -> Optional[Dict[str, Any]]:
     if not HAS_BRIDGE:
         return None
-    validation_info = bridge_validate(patched_workflow, model_dim=model_dim)
+    validation_info = _rf.bridge_validate(patched_workflow, model_dim=model_dim)
     if not validation_info.get("valid", False):
         raise HTTPException(
             status_code=422,

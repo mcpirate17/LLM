@@ -12,27 +12,10 @@ from aria_designer.component_identity import canonicalize_workflow_ids
 from ..models import utc_now_iso as _utc_now, CompileWorkflowRequest
 from ..workflow_support import collect_unresolved_nodes, get_approved_registry_ids
 
-# Optional runtime imports
-try:
-    from aria_designer.runtime.importer import import_survivors, import_single
-
-    HAS_IMPORTER = True
-except ImportError:
-    try:
-        from aria_designer.runtime.importer import import_survivors, import_single
-
-        HAS_IMPORTER = True
-    except ImportError:
-        import_survivors = import_single = None
-        HAS_IMPORTER = False
-
-try:
-    from aria_designer.runtime.export import export_onnx
-except ImportError:
-    try:
-        from aria_designer.runtime.export import export_onnx
-    except ImportError:
-        export_onnx = None
+# Optional runtime imports — resolved lazily so importing this router (server
+# startup) no longer pulls torch via aria_designer.runtime.importer/export.
+from .. import runtime_features as _rf
+from ..runtime_features import HAS_IMPORTER
 
 logger = logging.getLogger(__name__)
 
@@ -77,7 +60,7 @@ def get_survivors(
     if not HAS_IMPORTER:
         raise HTTPException(status_code=501, detail="Importer not available")
     try:
-        survivors = import_survivors(n=n, sort_by=sort_by, min_novelty=min_novelty)
+        survivors = _rf.import_survivors(n=n, sort_by=sort_by, min_novelty=min_novelty)
         survivors = [
             _canonicalize_imported_workflow(dict(s), strict=False) for s in survivors
         ]
@@ -100,7 +83,7 @@ def import_survivor(result_id: str) -> Dict[str, Any]:
     if not HAS_IMPORTER:
         raise HTTPException(status_code=501, detail="Importer not available")
     try:
-        wf = import_single(result_id)
+        wf = _rf.import_single(result_id)
     except (ValueError, FileNotFoundError) as e:
         raise HTTPException(status_code=404, detail=str(e))
     wf = _canonicalize_imported_workflow(wf, strict=False)
@@ -137,14 +120,14 @@ def post_install_component(component_id: str) -> Dict[str, Any]:
 
 @router.post("/export/onnx")
 def export_workflow_onnx(req: CompileWorkflowRequest) -> Any:
-    if not export_onnx:
+    if not _rf.export_onnx:
         raise HTTPException(status_code=501, detail="ONNX export not available")
 
     try:
         components_dir = os.path.abspath(
             os.path.join(os.path.dirname(__file__), "..", "..", "..", "components")
         )
-        onnx_bytes = export_onnx(req.workflow.model_dump(), components_dir)
+        onnx_bytes = _rf.export_onnx(req.workflow.model_dump(), components_dir)
         # Return as downloadable file
         from fastapi.responses import Response
 

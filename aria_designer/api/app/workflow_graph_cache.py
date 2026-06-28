@@ -2,10 +2,10 @@ from __future__ import annotations
 
 from collections import OrderedDict
 from dataclasses import dataclass
-from typing import Any, Dict
+from typing import TYPE_CHECKING, Any, Dict
 
-from research.synthesis.graph import ComputationGraph
-from research.synthesis.workflow_converter import workflow_to_computation_graph
+if TYPE_CHECKING:  # annotation only (PEP 563) — avoids loading torch at import
+    from research.synthesis.graph import ComputationGraph
 
 _MAX_CACHE_ENTRIES = 32
 
@@ -35,6 +35,10 @@ def materialize_workflow_graph(
     conversion when the same in-memory payload is reused across a save/evaluate
     request path.
     """
+
+    # Lazy import: keeps torch (research.synthesis stack) off the server-startup
+    # path; loaded only when a workflow is first materialized.
+    from research.synthesis.workflow_converter import workflow_to_computation_graph
 
     model_dim = int(model_dim)
     key = (id(workflow), model_dim)

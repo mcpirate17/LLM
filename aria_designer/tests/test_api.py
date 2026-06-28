@@ -6,25 +6,6 @@ import tempfile
 from pathlib import Path
 
 import pytest
-from fastapi.testclient import TestClient
-
-
-@pytest.fixture(scope="module")
-def client():
-    """Create test client with temporary database."""
-    from aria_designer.api.app import database as db
-    from aria_designer.api.app.main import app
-
-    with tempfile.TemporaryDirectory() as tmpdir:
-        db.init_db(Path(tmpdir) / "test.db")
-        # Load components
-        from aria_designer.api.app.loader import scan_and_load
-
-        count = scan_and_load()
-        assert count > 0, "No components loaded"
-
-        with TestClient(app) as c:
-            yield c
 
 
 def test_health(client):
@@ -1148,8 +1129,10 @@ def _patch_ai_learning_eval(monkeypatch, captured):
     from aria_designer.api.app import shared_api as shared_mod
 
     monkeypatch.setattr(eval_mod, "HAS_BRIDGE", True)
+    # eval router resolves bridge_evaluate lazily via runtime_features (_rf), so
+    # patch it there rather than on the router module.
     monkeypatch.setattr(
-        eval_mod,
+        eval_mod._rf,
         "bridge_evaluate",
         lambda *args, **kwargs: _FakeAiLearningBridgeResult(),
     )

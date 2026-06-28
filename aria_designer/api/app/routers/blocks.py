@@ -6,16 +6,8 @@ from fastapi import APIRouter, HTTPException, Query
 
 from .. import database as db
 from ..models import WorkflowGraphModel, ValidateWorkflowRequest
-from ..runtime_features import (
-    extract_block,
-    expand_block,
-    list_builtin_blocks,
-    BUILTIN_BLOCKS,
-    HAS_SUBGRAPH,
-    check_compatibility,
-    compute_palette_constraints,
-    HAS_CONSTRAINTS,
-)
+from .. import runtime_features as _rf
+from ..runtime_features import HAS_CONSTRAINTS, HAS_SUBGRAPH
 
 router = APIRouter(prefix="/api/v1", tags=["blocks", "constraints"])
 
@@ -29,7 +21,7 @@ def get_builtin_blocks(
         raise HTTPException(
             status_code=501, detail="Subgraph composition not available"
         )
-    return list_builtin_blocks(model_dim=model_dim)
+    return _rf.list_builtin_blocks(model_dim=model_dim)
 
 
 @router.get("/blocks/builtin/{block_key}")
@@ -41,7 +33,7 @@ def get_builtin_block(
         raise HTTPException(
             status_code=501, detail="Subgraph composition not available"
         )
-    factory = BUILTIN_BLOCKS.get(block_key)
+    factory = _rf.BUILTIN_BLOCKS.get(block_key)
     if factory is None:
         raise HTTPException(status_code=404, detail=f"Block '{block_key}' not found")
     return factory(model_dim=model_dim)
@@ -59,7 +51,7 @@ def extract_block_endpoint(
             status_code=501, detail="Subgraph composition not available"
         )
     wf = workflow.model_dump()
-    block, modified_wf = extract_block(wf, set(node_ids), block_name)
+    block, modified_wf = _rf.extract_block(wf, set(node_ids), block_name)
     return {"block": block, "modified_workflow": modified_wf}
 
 
@@ -76,7 +68,7 @@ def expand_block_endpoint(
         )
     wf = workflow.model_dump()
     try:
-        expanded = expand_block(wf, block_node_id, block)
+        expanded = _rf.expand_block(wf, block_node_id, block)
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
     return expanded
@@ -91,7 +83,7 @@ def check_constraints_endpoint(
     if not HAS_CONSTRAINTS:
         raise HTTPException(status_code=501, detail="Constraints module not available")
     wf = req.workflow.model_dump()
-    return check_compatibility(wf, candidate_id)
+    return _rf.check_compatibility(wf, candidate_id)
 
 
 @router.post("/constraints/palette")
@@ -105,6 +97,6 @@ def palette_constraints_endpoint(
     # Get all approved component IDs
     all_components = db.list_components(status="approved")
     component_ids = [c["id"] for c in all_components]
-    return compute_palette_constraints(
+    return _rf.compute_palette_constraints(
         wf, component_ids, selected_node_id=req.selected_node_id
     )

@@ -24,14 +24,8 @@ from ..perf_support import (
     designer_metrics_from_stages,
 )
 from ..research_sync import _sync_lineage_to_research
-from ..runtime_features import (
-    HAS_BRIDGE,
-    HAS_PROFILER,
-    _RESEARCH_ROOT,
-    bridge_analyze_compression,
-    bridge_analyze_routing,
-    bridge_evaluate,
-)
+from .. import runtime_features as _rf
+from ..runtime_features import HAS_BRIDGE, HAS_PROFILER, _RESEARCH_ROOT
 from ..workflow_support import _collect_workflow_semantic_warnings, _require_run
 from ..workflow_graph_cache import materialize_workflow_graph
 from research.defaults import MODEL_DIM, VOCAB_SIZE
@@ -264,7 +258,7 @@ async def _stage_sandbox(
 
 async def _stage_routing(model: Any, graph: Any, cg_to_aria: dict) -> dict:
     """Stage 4.5 -- routing analysis (Phase 5.1 live-sync)."""
-    rt_results = await asyncio.to_thread(bridge_analyze_routing, model, graph)
+    rt_results = await asyncio.to_thread(_rf.bridge_analyze_routing, model, graph)
     mapped_rt = [
         {**entry, "aria_node_id": cg_to_aria.get(entry.get("node_id"))}
         for entry in rt_results
@@ -278,7 +272,7 @@ async def _stage_compression(
 ) -> dict:
     """Stage 5 -- compression / efficiency analysis."""
     comp_result = await asyncio.to_thread(
-        bridge_analyze_compression,
+        _rf.bridge_analyze_compression,
         model,
         graph,
         vocab_size=vocab_size,
@@ -406,7 +400,7 @@ async def _run_fatal_stage(
 
 
 async def _run_routing_stage_events(model, graph, cg_to_aria, ctx: "_EvalRunContext"):
-    if not bridge_analyze_routing:
+    if not _rf.bridge_analyze_routing:
         return
     yield _sse_stage("routing", "running")
     t0 = _time_mod.monotonic()
@@ -597,7 +591,7 @@ class _EvalRunContext:
 
 
 def _direct_eval_metrics(result_dict: dict) -> Dict[str, Any]:
-    """Flatten bridge_evaluate() output into `designer_interactive` metrics."""
+    """Flatten _rf.bridge_evaluate() output into `designer_interactive` metrics."""
     return {
         "total_time_ms": safe_float(result_dict.get("total_time_ms")),
         "compile_time_ms": safe_float(result_dict.get("compile_time_ms")),
@@ -611,7 +605,7 @@ def _direct_eval_metrics(result_dict: dict) -> Dict[str, Any]:
 
 
 def _run_direct_bridge_eval(wf: dict, budget: dict) -> dict:
-    result = bridge_evaluate(
+    result = _rf.bridge_evaluate(
         wf,
         model_dim=budget.get("model_dim", MODEL_DIM),
         vocab_size=budget.get("vocab_size", VOCAB_SIZE),

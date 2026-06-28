@@ -15,7 +15,8 @@ from ..models import (
 )
 from ..loader import scan_and_load, COMPONENTS_ROOT
 from ..property_audit import audit_components
-from ..runtime_features import HAS_BRIDGE, bridge_component_capability
+from .. import runtime_features as _rf
+from ..runtime_features import HAS_BRIDGE
 from ..workflow_support import _require_component
 
 logger = logging.getLogger(__name__)
@@ -109,9 +110,9 @@ def get_component_execution_capability(component_id: str) -> Dict[str, Any]:
         "execution_class": "unknown",
         "reason": "Research bridge unavailable in this environment.",
     }
-    if HAS_BRIDGE and bridge_component_capability:
+    if HAS_BRIDGE and _rf.bridge_component_capability:
         try:
-            bridge_info = bridge_component_capability(component_type)
+            bridge_info = _rf.bridge_component_capability(component_type)
         except Exception as exc:
             bridge_info = {
                 "bridge_supported": False,
@@ -147,8 +148,8 @@ def get_bridge_gap_report() -> Dict[str, Any]:
         category = comp.get("category", "")
         ctype = f"{category}/{cid}" if category else str(cid)
         cap = (
-            bridge_component_capability(ctype)
-            if HAS_BRIDGE and bridge_component_capability
+            _rf.bridge_component_capability(ctype)
+            if HAS_BRIDGE and _rf.bridge_component_capability
             else {
                 "bridge_supported": False,
                 "execution_class": "unknown",

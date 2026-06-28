@@ -31,17 +31,8 @@ from ..research_sync import (
     _auto_promote_workflow_to_research,
     _sync_lineage_to_research,
 )
-from ..runtime_features import (
-    HAS_BRIDGE,
-    HAS_PROFILER,
-    KernelDispatcher,
-    bridge_estimate,
-    bridge_list_primitives,
-    bridge_profile,
-    bridge_validate,
-    find_unsupported_edge_dtype_pairings,
-    runtime_compile,
-)
+from .. import runtime_features as _rf
+from ..runtime_features import HAS_BRIDGE, HAS_PROFILER
 from ..workflow_support import (
     _collect_workflow_semantic_warnings,
     _require_run,
@@ -173,8 +164,8 @@ def _check_dtype_compatibility(
     issues: List[ValidationIssue],
 ) -> None:
     """Validate manifest-port dtype compatibility for all edges."""
-    if find_unsupported_edge_dtype_pairings is not None:
-        dtype_issues = find_unsupported_edge_dtype_pairings(
+    if _rf.find_unsupported_edge_dtype_pairings is not None:
+        dtype_issues = _rf.find_unsupported_edge_dtype_pairings(
             workflow_payload,
             lambda component_type: db.get_component(component_type),
         )
@@ -281,9 +272,9 @@ def validate_workflow(req: ValidateWorkflowRequest) -> ValidateWorkflowResponse:
     _check_dead_branches(workflow, node_ids, issues)
 
     # Cycle detection and graph structure using native C validator if available
-    if KernelDispatcher:
+    if _rf.KernelDispatcher:
         try:
-            dispatcher = KernelDispatcher()
+            dispatcher = _rf.KernelDispatcher()
             node_ids_list = [node.id for node in workflow.nodes]
             node_to_idx = {nid: i for i, nid in enumerate(node_ids_list)}
             c_edges = []
@@ -322,7 +313,7 @@ def validate_workflow(req: ValidateWorkflowRequest) -> ValidateWorkflowResponse:
 @router.post("/workflows/compile")
 def compile_workflow(req: CompileWorkflowRequest) -> Dict[str, Any]:
     semantic_warnings = _collect_workflow_semantic_warnings(req.workflow.model_dump())
-    if runtime_compile is None:
+    if _rf.runtime_compile is None:
         return {
             "compiled": False,
             "error": "Runtime compiler not available",
@@ -335,7 +326,7 @@ def compile_workflow(req: CompileWorkflowRequest) -> Dict[str, Any]:
         components_dir = os.path.abspath(
             os.path.join(os.path.dirname(__file__), "..", "..", "..", "components")
         )
-        model = runtime_compile(req.workflow.model_dump(), components_dir)
+        model = _rf.runtime_compile(req.workflow.model_dump(), components_dir)
 
         return {
             "compiled": True,
@@ -369,14 +360,14 @@ def compile_workflow(req: CompileWorkflowRequest) -> Dict[str, Any]:
 @router.post("/workflows/preview")
 def preview_workflow(req: CompileWorkflowRequest) -> Dict[str, Any]:
     """Run a forward pass with dummy data and return intermediate shapes/stats."""
-    if not runtime_compile:
+    if not _rf.runtime_compile:
         return {"error": "Runtime not available"}
 
     try:
         components_dir = os.path.abspath(
             os.path.join(os.path.dirname(__file__), "..", "..", "..", "components")
         )
-        model = runtime_compile(req.workflow.model_dump(), components_dir)
+        model = _rf.runtime_compile(req.workflow.model_dump(), components_dir)
 
         # Generate dummy inputs
         inputs = {}
@@ -591,7 +582,7 @@ def profile_workflow_endpoint(req: RunWorkflowRequest) -> Dict[str, Any]:
     require_feature(HAS_PROFILER, "Profiler")
     wf = req.workflow.model_dump()
     budget = req.budget
-    report = bridge_profile(
+    report = _rf.bridge_profile(
         wf,
         model_dim=budget.get("model_dim", MODEL_DIM),
         device=budget.get("device", "cpu"),
@@ -624,14 +615,14 @@ def validate_workflow_graph_endpoint(req: ValidateWorkflowRequest) -> Dict[str, 
     """Validate that a workflow maps to a valid ComputationGraph in the research pipeline."""
     require_feature(HAS_BRIDGE, "Research bridge")
     wf = req.workflow.model_dump()
-    return bridge_validate(wf, model_dim=req.workflow.metadata.get("model_dim", 256))
+    return _rf.bridge_validate(wf, model_dim=req.workflow.metadata.get("model_dim", 256))
 
 
 @router.get("/primitives")
 def list_primitives() -> List[Dict[str, Any]]:
     """List all available primitives from the research pipeline."""
     require_feature(HAS_BRIDGE, "Research bridge")
-    return bridge_list_primitives()
+    return _rf.bridge_list_primitives()
 
 
 @router.post("/workflows/estimate")
@@ -641,7 +632,7 @@ def estimate_workflow(req: ValidateWorkflowRequest) -> Dict[str, Any]:
     if HAS_BRIDGE:
         wf = req.workflow.model_dump()
         model_dim = req.workflow.metadata.get("model_dim", 256)
-        result = bridge_estimate(wf, model_dim=model_dim)
+        result = _rf.bridge_estimate(wf, model_dim=model_dim)
         result["workflow_id"] = req.workflow.workflow_id
         result["node_count"] = len(req.workflow.nodes)
         result["edge_count"] = len(req.workflow.edges)
