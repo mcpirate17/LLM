@@ -11,7 +11,7 @@ set -u
 
 CHAIN_LOG="/home/tim/Projects/LLM/research/reports/orchestrator/chain.log"
 STATUS_PATH="/home/tim/Projects/LLM/research/reports/orchestrator/orchestrator.status.json"
-HAPPY_PATH="/home/tim/Projects/LLM/happy_times.py"
+HAPPY_PATH="/home/tim/Projects/LLM/research/tools/happy_times.py"
 ORCH_PROCESS_PATTERN="research.tools.tier_orchestrator"
 
 # Batch 2 fps (top 20 by composite, missing capability rankers, distinct from batch 1)

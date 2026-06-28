@@ -166,14 +166,6 @@ def _load_top_graphs(n: int):
     return _load_graphs_by_fingerprint(TOP_AR_FPS[:n])
 
 
-def _load_cross_bias_graphs(n: int):
-    return _load_graphs_by_fingerprint(CROSS_BIAS_FPS[:n])
-
-
-def _load_routed_compress_graphs(n: int):
-    return _load_graphs_by_fingerprint(ROUTED_COMPRESS_FPS[:n])
-
-
 # 2026-05-21: ops whose input gets a `rope_rotate` injected when a graph passes
 # through `_inject_rope_before_ops` — anything `attention`-shaped where Q/K
 # scoring would benefit from explicit positional info. `selective_scan` and

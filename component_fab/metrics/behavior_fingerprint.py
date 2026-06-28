@@ -22,7 +22,6 @@ Two consumers (per the plan):
 from __future__ import annotations
 
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any, Sequence
 
 import numpy as np
@@ -32,7 +31,6 @@ from ..improver.ranking import (
     learning_subscore,
     state_tracking_subscore,
 )
-from ..state.ledger import DEFAULT_LEDGER_PATH, iter_jsonl_records, latest_by_key
 
 # Ordered fingerprint dimensions — the vector layout. Stable scalars only.
 FINGERPRINT_KEYS: tuple[str, ...] = (
@@ -183,19 +181,3 @@ FRONTIER_SPECTRA: dict[str, dict[str, float]] = {
         "range_effective_distance": 256,
     },
 }
-
-
-def catalog_from_ledger(
-    ledger_path: Path | str = DEFAULT_LEDGER_PATH,
-    *,
-    include_frontier: bool = True,
-) -> list[dict[str, float]]:
-    """Operational spectra for every graded ledger entry (latest per id)."""
-    latest = latest_by_key(
-        (r for r in iter_jsonl_records(Path(ledger_path)) if r.get("event") == "grade"),
-        "proposal_id",
-    )
-    catalog = [spectrum_from_metadata(g.get("metadata") or {}) for g in latest.values()]
-    if include_frontier:
-        catalog.extend(FRONTIER_SPECTRA.values())
-    return catalog

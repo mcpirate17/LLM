@@ -106,16 +106,6 @@ def _fetch_remaining(
     return out
 
 
-def _normalize_feature(values: list[float]) -> list[float]:
-    if not values:
-        return []
-    lo = min(values)
-    hi = max(values)
-    if hi <= lo:
-        return [0.5] * len(values)
-    return [(v - lo) / (hi - lo) for v in values]
-
-
 def _predicted_auc_score(arch: dict[str, Any], correlations: dict[str, float]) -> float:
     """Linear weighted sum of normalized upstream features × |spearman corr|.
 

@@ -17,7 +17,7 @@ from .component_rule_engine import (
     evaluate_component_chain_rules,
     load_component_rule_set,
 )
-from .op_roles import OpRole, get_role
+from .op_roles import get_role
 from .primitives import PRIMITIVE_REGISTRY, get_wiring_rule
 
 
@@ -33,14 +33,6 @@ class ComponentRuleConfig:
     allow_terminal_restricted_consumer: bool | None = None
     max_consecutive_mixers: int | None = None
     rule_set: ComponentRuleSet | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class ComponentRuleViolation:
-    """A failed component rule."""
-
-    code: str
-    message: str
 
 
 def estimated_chain_lowered_op_count(ops: Sequence[str]) -> int:
@@ -101,16 +93,3 @@ def component_role_counts(ops: Iterable[str]) -> dict[str, int]:
         role = get_role(str(op_name)).value
         counts[role] = counts.get(role, 0) + 1
     return counts
-
-
-def _max_consecutive_role_run(chain: Sequence[str], role: OpRole) -> int:
-    max_run = 0
-    current = 0
-    for op_name in chain:
-        if get_role(op_name) is role:
-            current += 1
-            if current > max_run:
-                max_run = current
-        else:
-            current = 0
-    return max_run

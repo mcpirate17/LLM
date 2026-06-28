@@ -152,9 +152,6 @@ class MeasuredDescriptorExtractor:
         graph = graph_from_json(graph_json)
         return compile_model([graph], use_ir=False).to(self.device).eval()
 
-    def _probe_once(self, graph_json: str, seed: int) -> Optional[Dict[str, float]]:
-        return self._probe_model(self._build_from_graph(graph_json, seed), seed)
-
     def _probe_model(self, model: Any, seed: int) -> Optional[Dict[str, float]]:
         gen = torch.Generator(device=self.device).manual_seed(seed)
 

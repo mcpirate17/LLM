@@ -21,16 +21,6 @@ class ScreeningGraphAnalysis:
     toxic_bigrams: Tuple[str, ...]
     has_parameterized_op: bool
 
-    @property
-    def has_content_addressed_op(self) -> bool:
-        """Graph contains an attention-class op capable of content-based retrieval."""
-        return bool(self.op_names & CONTENT_ADDRESSED_OPS)
-
-    @property
-    def has_sequence_mixing(self) -> bool:
-        """Graph contains any op that mixes information across positions."""
-        return bool(self.op_names & SEQUENCE_MIXING_OPS)
-
 
 def analyze_graph_for_screening(
     graph: Any,

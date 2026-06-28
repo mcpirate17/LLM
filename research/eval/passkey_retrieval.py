@@ -18,10 +18,7 @@ from typing import Any, Dict, Tuple
 import torch
 import torch.nn as nn
 
-from .retrieval_eval_utils import (
-    eval_restricted_last_token_accuracy,
-    run_retrieval_probe_config,
-)
+from .retrieval_eval_utils import run_retrieval_probe_config
 
 logger = logging.getLogger(__name__)
 
@@ -106,23 +103,6 @@ def _generate_passkey_eval_set(
         return _generate_passkey_batch(n_eval, seq_len, device)
     finally:
         torch.random.set_rng_state(rng_state)
-
-
-def _eval_passkey_accuracy(
-    model: nn.Module,
-    eval_ids: torch.Tensor,
-    eval_targets: torch.Tensor,
-    batch_size: int,
-) -> float:
-    """Evaluate passkey retrieval accuracy on eval set."""
-    return eval_restricted_last_token_accuracy(
-        model,
-        eval_ids,
-        eval_targets,
-        batch_size=batch_size,
-        vocab_lo=_FILL_LO,
-        vocab_hi=_FILL_HI,
-    )
 
 
 def _train_passkey_at_length(

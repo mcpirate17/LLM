@@ -130,33 +130,11 @@ class TemporalBayesianTracker:
             store[key] = BetaPosterior()
         return store[key]
 
-    def update_op(self, op_name: str, success: bool, timestamp: float = 0.0) -> None:
-        """Update a single op's posterior with a new observation."""
-        p = self._get_or_create(self.op_posteriors, op_name)
-        if success:
-            p.alpha += 1.0
-        else:
-            p.beta += 1.0
-        p.last_updated = timestamp or time.time()
-        p.n_updates += 1
-
     def update_template(
         self, template_name: str, success: bool, timestamp: float = 0.0
     ) -> None:
         """Update a single template's posterior."""
         p = self._get_or_create(self.template_posteriors, template_name)
-        if success:
-            p.alpha += 1.0
-        else:
-            p.beta += 1.0
-        p.last_updated = timestamp or time.time()
-        p.n_updates += 1
-
-    def update_motif(
-        self, motif_name: str, success: bool, timestamp: float = 0.0
-    ) -> None:
-        """Update a single motif's posterior."""
-        p = self._get_or_create(self.motif_posteriors, motif_name)
         if success:
             p.alpha += 1.0
         else:

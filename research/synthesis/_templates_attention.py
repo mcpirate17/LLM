@@ -206,54 +206,6 @@ def tpl_attn_three_way_split(
     return _residual(graph, input_id, combined, context="attn_three_way_split.output")
 
 
-def tpl_attn_dense_cascade(
-    graph: ComputationGraph,
-    input_id: int,
-    rng: random.Random,
-    weights: MotifWeights = None,
-) -> int:
-    """norm → attention → dense_add → norm → motif → dense_add → ... → residual.
-
-    Forced-attention variant of dense_cascade. First stage is always attention,
-    remaining stages pick from all classes.
-    """
-    from ._template_helpers import _ALL_CLASSES
-
-    outputs = [input_id]
-
-    for i in range(3):
-        prev = outputs[-1]
-        norm = _pick_compatible_motif(graph, prev, rng, MOTIF_CLASS_NORM, weights)
-        normed = _instantiate_motif(graph, prev, norm, rng) if norm else prev
-
-        if i == 0:
-            # First stage: forced attention
-            motif = _pick_compatible_motif(
-                graph, normed, rng, MOTIF_CLASS_ATTENTION, weights
-            )
-        else:
-            motif = _pick_compatible_motif_from_classes(
-                graph, normed, rng, _ALL_CLASSES, weights
-            )
-
-        if motif:
-            processed = _instantiate_motif(graph, normed, motif, rng)
-            processed = _fix_dim(graph, processed)
-        else:
-            processed = normed
-
-        if i > 0 and processed != outputs[0]:
-            processed = _residual(
-                graph, outputs[0], processed, context="attn_dense_cascade.dense_add"
-            )
-        outputs.append(processed)
-
-    result = outputs[-1]
-    if result != input_id:
-        return _residual(graph, input_id, result, context="attn_dense_cascade.output")
-    return result
-
-
 def tpl_attn_conditional_compute(
     graph: ComputationGraph,
     input_id: int,

@@ -53,20 +53,6 @@ def _quality_tier_from_auc(value: float | None) -> str:
     return "weak"
 
 
-def _classification_metrics(
-    section: Dict[str, Any] | None,
-    *,
-    legacy_key: str,
-) -> Dict[str, Any]:
-    payload = section or {}
-    saved_eval = payload.get("saved_runtime_artifact_evaluation") or {}
-    selected = saved_eval.get("selected_metrics")
-    if isinstance(selected, dict) and selected:
-        return selected
-    legacy = payload.get(legacy_key)
-    return legacy if isinstance(legacy, dict) else {}
-
-
 def _evaluation_metrics(
     section: Dict[str, Any] | None,
     *,

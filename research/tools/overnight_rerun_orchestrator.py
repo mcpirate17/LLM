@@ -23,7 +23,7 @@ import requests
 DB = "/home/tim/Projects/LLM/research/runs.db"
 DASHBOARD_BASE = "http://localhost:5000"
 ARTIFACT_DIR = Path("/home/tim/Projects/LLM/research/perf_artifacts")
-HAPPY_TIMES = "/home/tim/Projects/LLM/happy_times.py"
+HAPPY_TIMES = "/home/tim/Projects/LLM/research/tools/happy_times.py"
 TOP_N = 10
 RERUNS_PER_STAGE = 2
 # Screening (replay path) is DISABLED for stability reruns: it calls

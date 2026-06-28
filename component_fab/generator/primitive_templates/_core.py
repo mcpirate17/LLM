@@ -181,12 +181,6 @@ def get_causal_bool_mask(seq_len: int, device: torch.device | str) -> torch.Tens
     return mask
 
 
-def _clear_causal_mask_cache() -> None:
-    """Drop all cached causal masks. Intended for tests and process-end cleanup."""
-    _FLOAT_MASK_CACHE.clear()
-    _BOOL_MASK_CACHE.clear()
-
-
 def _causal_sparsemax(logits: torch.Tensor) -> torch.Tensor:
     """Sparsemax along the last dim with a causal mask already baked in.
 
@@ -246,7 +240,6 @@ __all__ = [
     "_QKVRopeAttentionBase",
     "get_causal_mask",
     "get_causal_bool_mask",
-    "_clear_causal_mask_cache",
     "_causal_sparsemax",
     "_pick_n_heads",
     "_heads_for_head_dim",

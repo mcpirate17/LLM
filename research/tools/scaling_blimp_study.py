@@ -108,67 +108,6 @@ def _append_jsonl(path: Path | None, row: dict) -> None:
         fh.write(json.dumps(row, default=str, sort_keys=True) + "\n")
 
 
-def _rng_state_payload() -> dict:
-    payload: dict = {"torch": torch.get_rng_state()}
-    if torch.cuda.is_available():
-        payload["cuda"] = torch.cuda.get_rng_state_all()
-    return payload
-
-
-def _restore_rng_state(payload: dict | None) -> None:
-    if not isinstance(payload, dict):
-        return
-    torch_state = payload.get("torch")
-    if torch_state is not None:
-        torch.set_rng_state(torch_state)
-    cuda_state = payload.get("cuda")
-    if cuda_state is not None and torch.cuda.is_available():
-        torch.cuda.set_rng_state_all(cuda_state)
-
-
-def _save_training_checkpoint(
-    *,
-    checkpoint_dir: Path | None,
-    label: str,
-    step: int,
-    model: nn.Module,
-    optim: torch.optim.Optimizer,
-    metadata: dict,
-) -> str | None:
-    if checkpoint_dir is None:
-        return None
-    checkpoint_dir.mkdir(parents=True, exist_ok=True)
-    safe_label = "".join(c if c.isalnum() or c in "._-" else "_" for c in label)
-    path = checkpoint_dir / f"{safe_label}_step_{step:06d}.pt"
-    tmp_path = path.with_suffix(path.suffix + ".tmp")
-    torch.save(
-        {
-            "step": int(step),
-            "model_state_dict": model.state_dict(),
-            "optimizer_state_dict": optim.state_dict(),
-            "rng_state": _rng_state_payload(),
-            "metadata": metadata,
-        },
-        tmp_path,
-    )
-    tmp_path.replace(path)
-    return str(path)
-
-
-def _load_training_checkpoint(
-    path: Path,
-    *,
-    model: nn.Module,
-    optim: torch.optim.Optimizer,
-    device: str,
-) -> dict:
-    payload = torch.load(path, map_location=device)  # nosec B614 - locally-produced checkpoint, not network-sourced
-    model.load_state_dict(payload["model_state_dict"])
-    optim.load_state_dict(payload["optimizer_state_dict"])
-    _restore_rng_state(payload.get("rng_state"))
-    return payload
-
-
 def _ensure_wikitext_paths(
     variant: str, max_chars_train: int, max_chars_val: int
 ) -> tuple[Path, Path]:

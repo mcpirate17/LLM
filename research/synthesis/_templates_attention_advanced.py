@@ -107,20 +107,6 @@ def _pick_ffn_or_swiglu(
     )
 
 
-def _pick_ffn_or_default(
-    graph: ComputationGraph,
-    src: int,
-    rng: random.Random,
-    weights: MotifWeights,
-    *,
-    fallback_context: str,
-) -> int:
-    """Backward-compatible alias for external novel-template modules."""
-    return _pick_ffn_or_swiglu(
-        graph, src, rng, weights, fallback_context=fallback_context
-    )
-
-
 def _tpl_novel_mixing_block(
     graph: ComputationGraph,
     input_id: int,

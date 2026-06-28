@@ -2100,20 +2100,6 @@ RETRIEVAL_PAIR_OPS: frozenset = frozenset(
 )
 
 
-def retrieval_pair_for(op_name: str) -> Optional[str]:
-    """Return the preferred pair consumer for a retrieval-family op, if any.
-
-    ``matmul → softmax`` turns a bilinear into softmax-attention.
-    ``cosine_similarity → gather_topk`` turns similarity into NN retrieval.
-    ``outer_product → reduce_sum`` turns a tensor outer into a binding write.
-    Returns None for ops that have no paired hint.
-    """
-    rule = OP_WIRING_RULES.get(op_name)
-    if rule is None:
-        return None
-    return rule.get("preferred_pair_consumer")
-
-
 def validate_wiring(graph, errors: Optional[List[str]] = None) -> List[str]:
     """Validate that all op wiring constraints are satisfied in a graph.
 

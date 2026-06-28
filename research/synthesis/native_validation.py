@@ -77,42 +77,6 @@ def summarize_validation_natively(
     )
 
 
-def summarize_validation_in_python(
-    *,
-    known_op_flags: np.ndarray,
-    risky_op_flags: np.ndarray,
-    parameterized_op_flags: np.ndarray,
-    norm_op_flags: np.ndarray,
-    linear_op_flags: np.ndarray,
-) -> ValidationSummary:
-    known_op_flags = np.asarray(known_op_flags, dtype=bool)
-    risky_op_flags = np.asarray(risky_op_flags, dtype=bool)
-    parameterized_op_flags = np.asarray(parameterized_op_flags, dtype=bool)
-    norm_op_flags = np.asarray(norm_op_flags, dtype=bool)
-    linear_op_flags = np.asarray(linear_op_flags, dtype=bool)
-
-    max_projection_chain_depth = 0
-    projection_chain_depth = 0
-    for idx in range(int(known_op_flags.shape[0])):
-        if not known_op_flags[idx]:
-            continue
-        if norm_op_flags[idx]:
-            projection_chain_depth = 0
-            continue
-        if linear_op_flags[idx]:
-            projection_chain_depth += 1
-            if projection_chain_depth > max_projection_chain_depth:
-                max_projection_chain_depth = projection_chain_depth
-
-    return ValidationSummary(
-        risky_op_count=int((known_op_flags & risky_op_flags).sum()),
-        parameterized_op_count=int((known_op_flags & parameterized_op_flags).sum()),
-        unknown_op_count=int((~known_op_flags).sum()),
-        max_projection_chain_depth=max_projection_chain_depth,
-        backend="python",
-    )
-
-
 def summarize_validation(
     *,
     known_op_flags: np.ndarray,

@@ -169,53 +169,6 @@ class _AnalyticsMixin:
         )
         return _cursor_dict_rows(cursor)
 
-    def _query_bigram_stats_sql(
-        self,
-        where_sql: str,
-        params: tuple[Any, ...],
-        *,
-        include_error_types: bool = False,
-    ) -> Optional[List[Dict[str, Any]]]:
-        error_select = (
-            ", substr(group_concat(DISTINCT CASE "
-            "WHEN stage1_passed = 0 AND error_type IS NOT NULL AND error_type <> '' "
-            "THEN error_type END), 1, 255) AS error_types"
-            if include_error_types
-            else ""
-        )
-        self.flush_writes()
-        self._ensure_graph_features()
-        program_results_table = _program_results_read_table(self.conn)
-        cursor = self.conn.execute(
-            f"""
-            signatures AS (
-                SELECT DISTINCT
-                    pr.result_id AS result_id,
-                    gpp.signature AS signature,
-                    pr.stage1_passed AS stage1_passed,
-                    pr.loss_ratio AS loss_ratio,
-                    pr.novelty_score AS novelty_score,
-                    pr.error_type AS error_type
-                FROM {program_results_table} pr
-                JOIN program_graph_pairs gpp ON gpp.result_id = pr.result_id
-                WHERE {where_sql}
-            )
-            SELECT
-                signature,
-                COUNT(*) AS support,
-                SUM(CASE WHEN stage1_passed THEN 1 ELSE 0 END) AS n_stage1_passed,
-                SUM(CASE WHEN stage1_passed THEN 0 ELSE 1 END) AS n_failures,
-                SUM(CASE WHEN stage1_passed THEN 1 ELSE 0 END) AS n_successes,
-                AVG(loss_ratio) AS avg_loss_ratio,
-                AVG(novelty_score) AS avg_novelty
-                {error_select}
-            FROM signatures
-            GROUP BY signature
-            """,
-            params,
-        )
-        return _cursor_dict_rows(cursor)
-
     def _query_graph_feature_rows_sql(self) -> Optional[List[Dict[str, Any]]]:
         self.flush_writes()
         self._ensure_graph_features()

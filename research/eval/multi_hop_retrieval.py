@@ -18,10 +18,7 @@ from typing import Any, Dict, List, Tuple
 import torch
 import torch.nn as nn
 
-from .retrieval_eval_utils import (
-    eval_restricted_last_token_accuracy,
-    run_retrieval_probe_config,
-)
+from .retrieval_eval_utils import run_retrieval_probe_config
 
 logger = logging.getLogger(__name__)
 
@@ -146,23 +143,6 @@ def _generate_multi_hop_eval_set(
         return _generate_multi_hop_batch(n_eval, seq_len, n_hops, device)
     finally:
         torch.random.set_rng_state(rng_state)
-
-
-def _eval_multi_hop_accuracy(
-    model: nn.Module,
-    eval_ids: torch.Tensor,
-    eval_targets: torch.Tensor,
-    batch_size: int,
-) -> float:
-    """Evaluate multi-hop retrieval accuracy."""
-    return eval_restricted_last_token_accuracy(
-        model,
-        eval_ids,
-        eval_targets,
-        batch_size=batch_size,
-        vocab_lo=_VOCAB_LO,
-        vocab_hi=_VOCAB_HI,
-    )
 
 
 def _train_multi_hop_at_config(

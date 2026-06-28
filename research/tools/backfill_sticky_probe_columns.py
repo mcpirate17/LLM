@@ -63,12 +63,6 @@ LATEST_NONNULL_STICKY_COLUMNS = (
 )
 
 
-def column_exists(conn: sqlite3.Connection, table: str, name: str) -> bool:
-    return any(
-        r[1] == name for r in conn.execute(f"PRAGMA table_info({table})").fetchall()
-    )
-
-
 def fetch_bound_targets(conn: sqlite3.Connection):
     """Yield (entry_id, result_id, fingerprint) for each leaderboard entry."""
     rows = conn.execute(

@@ -238,15 +238,6 @@ def featurize_op_sets(
     return X
 
 
-def score_op_sets(
-    op_sets: List[set], op_counts: List[int], pair_counts: List[int]
-) -> np.ndarray:
-    """Predict capability for graphs given only their op-sets (no DB, no forward pass)."""
-    model, meta = load_screener()
-    X = featurize_op_sets(op_sets, op_counts, pair_counts, list(meta["op_vocab"]))
-    return np.asarray(model.predict(X), dtype=np.float64)
-
-
 def _novel_winner_check(
     model: Any, vocab: List[str], corpus_pred: np.ndarray
 ) -> Dict[str, Any]:

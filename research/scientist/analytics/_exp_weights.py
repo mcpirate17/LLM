@@ -325,28 +325,6 @@ class _WeightsMixin:
             weight_hi=8.0,
         )
 
-    def under_observed_ops(self, threshold: int = 20) -> Dict[str, int]:
-        """Return ops with fewer than threshold observations.
-
-        Returns dict of op_name -> n_used. Also includes ops in
-        PRIMITIVE_REGISTRY but not tracked in op_success_rates (count=0).
-        """
-        from research.synthesis.primitives import PRIMITIVE_REGISTRY
-
-        rates = self.op_success_rates()
-        result = {}
-        for op, info in rates.items():
-            if info["n_used"] < threshold:
-                result[op] = info["n_used"]
-
-        # Ops in registry but not tracked at all
-        tracked = set(rates.keys())
-        for name in PRIMITIVE_REGISTRY:
-            if name not in tracked and name not in ("input", "output"):
-                result[name] = 0
-
-        return result
-
     def _compute_metadata_weights(
         self,
         metadata_key: str,

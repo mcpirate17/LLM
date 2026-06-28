@@ -62,25 +62,13 @@ _DEFAULT_PROFILING_DB = (
 # Counters track when the Python parity twin fires in place of the Rust
 # extractor. Any non-zero count in prod means the Rust path returned
 # None/unparseable output — either aria-scheduler was not loaded, or the
-# native kernel disagreed with the graph shape. Surface via
-# ``get_native_fallback_counters()``.
+# native kernel disagreed with the graph shape.
 _NATIVE_FALLBACK_COUNTERS: Dict[str, int] = {
     "topology_features_native_hit": 0,
     "topology_features_python_fallback": 0,
     "edge_op_pairs_native_hit": 0,
     "edge_op_pairs_python_fallback": 0,
 }
-
-
-def get_native_fallback_counters() -> Dict[str, int]:
-    """Return a snapshot of native-vs-Python dispatch counts."""
-    return dict(_NATIVE_FALLBACK_COUNTERS)
-
-
-def reset_native_fallback_counters() -> None:
-    """Reset all native-fallback counters to zero (tests only)."""
-    for key in _NATIVE_FALLBACK_COUNTERS:
-        _NATIVE_FALLBACK_COUNTERS[key] = 0
 
 
 _MIN_SAMPLES = 50

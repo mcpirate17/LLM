@@ -159,12 +159,6 @@ class PLSPartition:
         z = np.asarray(self.scaler.transform(X))
         return np.asarray(self.pls.predict(z), dtype=np.float64).ravel()
 
-    def predict_from_features(self, feats: Dict[str, float]) -> float:
-        x = np.array(
-            [[feats.get(n, 0.0) for n in self.feature_names]], dtype=np.float64
-        )
-        return float(self.predict(x)[0])
-
 
 @dataclass
 class RawGBM:

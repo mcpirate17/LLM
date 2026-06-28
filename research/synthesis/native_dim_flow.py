@@ -47,17 +47,6 @@ def dead_parameterized_mask_natively(
     )
 
 
-def dead_parameterized_mask_in_python(
-    *, reachable_mask: np.ndarray, parameterized_flags: np.ndarray
-) -> DeadParameterizedMask:
-    reachable_mask = np.asarray(reachable_mask, dtype=bool)
-    parameterized_flags = np.asarray(parameterized_flags, dtype=bool)
-    return DeadParameterizedMask(
-        mask=(~reachable_mask) & parameterized_flags,
-        backend="python",
-    )
-
-
 def dead_parameterized_mask(
     *, reachable_mask: np.ndarray, parameterized_flags: np.ndarray
 ) -> DeadParameterizedMask:

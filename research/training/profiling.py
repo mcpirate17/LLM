@@ -86,10 +86,6 @@ class TrainingRunProfiler:
             self._torch_ctx = self._torch_prof
             self._torch_enabled = True
 
-    @property
-    def torch_enabled(self) -> bool:
-        return self._torch_enabled
-
     def __enter__(self) -> "TrainingRunProfiler":
         if self.enabled:
             self._torch_ctx.__enter__()

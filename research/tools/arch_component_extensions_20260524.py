@@ -239,67 +239,6 @@ def dosage_curves(df: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def dosage_monotonicity(curve: pd.DataFrame) -> pd.DataFrame:
-    """Per (metric, op): does mean rise monotonically with dose, and is the
-    last-bin vs zero-bin delta CI-separated?"""
-    np.random.default_rng(RNG_SEED + 1)
-    rows = []
-    for (metric, op), group in curve.groupby(["metric", "op"]):
-        ordered = group.set_index("dose_bin").reindex(["0", "1", "2", "3+"])
-        means = ordered["mean"].to_numpy()
-        ns = ordered["n"].to_numpy()
-        # Need at least two non-empty bins beyond 0.
-        if ns[0] == 0 or (ns[1:] == 0).all():
-            rows.append(
-                {
-                    "metric": metric,
-                    "op": op,
-                    "shape": "insufficient",
-                    "monotonic_up": False,
-                    "monotonic_down": False,
-                    "dose_response_delta": float("nan"),
-                    "dose_response_delta_lo": float("nan"),
-                    "dose_response_delta_hi": float("nan"),
-                }
-            )
-            continue
-        valid = [m for m, n in zip(means, ns) if n > 0]
-        mono_up = all(b >= a - 1e-9 for a, b in zip(valid, valid[1:]))
-        mono_down = all(b <= a + 1e-9 for a, b in zip(valid, valid[1:]))
-        # Top non-empty bin vs zero-bin bootstrap delta.
-        top_bin = max(b for b, n in zip(["0", "1", "2", "3+"], ns) if n > 0)
-        if top_bin == "0":
-            rows.append(
-                {
-                    "metric": metric,
-                    "op": op,
-                    "shape": "all_zero",
-                    "monotonic_up": False,
-                    "monotonic_down": False,
-                    "dose_response_delta": float("nan"),
-                    "dose_response_delta_lo": float("nan"),
-                    "dose_response_delta_hi": float("nan"),
-                }
-            )
-            continue
-        sub = curve[(curve["metric"] == metric) & (curve["op"] == op)]
-        # Need raw values for delta CI — recompute from df not available here,
-        # so the dose_response_delta is mean-of-means; CIs filled by caller.
-        rows.append(
-            {
-                "metric": metric,
-                "op": op,
-                "shape": "ok",
-                "monotonic_up": mono_up,
-                "monotonic_down": mono_down,
-                "top_bin": top_bin,
-                "delta_mean_only": float(sub.set_index("dose_bin").loc[top_bin, "mean"])
-                - float(sub.set_index("dose_bin").loc["0", "mean"]),
-            }
-        )
-    return pd.DataFrame(rows)
-
-
 def dosage_top_vs_zero_delta(df: pd.DataFrame) -> pd.DataFrame:
     """Bootstrap CI on (count>=2) vs (count==0) — proper test for 'more is better'."""
     rng = np.random.default_rng(RNG_SEED + 2)

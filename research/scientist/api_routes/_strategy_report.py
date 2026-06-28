@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional
 from ._strategy_preflight import build_start_mode_eligibility
 
 if TYPE_CHECKING:
-    from ..notebook import LabNotebook
+    pass
 
 logger = logging.getLogger(__name__)
 
@@ -237,99 +237,3 @@ def parse_bool_query(value: Optional[str], default: bool = False) -> bool:
     if v in ("0", "false", "no", "off"):
         return False
     return default
-
-
-def build_full_report_data(
-    nb: LabNotebook, analytics, fast_mode: bool, include_heavy: bool
-) -> Dict[str, Any]:
-    """Build the complete data payload for the full research report."""
-    top_limit = 20 if not fast_mode else 12
-    expanded_limit = 80 if include_heavy else 0
-    recent_limit = 100 if include_heavy else 30
-
-    data = {
-        "summary": nb.get_dashboard_summary(
-            include_data_accounting=include_heavy,
-            include_template_observability=False,
-        ),
-        "top_programs": nb.get_report_top_programs_grouped_by_fingerprint(
-            top_limit, sort_by="loss_ratio"
-        ),
-        "top_programs_expanded": nb.get_top_programs(
-            expanded_limit, sort_by="loss_ratio"
-        )
-        if include_heavy
-        else [],
-        "recent_experiments": nb.get_recent_experiments(recent_limit),
-        "op_success_rates": analytics.op_success_rates(),
-        "failure_patterns": analytics.failure_patterns(),
-        "grammar_weights": {
-            "learned": analytics.compute_grammar_weights(),
-            "default": analytics.get_current_grammar_weights(),
-        },
-        "insights": nb.get_insights(),
-    }
-
-    if include_heavy:
-        data.update(
-            {
-                "math_family_coverage": analytics.math_family_coverage(),
-                "efficiency_frontier": analytics.efficiency_frontier(),
-            }
-        )
-
-    return data
-
-
-def build_scoped_report_query(
-    nb: LabNotebook, analytics, start_ts, end_ts, theme, trend, limit
-):
-    """Filter experiments and programs for a scoped report query."""
-    experiments = nb.get_recent_experiments(500)
-    filtered_exps = [
-        e for e in experiments if _matches_report_filters(e, start_ts, end_ts, trend)
-    ]
-
-    sort_by = "novelty_score" if trend == "high_novelty" else "loss_ratio"
-    programs = nb.get_top_programs(max(limit * 3, 120), sort_by=sort_by)
-    filtered_progs = [
-        p for p in programs if _matches_program_filters(p, start_ts, end_ts, theme)
-    ]
-
-    # Deduplicate by fingerprint
-    grouped = []
-    seen = set()
-    for p in filtered_progs:
-        fp = p.get("graph_fingerprint")
-        if fp and fp not in seen:
-            seen.add(fp)
-            grouped.append(p)
-            if len(grouped) >= limit:
-                break
-
-    return {
-        "summary": build_filtered_report_summary(
-            nb.get_dashboard_headline_summary(), filtered_exps
-        ),
-        "top_programs": grouped,
-        "top_programs_expanded": filtered_progs[: max(limit * 2, 40)],
-        "recent_experiments": filtered_exps[: max(limit * 5, 40)],
-    }
-
-
-def _matches_report_filters(exp, start, end, trend):
-    ts = exp.get("timestamp")
-    if start and ts < start:
-        return False
-    if end and ts > end:
-        return False
-    return report_experiment_matches_trend(exp, trend)
-
-
-def _matches_program_filters(prog, start, end, theme):
-    ts = prog.get("timestamp")
-    if start and ts < start:
-        return False
-    if end and ts > end:
-        return False
-    return report_program_matches_theme(prog, theme)

@@ -304,10 +304,6 @@ def _has_replayable_train_budget(row: Mapping[str, Any]) -> bool:
     return _truthy(row, "stage1_passed") and _is_reference_row(row)
 
 
-def _is_binding_only_target(target_fields: Sequence[str]) -> bool:
-    return tuple(target_fields) == ("binding_screening_auc",)
-
-
 def _supports_compile_only_post_target(target_fields: Sequence[str]) -> bool:
     fields = set(target_fields)
     compile_only_fields = {
@@ -745,82 +741,6 @@ def _run_post_train(
             )
         updates["train_budget_steps"] = int(config.stage1_steps)
         return updates
-    finally:
-        _release_model(model)
-
-
-def _run_binding_probe_only(
-    graph_json: str,
-    config: RunConfig,
-    device: str,
-    result_id: str,
-) -> Dict[str, Any]:
-    graph = graph_from_json(graph_json)
-    compile_seed = ExperimentRunner._stable_seed(
-        result_id, graph.fingerprint(), "backpopulate_binding_compile"
-    )
-    with _deterministic_compile_seed(device, compile_seed):
-        model = compile_model(
-            [graph] * int(config.n_layers),
-            vocab_size=int(config.vocab_size),
-            max_seq_len=config.max_seq_len,
-        )
-    dev = resolve_device(device)
-    try:
-        br = curriculum_binding_range_profile(
-            model,
-            distances=CURRICULUM_BINDING_DISTANCES,
-            n_train_steps=400,
-            n_eval=CURRICULUM_BINDING_EVAL_SCREENING,
-            train_batch_size=max(
-                1,
-                int(
-                    getattr(
-                        config,
-                        "binding_probe_train_batch_size",
-                        16,
-                    )
-                    or 16
-                ),
-            ),
-            eval_batch_size=max(
-                1,
-                int(
-                    getattr(
-                        config,
-                        "binding_probe_eval_batch_size",
-                        32,
-                    )
-                    or 32
-                ),
-            ),
-            device=str(dev),
-            seed=getattr(config, "screening_probe_seed", None),
-            offload_source_model=bool(
-                getattr(config, "binding_probe_offload_source_model", False)
-            ),
-        )
-        zero = binding_range_profile(
-            model,
-            distances=CURRICULUM_BINDING_DISTANCES,
-            n_eval=CURRICULUM_BINDING_EVAL_SCREENING,
-            device=str(dev),
-            seed=getattr(config, "screening_probe_seed", None),
-        )
-        return screening_probe_fields(
-            {
-                "binding_screening_auc": zero.auc,
-                "binding_distance_accuracies": zero.distance_accuracies,
-                "binding_curriculum_auc": br.auc,
-                "binding_distance_accuracies_curriculum": br.distance_accuracies,
-                "binding_screening_eval_examples": CURRICULUM_BINDING_EVAL_SCREENING,
-                "binding_probe_distances": list(CURRICULUM_BINDING_DISTANCES),
-                "binding_screening_elapsed_ms": zero.elapsed_ms,
-                "binding_curriculum_steps": br.train_steps,
-                "binding_curriculum_elapsed_ms": br.elapsed_ms,
-                "binding_curriculum_protocol_version": CURRICULUM_BINDING_PROTOCOL_VERSION,
-            }
-        )
     finally:
         _release_model(model)
 

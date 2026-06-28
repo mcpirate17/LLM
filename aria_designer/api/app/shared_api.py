@@ -14,7 +14,6 @@ from .perf_support import (
     designer_metrics_from_stages,
 )
 from .eval_run_store import _get_run, _list_runs, _store_run, _update_run
-from .research_signals import fetch_research_recommendation_signals
 from .research_sync import _auto_promote_workflow_to_research, _sync_lineage_to_research
 from .runtime_features import (
     BUILTIN_BLOCKS,
@@ -61,10 +60,6 @@ from .workflow_support import (
 )
 
 
-def _fetch_research_recommendation_signals(force: bool = False):
-    return fetch_research_recommendation_signals(force=force)
-
-
 __all__ = [
     "_PROJECT_ROOT",
     "_ARIA_DESIGNER_ROOT",
@@ -103,7 +98,6 @@ __all__ = [
     "_update_run",
     "designer_metrics_from_stages",
     "_build_designer_perf_bundle",
-    "_fetch_research_recommendation_signals",
     "_discovery_url_for_fingerprint",
     "_compute_eval_composite_score",
     "_require_component",

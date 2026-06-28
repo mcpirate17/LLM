@@ -81,14 +81,3 @@ def _reachable(starts: List[int], adj: Dict[int, List[int]]) -> set:
                 seen.add(nxt)
                 stack.append(nxt)
     return seen
-
-
-def passes_gate(graph: Any, min_mixers_on_path: int = 1) -> bool:
-    """True iff the graph has >= ``min_mixers_on_path`` sequence-mixers on an input→output path.
-
-    Accepts a ComputationGraph (uses .to_dict()) or a node dict/list. Necessary-condition gate:
-    keeps 95.7% of induction-capable designs at min=1; raise the threshold to bias harder.
-    """
-    nodes = graph.to_dict()["nodes"] if hasattr(graph, "to_dict") else graph
-    _, n_mix = mixer_reach(nodes)
-    return n_mix >= min_mixers_on_path

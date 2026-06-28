@@ -196,10 +196,6 @@ def language_control_nb_failure_details(
     return json.dumps(payload, sort_keys=True, separators=(",", ":"))
 
 
-def s05_nb_failure_details(score: Any, *, source: str) -> str:
-    return language_control_nb_failure_details("s05", score, source=source)
-
-
 def s05_sa_failure_details(
     score: Any,
     *,

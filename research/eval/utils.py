@@ -363,16 +363,6 @@ def measure_loss(
     return sum(losses) / len(losses) if losses else None
 
 
-def compute_grad_norm(model: nn.Module) -> float:
-    """Compute total L2 gradient norm across all parameters."""
-    grads = [p.grad for p in model.parameters() if p.grad is not None]
-    if not grads:
-        return 0.0
-    norms = torch._foreach_norm(grads, 2)
-    norm_vec = torch.stack([n.detach() for n in norms])
-    return float(torch.linalg.vector_norm(norm_vec, ord=2).item())
-
-
 @torch.no_grad()
 def batched_span_mean_log_probs(
     model: nn.Module,

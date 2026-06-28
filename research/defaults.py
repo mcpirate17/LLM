@@ -33,7 +33,6 @@ OLLAMA_BASE: str = f"http://localhost:{OLLAMA_PORT}"
 # anchor on PROJECT_ROOT externally. New code should prefer the *_ABS Paths.
 LAB_NOTEBOOK_DB: str = "research/lab_notebook.db"
 RUNS_DB: str = "research/runs.db"
-EVENTS_DB: str = "research/events.db"
 RUNTIME_EVENTS_DIR: str = "research/runtime_events"
 NOTEBOOK_ARTIFACTS_DIR: str = "research/artifacts/notebook"
 
@@ -49,7 +48,6 @@ MAX_SEQ_LEN: int = 256  # stage-1 / screening
 VALIDATION_SEQ_LEN: int = 512  # investigation + validation
 N_LAYERS: int = 6
 N_HEADS: int = 8
-N_KV_HEADS: int = 4
 
 # ── Training defaults (stage budgets) ────────────────────────────────
 STAGE1_STEPS: int = 750
@@ -71,4 +69,3 @@ DESIGNER_PROXY_TIMEOUT: float = 10.0
 DESIGNER_BOOT_TIMEOUT: float = 90.0
 DESIGNER_IDLE_TIMEOUT: float = 900.0
 LINEAGE_SYNC_TIMEOUT: float = 3.0
-SQLITE_BUSY_TIMEOUT_MS: int = 30000

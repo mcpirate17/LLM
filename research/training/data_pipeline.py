@@ -53,12 +53,6 @@ def _token_cache_put(key: tuple, tensor: torch.Tensor) -> None:
             _TOKEN_CACHE.popitem(last=False)
 
 
-def clear_corpus_token_cache() -> None:
-    """Drop all cached tokenized corpora. Use in tests / after corpus edits."""
-    with _TOKEN_CACHE_LOCK:
-        _TOKEN_CACHE.clear()
-
-
 class TokenizerAdapter(Protocol):
     """Tokenizer that produces a 1-D int64 token tensor in one shot."""
 

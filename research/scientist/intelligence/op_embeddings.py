@@ -160,32 +160,6 @@ class OpEmbeddings:
         # Map cosine similarity from [-1, 1] → [0, 1]
         return float((np.mean(similarities) + 1.0) / 2.0)
 
-    def nearest_neighbors(self, op_name: str, k: int = 5) -> List[Tuple[str, float]]:
-        """Find k nearest neighbors by cosine similarity."""
-        emb = self.get_embedding(op_name)
-        if emb is None:
-            return []
-
-        norms = np.linalg.norm(self.embeddings, axis=1, keepdims=True)
-        norms = np.maximum(norms, 1e-8)
-        normed = self.embeddings / norms
-        query_norm = emb / max(np.linalg.norm(emb), 1e-8)
-        sims = normed @ query_norm
-
-        # Exclude self
-        idx = self.op_to_idx[op_name]
-        sims[idx] = -2.0
-
-        top_k = np.argsort(sims)[-k:][::-1]
-        return [(self.op_names[i], float(sims[i])) for i in top_k]
-
-    def pairwise_similarity_matrix(self) -> np.ndarray:
-        """Compute full NxN cosine similarity matrix."""
-        norms = np.linalg.norm(self.embeddings, axis=1, keepdims=True)
-        norms = np.maximum(norms, 1e-8)
-        normed = self.embeddings / norms
-        return normed @ normed.T
-
     @classmethod
     def from_profiling(
         cls,

@@ -118,14 +118,6 @@ def _insert_metadata(conn: sqlite3.Connection, metadata: dict[str, Any]) -> None
     )
 
 
-def _payload_size(value: Any) -> int:
-    if value is None:
-        return 0
-    if isinstance(value, bytes):
-        return len(value)
-    return len(str(value).encode("utf-8"))
-
-
 def _candidate_stats(
     conn: sqlite3.Connection,
     *,

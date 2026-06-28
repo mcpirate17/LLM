@@ -6,16 +6,15 @@ Used by both the Designer (suggestions, mutations) and the Research
 runner (screening, promotion). Consumes Phase 1 research aggregates
 and produces structured decisions with evidence.
 
-Two entry points calling the same pipeline:
+Entry point:
   - score_candidate(graph, ctx, signals) → JudgmentResult
-  - recommend_components(ctx, signals, candidates) → ranked list
 """
 
 from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, FrozenSet, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, FrozenSet, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -61,9 +60,6 @@ _SIGNAL_CAP = 0.30
 
 # Low-support threshold — below this, weight signal toward neutral
 _MIN_SUPPORT = 5
-
-# Exploration budget — reserve this fraction for under-sampled candidates
-_EXPLORATION_BUDGET = 0.15
 
 
 # ── Individual signal scorers ─────────────────────────────────────────
@@ -678,51 +674,3 @@ def score_candidate(
     """
     candidate = _extract_candidate_dict(candidate_graph)
     return _run_scoring_pipeline(candidate, ctx, signals)
-
-
-def recommend_components(
-    ctx: JudgmentContext,
-    signals: Dict[str, Any],
-    candidates: Sequence[Any],
-) -> List[Tuple[Any, JudgmentResult]]:
-    """Rank multiple candidates by judgment score.
-
-    Returns list of (candidate, JudgmentResult) sorted by total_score descending,
-    with exploration budget applied.
-
-    Args:
-        ctx: Shared judgment context.
-        signals: Research signals dict.
-        candidates: Sequence of ComputationGraph or candidate dicts.
-
-    Returns:
-        Ranked list of (candidate, result) tuples.
-    """
-    scored: List[Tuple[Any, JudgmentResult]] = []
-    for c in candidates:
-        result = score_candidate(c, ctx, signals)
-        scored.append((c, result))
-
-    # Sort by total_score descending
-    scored.sort(key=lambda pair: pair[1].total_score, reverse=True)
-
-    if not scored:
-        return scored
-
-    # Apply exploration budget: reserve bottom slots for under-sampled candidates
-    n = len(scored)
-    n_explore = max(1, int(n * _EXPLORATION_BUDGET))
-    n_exploit = n - n_explore
-
-    # Partition: top exploit slots stay ranked, explore slots are drawn from
-    # candidates with lowest support (most under-explored)
-    if n > n_explore + 1:
-        exploit = scored[:n_exploit]
-        explore_pool = scored[n_exploit:]
-        # Sort explore pool by min support count (most novel first)
-        explore_pool.sort(
-            key=lambda pair: sum(pair[1].support_counts.values()),
-        )
-        return exploit + explore_pool
-
-    return scored

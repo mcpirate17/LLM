@@ -53,52 +53,6 @@ def projective_linear(h: torch.Tensor, weight: torch.Tensor) -> torch.Tensor:
     return F.linear(h, weight)
 
 
-def projective_distance(x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
-    """A perspective-aware distance between projective coordinates.
-
-    Uses the cosine similarity of the homogeneous rays, which represents
-    the angle between the projective lines.
-    """
-    x_norm = x.norm(dim=-1, keepdim=True).clamp(min=EPS)
-    y_norm = y.norm(dim=-1, keepdim=True).clamp(min=EPS)
-
-    # Dot product of normalized rays
-    cos_theta = (x / x_norm * y / y_norm).sum(dim=-1)
-    # Distance is 1 - cos(theta) (angular distance)
-    return 1.0 - cos_theta
-
-
-class ProjectiveAttentionFn(torch.autograd.Function):
-    @staticmethod
-    def forward(ctx, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
-        ctx.save_for_backward(q, k, v)
-        B, S, D = q.shape
-
-        # Compute pairwise angular distances
-        # q, k: (B, S, D+1)
-        q_norm = q / q.norm(dim=-1, keepdim=True).clamp(min=EPS)
-        k_norm = k / k.norm(dim=-1, keepdim=True).clamp(min=EPS)
-
-        # Cosine similarity
-        sim = torch.bmm(q_norm, k_norm.transpose(1, 2))  # (B, S, S)
-
-        # Causal mask
-        if S > 1:
-            row_ids = torch.arange(S, device=q.device).unsqueeze(1)
-            col_ids = torch.arange(S, device=q.device).unsqueeze(0)
-            sim.masked_fill_(col_ids > row_ids, float("-inf"))
-
-        weights = torch.softmax(sim, dim=-1)
-        # v is (B, S, D), out is (B, S, D)
-        out = torch.bmm(weights, v)
-        return out
-
-    @staticmethod
-    def backward(ctx, grad_output: torch.Tensor):
-        # Fallback to standard autograd for simplicity in prototype
-        pass
-
-
 def projective_attention(x: torch.Tensor) -> torch.Tensor:
     """Self-attention using projective geometry (PRoPE-style)."""
     # Simple prototype: chunk into Q, K, V

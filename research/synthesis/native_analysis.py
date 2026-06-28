@@ -531,31 +531,6 @@ def summarize_dim_flow_natively(
     )
 
 
-def summarize_dim_flow_in_python(
-    *,
-    reachable_mask: np.ndarray,
-    has_params_flags: np.ndarray,
-    param_estimates: np.ndarray,
-    nontrivial_flags: np.ndarray,
-    kv_breaking_flags: np.ndarray,
-) -> DimFlowSummary:
-    reachable_mask = np.asarray(reachable_mask, dtype=bool)
-    has_params_flags = np.asarray(has_params_flags, dtype=bool)
-    param_estimates = np.asarray(param_estimates, dtype=np.int64)
-    nontrivial_flags = np.asarray(nontrivial_flags, dtype=bool)
-    kv_breaking_flags = np.asarray(kv_breaking_flags, dtype=bool)
-
-    reachable_params = reachable_mask & has_params_flags
-    return DimFlowSummary(
-        reachable_param_count=int(reachable_params.sum()),
-        reachable_param_estimate=int(param_estimates[reachable_params].sum()),
-        reachable_nontrivial_ops=int((reachable_mask & nontrivial_flags).sum()),
-        reachable_ops=int(reachable_mask.sum()),
-        kv_cacheable=not bool((reachable_mask & kv_breaking_flags).any()),
-        backend="python",
-    )
-
-
 def summarize_dim_flow(
     *,
     reachable_mask: np.ndarray,
@@ -625,52 +600,6 @@ def validate_edges_natively(
         binary_dim_mismatch=out["binary_dim_mismatch"].copy(),
         full_dim_input_bits=out["full_dim_input_bits"].copy(),
         backend="native",
-    )
-
-
-def validate_edges_in_python(
-    *,
-    reachable_mask: np.ndarray,
-    input_indices: np.ndarray,
-    node_dims: np.ndarray,
-    node_seq_flags: np.ndarray,
-    op_kind_flags: np.ndarray,
-    full_dim_flags: np.ndarray,
-    model_dim: int,
-) -> EdgeValidationResult:
-    n_nodes = int(len(reachable_mask))
-    freq_mismatch_bits = np.zeros(n_nodes, dtype=np.int32)
-    reduce_full_dim_bits = np.zeros(n_nodes, dtype=np.int32)
-    binary_dim_mismatch = np.zeros(n_nodes, dtype=np.int32)
-    full_dim_input_bits = np.zeros(n_nodes, dtype=np.int32)
-
-    reachable_mask = np.asarray(reachable_mask, dtype=bool)
-    for idx in range(n_nodes):
-        if not reachable_mask[idx]:
-            continue
-        parents = input_indices[idx]
-        for slot, parent in enumerate(parents):
-            parent = int(parent)
-            if parent == -1:
-                continue
-            if node_seq_flags[parent] and op_kind_flags[idx] not in (1, 2):
-                freq_mismatch_bits[idx] |= 1 << slot
-            if node_dims[parent] == 1 and full_dim_flags[idx]:
-                reduce_full_dim_bits[idx] |= 1 << slot
-            if full_dim_flags[idx] and node_dims[parent] != model_dim:
-                full_dim_input_bits[idx] |= 1 << slot
-        if op_kind_flags[idx] == 3 and parents[0] != -1 and parents[1] != -1:
-            d0 = node_dims[int(parents[0])]
-            d1 = node_dims[int(parents[1])]
-            if d0 != d1 and d0 != 1 and d1 != 1:
-                binary_dim_mismatch[idx] = 1
-
-    return EdgeValidationResult(
-        freq_mismatch_bits=freq_mismatch_bits,
-        reduce_full_dim_bits=reduce_full_dim_bits,
-        binary_dim_mismatch=binary_dim_mismatch,
-        full_dim_input_bits=full_dim_input_bits,
-        backend="python",
     )
 
 

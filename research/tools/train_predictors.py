@@ -222,39 +222,6 @@ def _iso_utc_now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
-def _regression_eval_metrics(
-    y_true: np.ndarray,
-    y_pred: np.ndarray,
-) -> dict[str, Any]:
-    mask = np.isfinite(y_true) & np.isfinite(y_pred)
-    y_true_f = np.asarray(y_true[mask], dtype=np.float64)
-    y_pred_f = np.asarray(y_pred[mask], dtype=np.float64)
-    if y_true_f.size < 2:
-        return {"n": int(y_true_f.size), "error": "insufficient_data"}
-
-    metrics: dict[str, Any] = {
-        "n": int(y_true_f.size),
-        "mae": float(np.mean(np.abs(y_true_f - y_pred_f))),
-        "rmse": float(np.sqrt(np.mean((y_true_f - y_pred_f) ** 2))),
-    }
-    try:
-        from scipy.stats import kendalltau, pearsonr, spearmanr
-
-        rho, _ = spearmanr(y_true_f, y_pred_f)
-        pearson = pearsonr(y_true_f, y_pred_f).statistic
-        kendall = kendalltau(y_true_f, y_pred_f).statistic
-        metrics.update(
-            {
-                "spearman": float(rho) if np.isfinite(rho) else 0.0,
-                "pearson": float(pearson) if np.isfinite(pearson) else 0.0,
-                "kendall": float(kendall) if np.isfinite(kendall) else 0.0,
-            }
-        )
-    except Exception:
-        metrics.update({"spearman": 0.0, "pearson": 0.0, "kendall": 0.0})
-    return metrics
-
-
 def _binary_evaluation_bundle(
     *,
     y_true: np.ndarray,

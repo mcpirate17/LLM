@@ -71,35 +71,6 @@ class _AdvancedAnalyticsMixin:
         return item
 
     @staticmethod
-    def _new_pair_bucket(signature: str) -> Dict[str, Any]:
-        return {
-            "signature": signature,
-            "support": 0,
-            "n_stage1_passed": 0,
-            "loss_sum": 0.0,
-            "loss_n": 0,
-            "novelty_sum": 0.0,
-            "novelty_n": 0,
-        }
-
-    @staticmethod
-    def _finalize_pair_bucket(signature: str, bucket: Dict[str, Any]) -> Dict[str, Any]:
-        support = int(bucket["support"])
-        avg_loss = (bucket["loss_sum"] / bucket["loss_n"]) if bucket["loss_n"] else None
-        avg_novelty = (
-            (bucket["novelty_sum"] / bucket["novelty_n"])
-            if bucket["novelty_n"]
-            else None
-        )
-        return {
-            "signature": signature,
-            "success_rate": round(float(bucket["n_stage1_passed"]) / support, 4),
-            "support": support,
-            "avg_loss_ratio": round(avg_loss, 4) if avg_loss is not None else None,
-            "avg_novelty": round(avg_novelty, 4) if avg_novelty is not None else None,
-        }
-
-    @staticmethod
     def _new_fingerprint_bucket(bucket_name: str) -> Dict[str, Any]:
         return {
             "bucket": bucket_name,

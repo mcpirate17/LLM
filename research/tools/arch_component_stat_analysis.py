@@ -211,19 +211,6 @@ def _pearson(x: np.ndarray, y: np.ndarray) -> float:
     return float(np.corrcoef(x, y)[0, 1])
 
 
-def _partial_corr_binary(
-    x: np.ndarray,
-    y: np.ndarray,
-    controls: np.ndarray,
-) -> float:
-    if x.size < controls.shape[1] + 4 or np.nanstd(x) == 0 or np.nanstd(y) == 0:
-        return float("nan")
-    design = np.column_stack([np.ones(len(x)), controls])
-    bx, *_ = np.linalg.lstsq(design, x, rcond=None)
-    by, *_ = np.linalg.lstsq(design, y, rcond=None)
-    return _pearson(x - design @ bx, y - design @ by)
-
-
 def _ci(vals: list[float]) -> tuple[float, float]:
     clean = np.asarray([v for v in vals if math.isfinite(v)], dtype=float)
     if clean.size == 0:
@@ -550,15 +537,6 @@ def _fmt(x: Any, digits: int = 3) -> str:
     if not math.isfinite(f):
         return ""
     return f"{f:.{digits}f}"
-
-
-def _top_table(df: pd.DataFrame, metric: str, cols: list[str], n: int = 6) -> str:
-    if df.empty:
-        return "_No rows._"
-    sub = df[df["metric"] == metric].head(n).copy()
-    if sub.empty:
-        return "_No rows._"
-    return sub[cols].to_markdown(index=False, floatfmt=".3f")
 
 
 def write_report(

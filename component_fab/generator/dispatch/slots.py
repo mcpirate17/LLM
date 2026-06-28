@@ -6,7 +6,10 @@ from collections.abc import Callable
 
 from torch import nn
 
-from component_fab.generator.block_templates import GatedParallelBlock, ThreeLaneAdaptive
+from component_fab.generator.block_templates import (
+    GatedParallelBlock,
+    ThreeLaneAdaptive,
+)
 from component_fab.generator.primitive_templates import (
     ChebyshevSpectralLane,
     CliffordAttention,
@@ -92,7 +95,3 @@ def build_block_slot_factory(name: str) -> LaneFactory:
         return ctor(dim)
 
     return factory
-
-
-def registered_block_slots() -> tuple[str, ...]:
-    return tuple(sorted(_SLOT_REGISTRY))

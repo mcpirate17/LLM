@@ -319,12 +319,6 @@ class KernelTimer:
                 report[name] = sum(durations) / len(durations)
         return report
 
-    def remove_hooks(self):
-        """Remove all attached hooks."""
-        for hook in self._hooks:
-            hook.remove()
-        self._hooks = []
-
 
 class QueueTelemetry:
     """Tracks latency and throughput for task queues (batching, scheduling)."""

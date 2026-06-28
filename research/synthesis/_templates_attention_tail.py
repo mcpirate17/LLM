@@ -156,19 +156,6 @@ def _pick_with_local_wildcard(
     )
 
 
-def _add_explicit_norm(
-    graph: ComputationGraph,
-    node_id: int,
-    rng: random.Random,
-    *,
-    context: str,
-    variants: tuple[str, ...] = ("rmsnorm", "layernorm"),
-) -> int:
-    """Add a bounded explicit norm choice without reopening motif-slot lottery."""
-    op_name = variants[0] if len(variants) == 1 else rng.choice(variants)
-    return _add(graph, op_name, [node_id], context=context)
-
-
 def tpl_attn_spectral_filter(
     graph: ComputationGraph,
     input_id: int,
@@ -204,40 +191,6 @@ def tpl_attn_spectral_filter(
     )
     filtered = _fix_dim(graph, filtered)
     return _residual(graph, input_id, filtered, context="attn_spectral_filter.output")
-
-
-def tpl_attn_gated_minimum(
-    graph: ComputationGraph,
-    input_id: int,
-    rng: random.Random,
-    weights: MotifWeights = None,
-) -> int:
-    """norm → attention → proj_a, proj_b → minimum → residual."""
-    D = graph.model_dim
-    norm = _pick_compatible_motif(graph, input_id, rng, MOTIF_CLASS_NORM, weights)
-    normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
-
-    attn = _pick_compatible_motif(graph, normed, rng, MOTIF_CLASS_ATTENTION, weights)
-    attended = _instantiate_motif(graph, normed, attn, rng) if attn else normed
-    attended = _fix_dim(graph, attended)
-    attended = _add(graph, "rmsnorm", [attended], context="attn_gated_minimum.norm")
-    proj_a = _add(
-        graph,
-        "linear_proj",
-        [attended],
-        {"out_dim": D},
-        context="attn_gated_minimum.proj_a",
-    )
-    proj_b = _add(
-        graph,
-        "linear_proj",
-        [attended],
-        {"out_dim": D},
-        context="attn_gated_minimum.proj_b",
-    )
-    out = _add(graph, "minimum", [proj_a, proj_b], context="attn_gated_minimum.out")
-    out = _fix_dim(graph, out)
-    return _residual(graph, input_id, out, context="attn_gated_minimum.output")
 
 
 def tpl_attn_gated_maximum(

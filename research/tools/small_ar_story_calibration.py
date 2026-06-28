@@ -136,10 +136,6 @@ def _encode_text(enc: Any, text: str) -> tuple[int, ...]:
     return tuple(int(i) for i in enc.encode(text, allowed_special=set()))
 
 
-def _story_context(story: StoryExample) -> str:
-    return "\n".join([f"Story {story.story_id}.", *story.context_sentences()])
-
-
 def _query_context(
     story: StoryExample,
     query: StoryQuery,
