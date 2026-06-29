@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from component_fab.improver.axis_variants import (
+    DATA_ROUTE_AXIS_VARIANTS,
     DEFAULT_AXIS_VARIANT_TEMPLATES,
     AnchorAxes,
     AxisVariant,
@@ -13,6 +14,25 @@ from component_fab.improver.axis_variants import (
     enumerate_axis_variants,
     spec_for_variant,
 )
+from research.synthesis.data_pipeline_grammar import data_route_from_axes
+
+
+def test_data_route_variants_round_trip_to_valid_specs() -> None:
+    # Each data-route variant's delta must rebuild a valid DataRouteSpec, so a
+    # candidate can carry it as a genotype consumed by the LM A/B.
+    assert DATA_ROUTE_AXIS_VARIANTS, "expected non-empty data-route variants"
+    names = {v.delta_name for v in DATA_ROUTE_AXIS_VARIANTS}
+    assert {"data_reverse", "data_doc_boundary", "data_surprisal_route"} <= names
+    for variant in DATA_ROUTE_AXIS_VARIANTS:
+        spec = data_route_from_axes(variant.delta)  # raises on an invalid axis value
+        assert not spec.is_identity, f"{variant.delta_name} must change the data route"
+
+
+def test_data_route_variants_kept_out_of_default_templates() -> None:
+    # They must NOT pollute the synthetic-probe search (they are LM-only).
+    default_names = {v.delta_name for v in DEFAULT_AXIS_VARIANT_TEMPLATES}
+    route_names = {v.delta_name for v in DATA_ROUTE_AXIS_VARIANTS}
+    assert default_names.isdisjoint(route_names)
 
 
 def test_anchor_axes_returns_known_op() -> None:

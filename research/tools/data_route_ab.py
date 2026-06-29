@@ -35,6 +35,8 @@ import torch
 import torch.nn.functional as F
 
 from research.defaults import MAX_SEQ_LEN, N_LAYERS
+from dataclasses import replace
+
 from research.synthesis.data_pipeline_grammar import (
     DataRouteSpec,
     apply_data_route,
@@ -52,8 +54,15 @@ from research.tools.loss_monster_screen import (
     _RUNS_DB,
     evaluate,
 )
+from research.training.window_packing import (
+    DEFAULT_EOT_ID,
+    find_doc_boundaries,
+    pack_window_starts,
+)
 
-# Route conditions: the natural-order baseline plus the implemented permutations.
+# Route conditions: the natural-order baseline plus the implemented permutations
+# and packings. order/fold permute the sampled window; doc_boundary changes which
+# window is sampled (never crossing a document boundary).
 _ROUTE_CONDITIONS: dict[str, DataRouteSpec] = {
     "natural": DataRouteSpec(),
     "reverse": DataRouteSpec(order="reverse"),
@@ -61,6 +70,8 @@ _ROUTE_CONDITIONS: dict[str, DataRouteSpec] = {
     "fold8": DataRouteSpec(fold=8),
     "fold16": DataRouteSpec(fold=16),
     "fold32": DataRouteSpec(fold=32),
+    "doc_boundary": DataRouteSpec(pack="doc_boundary"),
+    "doc_boundary_reverse": DataRouteSpec(pack="doc_boundary", order="reverse"),
 }
 
 
@@ -71,16 +82,20 @@ def _sample_routed_batch(
     gen: np.random.Generator,
     device: str,
     spec: DataRouteSpec,
+    boundaries: np.ndarray | None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Sample a ``seq + 1`` window, apply the route to the FULL window, then split
-    into (input, next-token) so the route changes which token is "next"."""
-    hi = tokens.shape[0] - seq - 1
-    starts = gen.integers(0, hi, size=batch)
+    """Sample a ``seq + 1`` window under ``spec.pack``, apply the order/fold route
+    to the FULL window, then split into (input, next-token) so the route changes
+    which token is "next"."""
+    starts = pack_window_starts(
+        tokens.shape[0], batch, seq + 1, spec.pack, gen, boundaries=boundaries
+    )
     idx = starts[:, None] + np.arange(seq + 1)[None, :]
     chunk = torch.as_tensor(
         np.ascontiguousarray(tokens[idx]), dtype=torch.int64, device=device
     )
-    chunk = apply_data_route(chunk, spec)
+    # pack is already applied (window selection); apply only order/fold here.
+    chunk = apply_data_route(chunk, replace(spec, pack="contiguous"))
     return chunk[:, :-1], chunk[:, 1:]
 
 
@@ -97,6 +112,7 @@ def _train_curve_routed(
     device: str,
     eval_every: int,
     eval_batches: int,
+    boundaries: np.ndarray | None,
 ) -> list[dict[str, float]]:
     """Train on ROUTED windows; evaluate on the NATURAL val stream."""
     params = [p for p in model.parameters() if p.requires_grad]
@@ -111,7 +127,7 @@ def _train_curve_routed(
             curve.append({"step": step, **m})
         if step == steps:
             break
-        x, y = _sample_routed_batch(train, batch, seq, gen, device, spec)
+        x, y = _sample_routed_batch(train, batch, seq, gen, device, spec, boundaries)
         logits = model(x)
         loss = F.cross_entropy(logits.reshape(-1, logits.shape[-1]), y.reshape(-1))
         opt.zero_grad(set_to_none=True)
@@ -136,6 +152,7 @@ def run_condition(
     train: np.ndarray,
     val: np.ndarray,
     args: argparse.Namespace,
+    boundaries: np.ndarray | None,
 ) -> dict[str, Any]:
     t0 = time.time()
     model = _build_carrier(graph_json, args.n_layers, args.seq, args.device, seed)
@@ -151,6 +168,7 @@ def run_condition(
         device=args.device,
         eval_every=args.eval_every,
         eval_batches=args.eval_batches,
+        boundaries=boundaries,
     )
     final = curve[-1]
     print(
@@ -214,6 +232,12 @@ def _build_argparser() -> argparse.ArgumentParser:
     ap.add_argument("--eval-every", type=int, default=250)
     ap.add_argument("--eval-batches", type=int, default=12)
     ap.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
+    ap.add_argument(
+        "--eot-id",
+        type=int,
+        default=DEFAULT_EOT_ID,
+        help="document separator token id for doc_boundary packing (cl100k eot)",
+    )
     ap.add_argument("--out", default=str(_OUT_DIR / "data_route_ab.json"))
     return ap
 
@@ -228,16 +252,34 @@ def main() -> int:
     train = np.load(_CORPUS_TRAIN, mmap_mode="r")
     val = np.load(_CORPUS_VAL, mmap_mode="r")
 
+    # Document boundaries are only needed when a doc_boundary pack is requested.
+    needs_boundaries = any(
+        _ROUTE_CONDITIONS[c].pack == "doc_boundary" for c in args.conditions
+    )
+    boundaries = (
+        find_doc_boundaries(np.asarray(train), args.eot_id)
+        if needs_boundaries
+        else None
+    )
+
     print(
         f"Carrier rid={args.carrier_rid} conditions={args.conditions} "
         f"seeds={args.seeds} steps={args.steps}"
+        + (f" docs={len(boundaries) + 1}" if boundaries is not None else "")
     )
     results: list[dict[str, Any]] = []
     for seed in args.seeds:
         for cond in args.conditions:
             results.append(
                 run_condition(
-                    graph_json, cond, _ROUTE_CONDITIONS[cond], seed, train, val, args
+                    graph_json,
+                    cond,
+                    _ROUTE_CONDITIONS[cond],
+                    seed,
+                    train,
+                    val,
+                    args,
+                    boundaries,
                 )
             )
 

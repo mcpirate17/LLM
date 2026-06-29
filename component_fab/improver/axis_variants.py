@@ -515,6 +515,43 @@ DEFAULT_AXIS_VARIANT_TEMPLATES: tuple[AxisVariant, ...] = (
 )
 
 
+# Data-pipeline search axis (Workstream D). Kept SEPARATE from
+# DEFAULT_AXIS_VARIANT_TEMPLATES on purpose: ``op_data_*`` deltas change how the
+# token stream is fed (fold/pack/route), which only has meaning for an LM-corpus
+# probe — applying them to the synthetic binding/induction probes would change
+# nothing and just dilute the synthetic search. The LM A/B
+# (``research/tools/data_route_ab.py``) consumes these via
+# ``data_pipeline_grammar.data_route_from_axes`` so a candidate carries its data
+# route as a genotype, not a hidden training detail.
+DATA_ROUTE_AXIS_VARIANTS: tuple[AxisVariant, ...] = (
+    AxisVariant(
+        delta_name="data_reverse",
+        delta={"op_data_order": "reverse"},
+        rationale="feed each window in reverse — predict the previous token",
+    ),
+    AxisVariant(
+        delta_name="data_bidirectional",
+        delta={"op_data_order": "bidirectional"},
+        rationale="fold the window in half: first half forward, second reversed",
+    ),
+    AxisVariant(
+        delta_name="data_fold8",
+        delta={"op_seq_fold": 8},
+        rationale="serpentine fold-8 of the window (boustrophedon locality)",
+    ),
+    AxisVariant(
+        delta_name="data_doc_boundary",
+        delta={"op_data_pack": "doc_boundary"},
+        rationale="sample windows that never cross a document boundary",
+    ),
+    AxisVariant(
+        delta_name="data_surprisal_route",
+        delta={"op_data_route": "surprisal_split", "op_data_carrier_fraction": 0.3},
+        rationale="route the hardest 30% (by monster surprisal) to the carrier lane",
+    ),
+)
+
+
 def anchor_axes_for_op(
     op_name: str, db_path: Path | str = DEFAULT_META_DB
 ) -> AnchorAxes | None:
