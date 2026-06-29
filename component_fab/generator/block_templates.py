@@ -220,6 +220,12 @@ class LossMonsterPairedBlock(nn.Module):
         self.register_buffer("_balance_delta", torch.zeros(1), persistent=True)
         self.last_partner_frac: float | None = None
         self.last_loss_frac: float | None = None
+        # Optional per-token gate-logit bias set by the data-pipeline router
+        # (research.synthesis.data_pipeline_grammar.gate_bias_from_segments):
+        # a positive bias on high-surprisal tokens forces them onto the carrier
+        # lane. None = pure learned gate. Shape must broadcast to the gate logit
+        # ([B, L, 1]). Set per batch before forward, like a routing context.
+        self.route_prior: torch.Tensor | None = None
 
     def _update_load_balance(self, raw_partner_logit: torch.Tensor) -> None:
         if not self.training or not self.load_balance or self.load_balance_gamma <= 0:
@@ -239,10 +245,20 @@ class LossMonsterPairedBlock(nn.Module):
                 f"input={tuple(x.shape)}"
             )
         raw_logit = self.gate(x) + self._balance_delta.detach()
+        if self.route_prior is not None:
+            if (
+                self.route_prior.shape[-1] != 1
+                or self.route_prior.shape[0] != x.shape[0]
+            ):
+                raise ValueError(
+                    "route_prior must broadcast to the gate logit [B, L, 1]; "
+                    f"got {tuple(self.route_prior.shape)} for input {tuple(x.shape)}"
+                )
+            raw_logit = raw_logit + self.route_prior.to(raw_logit.dtype)
         self._update_load_balance(raw_logit)
-        partner_weight = self.partner_floor + (1.0 - self.partner_floor) * torch.sigmoid(
-            raw_logit
-        )
+        partner_weight = self.partner_floor + (
+            1.0 - self.partner_floor
+        ) * torch.sigmoid(raw_logit)
         loss_weight = 1.0 - partner_weight
         self.last_partner_frac = float(partner_weight.mean().detach())
         self.last_loss_frac = float(loss_weight.mean().detach())
