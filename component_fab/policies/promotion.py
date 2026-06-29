@@ -16,7 +16,7 @@ Default rules:
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Iterable
+from typing import Any, Iterable, Mapping
 
 from ..state.ledger import (
     Ledger,
@@ -78,6 +78,10 @@ class PromotionRules:
 
 DEFAULT_PROMOTION_RULES = PromotionRules()
 
+_LOSS_SPECIALIST_ROLES = frozenset(
+    {"loss_specialist", "loss_monster", "loss_specialist_pair"}
+)
+
 
 @dataclass(frozen=True, slots=True)
 class PromotionDecision:
@@ -136,6 +140,9 @@ def _promotion_evidence_failure(
         return "promotion evidence metadata missing"
 
     latest = entry.metadata_history[-1]
+    loss_specialist_failure = _loss_specialist_pairing_failure(latest)
+    if loss_specialist_failure is not None:
+        return loss_specialist_failure
     if rules.require_ci_excludes_zero:
         skipped = latest.get("paired_skipped_reason")
         if skipped:
@@ -152,6 +159,61 @@ def _promotion_evidence_failure(
         recent = entry.metadata_history[-rules.pareto_streak_cycles :]
         if not all("pareto_objective_vector" in metadata for metadata in recent):
             return "niche promotion evidence missing pareto_objective_vector"
+    return None
+
+
+def _loss_specialist_pairing_failure(metadata: dict) -> str | None:
+    """Fail closed when a local loss specialist tries to promote unpaired."""
+    def value(*keys: str) -> Any:
+        return _metadata_value(metadata, *keys)
+
+    role = str(
+        value("candidate_role")
+        or value("component_role")
+        or value("specialist_role")
+        or ""
+    )
+    is_loss_specialist = role in _LOSS_SPECIALIST_ROLES or bool(
+        value("loss_specialist")
+    )
+    if not is_loss_specialist:
+        return None
+
+    carrier = (
+        value("loss_specialist_partner_op")
+        or value("loss_specialist_carrier_op")
+        or value("paired_anchor_op")
+    )
+    if not carrier:
+        return "loss specialist missing long-range carrier evidence"
+
+    if role != "loss_specialist_pair" and not bool(value("loss_specialist_paired")):
+        return "loss specialist must be paired with a long-range carrier"
+
+    ci_excludes_zero = value("paired_delta_ci_excludes_zero")
+    ci_low = value("paired_delta_ci_low")
+    if ci_excludes_zero is not None and not bool(ci_excludes_zero):
+        return "loss specialist carrier delta is not significantly positive"
+    if ci_low is not None and float(ci_low) <= 0.0:
+        return "loss specialist carrier delta is not positive"
+    if ci_excludes_zero is None and ci_low is None:
+        return "loss specialist missing paired carrier delta"
+    return None
+
+
+def _metadata_value(metadata: Mapping[str, Any], *keys: str) -> Any:
+    axes = metadata.get("math_axes")
+    axis_map = axes if isinstance(axes, Mapping) else {}
+    for key in keys:
+        if key in metadata:
+            return metadata[key]
+        op_key = f"op_{key}"
+        if op_key in metadata:
+            return metadata[op_key]
+        if key in axis_map:
+            return axis_map[key]
+        if op_key in axis_map:
+            return axis_map[op_key]
     return None
 
 

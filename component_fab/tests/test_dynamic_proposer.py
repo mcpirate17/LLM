@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 import torch
 
 from component_fab.generator.code_generator import generate_module_from_spec
@@ -11,6 +12,7 @@ from component_fab.proposer.dynamic import (
     spec_from_ledger_entry,
 )
 from component_fab.state.ledger import Ledger, PROMOTION_PROMOTED, PROMOTION_REJECTED
+from component_fab.improver.axis_variants import DEFAULT_META_DB
 from component_fab.proposer.enumeration import enumerate_cycle_specs
 from component_fab.tests.conftest import base_dynamic_axes
 
@@ -161,6 +163,30 @@ def test_autonomous_cycle_includes_dynamic_specs_from_ledger(tmp_path: Path) -> 
     assert any(spec.name.startswith("dynamic_range_blind_case") for spec in specs)
 
 
+def test_autonomous_cycle_includes_loss_monster_pair_axis_variants(
+    tmp_path: Path,
+) -> None:
+    if not DEFAULT_META_DB.exists():
+        pytest.skip("meta_analysis.db not present")
+    ledger = Ledger(tmp_path / "ledger.jsonl")
+
+    specs = enumerate_cycle_specs(
+        ledger,
+        ["tropical_attention"],
+        cycle=1,
+        include_frontier=False,
+        include_nas=False,
+        max_cross_pairs=0,
+        max_knob_specs=0,
+        max_dynamic_specs=0,
+    )
+
+    assert any(
+        spec.math_axes.get("op_block_template") == "loss_monster_paired"
+        for spec in specs
+    )
+
+
 def test_ledger_entry_reconstructs_dynamic_spec_by_exact_axes(tmp_path: Path) -> None:
     ledger = _seed_range_blind_ledger(tmp_path)
     spec = enumerate_dynamic_proposals(
@@ -289,6 +315,44 @@ def test_repairs_dynamic_delta_mines_value_pool():
         "reciprocal",
     }
     assert {v["op_physics_seed"] for v in variants} >= {1, 2, 3}
+
+
+def test_repairs_loss_monster_unpaired_pairs_with_long_range_carrier() -> None:
+    repairs = _repairs_for_case(_case("loss_monster_unpaired"), {})
+    assert repairs[0].name == "pair_loss_monster_with_carrier"
+    delta = repairs[0].delta
+    assert delta["op_block_template"] == "loss_monster_paired"
+    assert delta["op_partner_kind"] == "hyper_mor"
+    assert delta["op_block_slot_loss"] == "routed_bottleneck"
+    assert delta["op_candidate_role"] == "loss_specialist_pair"
+    assert delta["op_loss_specialist_partner_op"] == "hyper_mor_b_145m"
+
+
+def test_collect_dynamic_cases_labels_loss_floor_reasoning(tmp_path: Path) -> None:
+    ledger = Ledger(tmp_path / "ledger.jsonl")
+    ledger.record_grade(
+        proposal_id="loss_monster",
+        name="loss_monster",
+        category="lane",
+        synthesis_kind="novel_hybrid",
+        cycle=1,
+        composite_score=0.42,
+        smoke_pass=True,
+        learned_signal=False,
+        metadata={
+            "math_axes": {
+                **base_dynamic_axes(),
+                "op_candidate_role": "loss_specialist",
+            },
+            "screening_loss_ratio": 0.03,
+            "can_bind": False,
+        },
+    )
+
+    case = collect_dynamic_evidence_cases(ledger)[0]
+
+    assert "loss_monster_unpaired" in case.weaknesses
+    assert "strong_loss_floor_reasoning" in case.weaknesses
 
 
 def test_physics_repairs_strip_named_composition_axes() -> None:

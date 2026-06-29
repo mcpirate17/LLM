@@ -80,6 +80,10 @@ def test_default_axis_variant_templates_cover_core_and_math_knobs() -> None:
     assert "calculus_finite_difference" in kinds
     assert "linear_algebra_low_rank" in kinds
     assert "sparse_matrix_banded" in kinds
+    assert "route_site_recursion_mixer" in kinds
+    assert "block_loss_monster_pair_hyper_mor" in kinds
+    assert "block_loss_monster_pair_slot_dplr" in kinds
+    assert "block_loss_monster_pair_native_semiring" in kinds
 
 
 def test_math_knob_variant_adds_real_axes() -> None:

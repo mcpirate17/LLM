@@ -100,6 +100,64 @@ DEFAULT_AXIS_VARIANT_TEMPLATES: tuple[AxisVariant, ...] = (
         rationale="ACT-style mixture-of-recursions: per-token learned halt",
     ),
     AxisVariant(
+        delta_name="route_site_recursion_mixer",
+        delta={
+            "op_routing_kind": "site_recursion",
+            "op_recursion_sites": "mixer",
+            "op_max_depth": 4,
+        },
+        rationale=(
+            "general RecursionSite wrapper over the anchor mixer; first slice of "
+            "recursion as a weighted-site search axis"
+        ),
+    ),
+    AxisVariant(
+        delta_name="route_site_recursion_ffn",
+        delta={
+            "op_routing_kind": "site_recursion",
+            "op_recursion_sites": "ffn",
+            "op_max_depth_ffn": 4,
+        },
+        rationale=(
+            "recurse the position-wise FFN site (mixer kept single-pass): give "
+            "channel mixing learned per-token depth"
+        ),
+    ),
+    AxisVariant(
+        delta_name="route_site_recursion_router",
+        delta={
+            "op_routing_kind": "site_recursion",
+            "op_recursion_sites": "router",
+            "op_max_depth_router": 4,
+        },
+        rationale="recurse a top-k router/gate site over the anchor's expert pool",
+    ),
+    AxisVariant(
+        delta_name="route_site_recursion_embedding",
+        delta={
+            "op_routing_kind": "site_recursion",
+            "op_recursion_sites": "embedding",
+            "op_max_depth_embedding": 4,
+        },
+        rationale=(
+            "recurse a low-rank refinement of the embedded representation at the "
+            "lane input"
+        ),
+    ),
+    AxisVariant(
+        delta_name="route_site_recursion_mixer_ffn",
+        delta={
+            "op_routing_kind": "site_recursion",
+            "op_recursion_sites": "mixer+ffn",
+            "op_max_depth_mixer": 4,
+            "op_max_depth_ffn": 4,
+        },
+        rationale=(
+            "recurse both the mixer and FFN sites with independent per-token "
+            "depth: recursion anywhere there are weights"
+        ),
+    ),
+    AxisVariant(
         delta_name="route_sparse_depth",
         delta={"op_routing_kind": "sparse_depth", "op_max_depth": 4},
         rationale="top-25% tokens get extra recursion passes; others pin at depth=1",
@@ -151,6 +209,63 @@ DEFAULT_AXIS_VARIANT_TEMPLATES: tuple[AxisVariant, ...] = (
         delta_name="block_gated_parallel",
         delta={"op_block_template": "gated_parallel"},
         rationale="2-lane gate (anchor + wavelet multiscale)",
+    ),
+    AxisVariant(
+        delta_name="block_loss_monster_pair_hyper_mor",
+        delta={
+            "op_block_template": "loss_monster_paired",
+            "op_partner_kind": "hyper_mor",
+            "op_block_slot_loss": "routed_bottleneck",
+            "op_partner_floor": 0.5,
+            "op_candidate_role": "loss_specialist_pair",
+            "op_loss_specialist_paired": 1,
+            "op_loss_specialist_partner_op": "hyper_mor_b_145m",
+            "op_dynamical_has_state": 1,
+            "op_dynamical_memory_length_class": "O(L)",
+            "op_geometric_receptive_field": "global",
+        },
+        rationale=(
+            "pair a local loss-specialist lane with the HyperMoR long-range "
+            "carrier and floor the carrier gate so loss cannot starve it"
+        ),
+    ),
+    AxisVariant(
+        delta_name="block_loss_monster_pair_slot_dplr",
+        delta={
+            "op_block_template": "loss_monster_paired",
+            "op_partner_kind": "slot_dplr",
+            "op_block_slot_loss": "routed_bottleneck",
+            "op_partner_floor": 0.5,
+            "op_candidate_role": "loss_specialist_pair",
+            "op_loss_specialist_paired": 1,
+            "op_loss_specialist_partner_op": "slot_dplr",
+            "op_dynamical_has_state": 1,
+            "op_dynamical_memory_length_class": "O(L)",
+            "op_geometric_receptive_field": "global",
+        },
+        rationale=(
+            "pair a local loss-specialist lane with slot/DPLR-style memory "
+            "so the pair is graded against a recall-capable carrier"
+        ),
+    ),
+    AxisVariant(
+        delta_name="block_loss_monster_pair_native_semiring",
+        delta={
+            "op_block_template": "loss_monster_paired",
+            "op_partner_kind": "native_semiring",
+            "op_block_slot_loss": "routed_bottleneck",
+            "op_partner_floor": 0.5,
+            "op_candidate_role": "loss_specialist_pair",
+            "op_loss_specialist_paired": 1,
+            "op_loss_specialist_partner_op": "native_semiring",
+            "op_dynamical_has_state": 1,
+            "op_dynamical_memory_length_class": "O(L)",
+            "op_geometric_receptive_field": "global",
+        },
+        rationale=(
+            "pair a local loss-specialist lane with native semiring surprise "
+            "memory and grade only the carrier-relative capability delta"
+        ),
     ),
     # Day-3 (2026-05-15): block_gated_parallel was the day-2 BLiMP winner
     # (+0.0071 vs softmax). Adding slot_b variants to explore which
@@ -242,6 +357,15 @@ DEFAULT_AXIS_VARIANT_TEMPLATES: tuple[AxisVariant, ...] = (
         delta_name="route_mor_depth8",
         delta={"op_routing_kind": "depth_router", "op_max_depth": 8},
         rationale="MoR with deeper recursion budget (max_depth=8)",
+    ),
+    AxisVariant(
+        delta_name="route_site_recursion_mixer_depth8",
+        delta={
+            "op_routing_kind": "site_recursion",
+            "op_recursion_sites": "mixer",
+            "op_max_depth": 8,
+        },
+        rationale="RecursionSite over the anchor mixer with a deeper recursion budget",
     ),
     AxisVariant(
         delta_name="route_mor_depth16",

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import math
-from typing import Callable
+from typing import Callable, cast
 
 import torch
 from torch import nn
@@ -13,21 +13,27 @@ from component_fab.harness.top_ar_block import RMSNorm
 LaneFactory = Callable[[int], nn.Module]
 
 
-class MixtureOfRecursionsLane(nn.Module):
-    """Per-token learned halting over repeated applications of one mixer."""
+class RecursionSite(nn.Module):
+    """Per-token learned recursion over any shape-preserving weighted site.
+
+    The wrapped module must preserve the ``[B, L, D]`` contract. This is the
+    reusable core for making recursion a search axis over weighted sites instead
+    of a one-off mixer lane.
+    """
 
     def __init__(
         self,
-        mixer_factory: LaneFactory,
+        module: nn.Module,
         dim: int,
         max_depth: int = 4,
         halt_temp: float = 1.0,
         epsilon: float = 0.05,
+        site_name: str = "mixer",
     ) -> None:
         super().__init__()
         if max_depth < 1:
             raise ValueError("max_depth must be >= 1")
-        self.mixer = mixer_factory(dim)
+        self.mixer = module
         # Pre-norm the recursion input (same fix as block_templates.Recursive
         # DepthBlock): without it the mixer is fed its own geometrically
         # growing residual stream, which NaNs deep/high-gain variants.
@@ -37,9 +43,14 @@ class MixtureOfRecursionsLane(nn.Module):
         self.max_depth = max_depth
         self.halt_temp = float(halt_temp)
         self.epsilon = float(epsilon)
+        self.site_name = str(site_name)
         self.aux_loss: torch.Tensor = torch.tensor(0.0)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if x.ndim != 3 or x.shape[-1] != self.dim:
+            raise ValueError(
+                f"RecursionSite expects [B, L, {self.dim}], got {tuple(x.shape)}"
+            )
         h = x
         remainder = torch.ones(
             x.shape[0], x.shape[1], 1, device=x.device, dtype=x.dtype
@@ -62,6 +73,92 @@ class MixtureOfRecursionsLane(nn.Module):
                 break
         self.aux_loss = expected_steps.mean() * 0.001
         return delta_total
+
+
+class MixtureOfRecursionsLane(RecursionSite):
+    """Per-token learned halting over repeated applications of one mixer."""
+
+    def __init__(
+        self,
+        mixer_factory: LaneFactory,
+        dim: int,
+        max_depth: int = 4,
+        halt_temp: float = 1.0,
+        epsilon: float = 0.05,
+    ) -> None:
+        super().__init__(
+            mixer_factory(dim),
+            dim,
+            max_depth=max_depth,
+            halt_temp=halt_temp,
+            epsilon=epsilon,
+            site_name="mixer",
+        )
+
+
+# Canonical apply order for stacked site recursion. ``block`` is intentionally
+# absent: block-level recursion already lives in ``block_templates`` as the
+# ``recursive_depth`` / ``recursive_depth_router`` templates, so duplicating it
+# here would just give two paths to the same thing.
+RECURSION_SITES: tuple[str, ...] = ("embedding", "mixer", "ffn", "router")
+
+
+class SiteRecursionStack(nn.Module):
+    """Per-token recursion over several weighted sites, not just the mixer.
+
+    Each requested site's module is wrapped in a :class:`RecursionSite` and
+    applied residually in the fixed :data:`RECURSION_SITES` order, so the axis
+    can list sites in any order and the compiled lane is deterministic. The
+    stack itself preserves the ``[B, L, D]`` contract and returns the total
+    residual delta (like a single ``RecursionSite``), so it drops into the same
+    ``x = x + lane(norm(x))`` slot a mixer lane occupies. This is the
+    "recursion anywhere there are weights" generalization of the depth router.
+    """
+
+    def __init__(
+        self,
+        sites: dict[str, nn.Module],
+        dim: int,
+        *,
+        depths: dict[str, int] | None = None,
+        default_depth: int = 4,
+    ) -> None:
+        super().__init__()
+        if not sites:
+            raise ValueError("SiteRecursionStack requires at least one site")
+        unknown = sorted(set(sites) - set(RECURSION_SITES))
+        if unknown:
+            raise ValueError(
+                f"unknown recursion sites {unknown}; supported={list(RECURSION_SITES)}"
+            )
+        depths = depths or {}
+        ordered = tuple(name for name in RECURSION_SITES if name in sites)
+        self.site_names = ordered
+        self.stages = nn.ModuleList(
+            RecursionSite(
+                sites[name],
+                dim,
+                max_depth=int(depths.get(name, default_depth)),
+                site_name=name,
+            )
+            for name in ordered
+        )
+        self.dim = dim
+        self.aux_loss: torch.Tensor = torch.tensor(0.0)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if x.ndim != 3 or x.shape[-1] != self.dim:
+            raise ValueError(
+                f"SiteRecursionStack expects [B, L, {self.dim}], got {tuple(x.shape)}"
+            )
+        h = x
+        aux = x.new_zeros(())
+        for stage in self.stages:
+            site = cast(RecursionSite, stage)
+            h = h + site(h)
+            aux = aux + site.aux_loss
+        self.aux_loss = aux
+        return h - x
 
 
 class SparseMoRLane(nn.Module):
@@ -255,6 +352,7 @@ class RoutedBottleneckLane(nn.Module):
 ROUTING_KINDS: tuple[str, ...] = (
     "none",
     "depth_router",
+    "site_recursion",
     "sparse_depth",
     "low_info_skip",
     "hash",

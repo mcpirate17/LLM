@@ -11,12 +11,14 @@ contribution, so the stream is finite and depth-invariant. These tests pin that.
 from __future__ import annotations
 
 import torch
+import pytest
 from torch import nn
 
 from component_fab.generator.block_templates import (
     RecursiveDepthBlock,
     RecursiveDepthRouterBlock,
 )
+from component_fab.generator.routing_primitives import RecursionSite
 
 
 class _GainMixer(nn.Module):
@@ -71,3 +73,25 @@ def test_recursion_blocks_preserve_shape() -> None:
         RecursiveDepthRouterBlock(_gain_factory(1.0), dim, max_depth=4)(x).shape
         == x.shape
     )
+
+
+def test_recursion_site_wraps_shape_preserving_weighted_module() -> None:
+    dim = 16
+    torch.manual_seed(7)
+    site = RecursionSite(_GainMixer(dim, gain=2.0), dim, max_depth=5)
+    x = torch.randn(2, 12, dim, requires_grad=True)
+
+    out = site(x)
+    grad = torch.autograd.grad(out.square().mean(), x)[0]
+
+    assert out.shape == x.shape
+    assert torch.isfinite(out).all()
+    assert torch.isfinite(grad).all()
+    assert site.aux_loss.ndim == 0
+    assert site.aux_loss.item() > 0.0
+
+
+def test_recursion_site_rejects_non_bld_inputs() -> None:
+    site = RecursionSite(nn.Linear(8, 8), 8)
+    with pytest.raises(ValueError, match=r"\[B, L, 8\]"):
+        site(torch.randn(2, 8))

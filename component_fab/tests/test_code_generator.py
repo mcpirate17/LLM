@@ -11,6 +11,7 @@ from component_fab.generator.code_generator import (
     generate_module,
     generate_module_from_spec,
 )
+from component_fab.generator.block_templates import LossMonsterPairedBlock
 from component_fab.generator.memory_primitives import MultiHeadSlotTableMemoryLane
 from component_fab.generator.native_surprise_memory import (
     NativeSemiringRopeSurpriseMemoryLane,
@@ -34,6 +35,7 @@ from component_fab.generator.primitive_templates import (
     TropicalAttention,
     TropicalStateSpace,
 )
+from component_fab.generator.routing_primitives import RecursionSite, SiteRecursionStack
 from component_fab.proposer.property_miner import AxisLift, CandidateTuple
 from component_fab.proposer.spec_generator import spec_from_candidate
 from research.synthesis.parametric_ops import ParametricMix
@@ -235,6 +237,69 @@ def test_dispatch_composes_new_math_knobs_over_base_lane() -> None:
     assert isinstance(m.base.base.base, TropicalAttention)
     x = torch.randn(2, 8, 16)
     assert m(x).shape == x.shape
+
+
+def test_dispatch_site_recursion_wraps_anchor_mixer() -> None:
+    module = generate_module(
+        {
+            "op_algebraic_space": "tropical",
+            "op_dynamical_has_state": 0,
+            "op_routing_kind": "site_recursion",
+            "op_recursion_sites": "mixer",
+            "op_max_depth": 3,
+        },
+        dim=16,
+    )
+    assert isinstance(module, SiteRecursionStack)
+    assert isinstance(module.stages[0], RecursionSite)
+    x = torch.randn(2, 8, 16)
+    y = module(x)
+    assert y.shape == x.shape
+    assert torch.isfinite(y).all()
+
+
+def test_dispatch_site_recursion_fails_loud_for_unsupported_sites() -> None:
+    with pytest.raises(NotImplementedError, match="unsupported=\\['not_a_site'\\]"):
+        generate_module(
+            {
+                "op_algebraic_space": "tropical",
+                "op_routing_kind": "site_recursion",
+                "op_recursion_sites": ("embedding", "not_a_site"),
+            },
+            dim=16,
+        )
+
+
+def test_dispatch_loss_monster_pair_builds_carrier_protected_block() -> None:
+    module = generate_module(
+        {
+            "op_algebraic_space": "tropical",
+            "op_block_template": "loss_monster_paired",
+            "op_partner_kind": "slot_dplr",
+            "op_block_slot_loss": "routed_bottleneck",
+            "op_partner_floor": 0.5,
+        },
+        dim=16,
+    )
+    assert isinstance(module, LossMonsterPairedBlock)
+    x = torch.randn(2, 8, 16)
+    y = module(x)
+    assert y.shape == x.shape
+    assert torch.isfinite(y).all()
+    assert module.last_partner_frac is not None
+    assert module.last_partner_frac >= 0.5
+
+
+def test_dispatch_loss_monster_pair_rejects_unknown_partner_kind() -> None:
+    with pytest.raises(ValueError, match="unknown loss-monster partner kind"):
+        generate_module(
+            {
+                "op_algebraic_space": "tropical",
+                "op_block_template": "loss_monster_paired",
+                "op_partner_kind": "not_a_partner",
+            },
+            dim=16,
+        )
 
 
 def test_undispatchable_spec_raises() -> None:

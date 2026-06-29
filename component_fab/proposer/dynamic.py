@@ -43,6 +43,9 @@ _CODEGEN_AXIS_PREFIXES: tuple[str, ...] = (
     "op_",
     "synthesis_kind",
 )
+_LOSS_SPECIALIST_ROLES = frozenset(
+    {"loss_specialist", "loss_monster", "loss_specialist_pair"}
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -95,10 +98,66 @@ def _clean_axes(raw: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+def _metadata_value(metadata: Mapping[str, Any], *keys: str) -> Any:
+    axes = metadata.get("math_axes")
+    axis_map = axes if isinstance(axes, Mapping) else {}
+    for key in keys:
+        if key in metadata:
+            return metadata[key]
+        op_key = f"op_{key}"
+        if op_key in metadata:
+            return metadata[op_key]
+        if key in axis_map:
+            return axis_map[key]
+        if op_key in axis_map:
+            return axis_map[op_key]
+    return None
+
+
+def _float_metadata(metadata: Mapping[str, Any], *keys: str) -> float | None:
+    raw = _metadata_value(metadata, *keys)
+    if raw is None:
+        return None
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return None
+
+
 def _weaknesses_from_metadata(
     metadata: Mapping[str, Any], score: float
 ) -> tuple[str, ...]:
     weaknesses: list[str] = []
+    role = str(
+        _metadata_value(
+            metadata,
+            "candidate_role",
+            "component_role",
+            "specialist_role",
+        )
+        or ""
+    )
+    is_loss_specialist = role in _LOSS_SPECIALIST_ROLES or bool(
+        _metadata_value(metadata, "loss_specialist")
+    )
+    carrier = _metadata_value(
+        metadata,
+        "loss_specialist_partner_op",
+        "loss_specialist_carrier_op",
+        "paired_anchor_op",
+    )
+    if is_loss_specialist and not carrier:
+        weaknesses.append("loss_monster_unpaired")
+    loss_ratio = _float_metadata(
+        metadata,
+        "screening_loss_ratio",
+        "loss_ratio",
+        "next_token_loss_ratio",
+    )
+    if loss_ratio is not None and loss_ratio < 0.1 and not bool(
+        metadata.get("can_bind")
+    ):
+        weaknesses.append("strong_loss_floor_reasoning")
     eliminated_by = str(metadata.get("eliminated_by") or "")
     if eliminated_by:
         weaknesses.append(f"eliminated_{eliminated_by}")
@@ -553,6 +612,26 @@ _REPAIR_RULES: tuple[_RepairRule, ...] = (
             "op_dynamical_memory_length_class": "O(L)",
             "op_routing_kind": "difficulty",
             "op_math_knobs": "spectral_chebyshev",
+        },
+    ),
+    _RepairRule(
+        frozenset({"loss_monster_unpaired", "strong_loss_floor_reasoning"}),
+        "pair_loss_monster_with_carrier",
+        (
+            "repair local loss-specialist evidence by pairing it with a "
+            "long-range carrier and grading only partner-relative capability"
+        ),
+        static_delta={
+            "op_block_template": "loss_monster_paired",
+            "op_partner_kind": "hyper_mor",
+            "op_block_slot_loss": "routed_bottleneck",
+            "op_partner_floor": 0.5,
+            "op_candidate_role": "loss_specialist_pair",
+            "op_loss_specialist_paired": 1,
+            "op_loss_specialist_partner_op": "hyper_mor_b_145m",
+            "op_dynamical_has_state": 1,
+            "op_dynamical_memory_length_class": "O(L)",
+            "op_geometric_receptive_field": "global",
         },
     ),
     _RepairRule(

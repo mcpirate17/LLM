@@ -17,6 +17,7 @@ BLOCK_TEMPLATES: tuple[str, ...] = (
     "three_lane_adaptive",
     "recursive_depth",
     "gated_parallel",
+    "loss_monster_paired",  # carrier-protected pair: long-range lane + local loss specialist
     "recursive_depth_router",  # full block recurses with halt routing per token
     "sparse_moe_block",  # block-level MoE: anchor + N experts via top-k router
     "hetero_moe_block",  # heterogeneous experts: anchor + diverse-class lanes via softmax router
@@ -185,6 +186,67 @@ class GatedParallelBlock(nn.Module):
         self._update_load_balance(biased_logit)
         g = torch.sigmoid(biased_logit).unsqueeze(-1)
         return g * self.lane_a(x) + (1.0 - g) * self.lane_b(x)
+
+
+class LossMonsterPairedBlock(nn.Module):
+    """Carrier-protected pair of long-range lane and local loss specialist.
+
+    Loss-specialist components can be useful scaffolds, but they should not be
+    allowed to starve the lane that carries long-range/induction evidence. The
+    gate therefore floors the partner lane's weight and lets the loss specialist
+    contribute only the remaining residual share.
+    """
+
+    def __init__(
+        self,
+        partner_factory: LaneFactory,
+        loss_factory: LaneFactory,
+        dim: int,
+        *,
+        partner_floor: float = 0.5,
+        load_balance: bool = False,
+        load_balance_gamma: float = 1e-3,
+    ) -> None:
+        super().__init__()
+        if not 0.0 <= partner_floor < 1.0:
+            raise ValueError("partner_floor must be in [0, 1)")
+        self.lane_partner = partner_factory(dim)
+        self.lane_loss = loss_factory(dim)
+        self.gate = nn.Linear(dim, 1)
+        self.dim = dim
+        self.partner_floor = float(partner_floor)
+        self.load_balance = bool(load_balance)
+        self.load_balance_gamma = float(load_balance_gamma)
+        self.register_buffer("_balance_delta", torch.zeros(1), persistent=True)
+        self.last_partner_frac: float | None = None
+        self.last_loss_frac: float | None = None
+
+    def _update_load_balance(self, raw_partner_logit: torch.Tensor) -> None:
+        if not self.training or not self.load_balance or self.load_balance_gamma <= 0:
+            return
+        with torch.no_grad():
+            partner_frac = (raw_partner_logit > 0).float().mean()
+            adjustment = self.load_balance_gamma * (0.5 - partner_frac)
+            self._balance_delta.add_(adjustment.reshape_as(self._balance_delta))
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        partner = self.lane_partner(x)
+        loss = self.lane_loss(x)
+        if partner.shape != x.shape or loss.shape != x.shape:
+            raise ValueError(
+                "LossMonsterPairedBlock lanes must preserve input shape; "
+                f"got partner={tuple(partner.shape)} loss={tuple(loss.shape)} "
+                f"input={tuple(x.shape)}"
+            )
+        raw_logit = self.gate(x) + self._balance_delta.detach()
+        self._update_load_balance(raw_logit)
+        partner_weight = self.partner_floor + (1.0 - self.partner_floor) * torch.sigmoid(
+            raw_logit
+        )
+        loss_weight = 1.0 - partner_weight
+        self.last_partner_frac = float(partner_weight.mean().detach())
+        self.last_loss_frac = float(loss_weight.mean().detach())
+        return partner_weight * partner + loss_weight * loss
 
 
 class RecursiveDepthRouterBlock(nn.Module):

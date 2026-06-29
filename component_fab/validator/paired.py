@@ -31,6 +31,9 @@ if TYPE_CHECKING:
     from ..proposer.spec_generator import ProposalSpec
 
 LaneFactory = Callable[[], nn.Module]
+_LOSS_SPECIALIST_ROLES = frozenset(
+    {"loss_specialist", "loss_monster", "loss_specialist_pair"}
+)
 
 
 def _t_critical(df: int, confidence: float) -> float:
@@ -218,12 +221,37 @@ def paired_metadata_for_spec(
         generate_module,
         generate_module_from_spec,
     )
+    from ..generator.dispatch import build_block_slot_factory, slot_name_for_partner_kind
     from ..improver.axis_variants import anchor_axes_for_op
     from .transplant import _default_baseline_factory
 
+    loss_partner = _loss_specialist_partner_baseline(
+        spec,
+        dim=dim,
+        build_block_slot_factory=build_block_slot_factory,
+        generate_module=generate_module,
+        anchor_axes_for_op=anchor_axes_for_op,
+        slot_name_for_partner_kind=slot_name_for_partner_kind,
+        undispatchable_error=UndispatchableSpecError,
+    )
+    if loss_partner is not None:
+        anchor_factory, anchor_key, anchor_label = loss_partner
+    else:
+        if _is_loss_specialist_pair(spec):
+            partner = _axis_value(spec, "loss_specialist_partner_op", "partner_kind")
+            return {
+                "paired_skipped_reason": (
+                    "loss_specialist_partner_unbuildable"
+                    + (f":{partner}" if partner else "")
+                )
+            }
+        anchor_factory = None
+        anchor_key = None
+        anchor_label = ""
+
     op = getattr(spec, "anchor_witness_op", "") or ""
     anchor_axes: dict[str, Any] | None = None
-    if op:
+    if anchor_factory is None and op:
         anchor = anchor_axes_for_op(op)
         if anchor is not None:
             candidate_axes = dict(anchor.axes)
@@ -233,7 +261,9 @@ def paired_metadata_for_spec(
             except UndispatchableSpecError:
                 anchor_axes = None  # fall through to the frontier baseline
 
-    if anchor_axes is not None:
+    if anchor_factory is not None:
+        pass
+    elif anchor_axes is not None:
         anchor_factory: LaneFactory = partial(generate_module, anchor_axes, dim=dim)
         anchor_key: Hashable = ("paired_anchor", op)
         anchor_label = op
@@ -257,3 +287,63 @@ def paired_metadata_for_spec(
         anchor_cache_key=anchor_key,
     )
     return {**ci.to_metadata(), "paired_anchor_op": anchor_label}
+
+
+def _axis_value(spec: "ProposalSpec", *keys: str) -> Any:
+    axes = getattr(spec, "math_axes", {}) or {}
+    for key in keys:
+        if key in axes:
+            return axes[key]
+        op_key = f"op_{key}"
+        if op_key in axes:
+            return axes[op_key]
+    return None
+
+
+def _is_loss_specialist_pair(spec: "ProposalSpec") -> bool:
+    role = str(
+        _axis_value(spec, "candidate_role", "component_role", "specialist_role") or ""
+    )
+    return role in _LOSS_SPECIALIST_ROLES or bool(_axis_value(spec, "loss_specialist"))
+
+
+def _loss_specialist_partner_baseline(
+    spec: "ProposalSpec",
+    *,
+    dim: int,
+    build_block_slot_factory: Callable[[str], Callable[[int], nn.Module]],
+    generate_module: Callable[..., nn.Module],
+    anchor_axes_for_op: Callable[[str], Any],
+    slot_name_for_partner_kind: Callable[[str], str | None],
+    undispatchable_error: type[Exception],
+) -> tuple[LaneFactory, Hashable, str] | None:
+    if not _is_loss_specialist_pair(spec):
+        return None
+
+    partner_op = str(_axis_value(spec, "loss_specialist_partner_op") or "")
+    if partner_op:
+        anchor = anchor_axes_for_op(partner_op)
+        if anchor is not None:
+            axes = dict(anchor.axes)
+            try:
+                generate_module(axes, dim=dim)
+            except undispatchable_error:
+                pass
+            else:
+                return (
+                    partial(generate_module, axes, dim=dim),
+                    ("loss_specialist_partner", partner_op),
+                    partner_op,
+                )
+
+    explicit_slot = str(_axis_value(spec, "block_slot_partner") or "").strip()
+    partner_kind = str(_axis_value(spec, "partner_kind") or "").strip()
+    slot = explicit_slot or slot_name_for_partner_kind(partner_kind)
+    if not slot:
+        return None
+
+    def factory() -> nn.Module:
+        return build_block_slot_factory(slot)(dim)
+
+    label = partner_op or f"loss_partner:{partner_kind or slot}"
+    return factory, ("loss_specialist_partner_slot", slot), label

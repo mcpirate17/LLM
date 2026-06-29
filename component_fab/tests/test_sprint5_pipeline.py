@@ -4,14 +4,18 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from component_fab.tests.conftest import make_candidate_spec
+from component_fab.tests.conftest import make_candidate_spec, make_spec
 
 import pytest
 import torch
 from torch import nn
 
 from component_fab.harness.probe_tasks import DEFAULT_PROBE_TASKS
-from component_fab.improver.cross_anchor import enumerate_cross_anchor_variants
+from component_fab.improver.axis_variants import AnchorAxes
+from component_fab.improver.cross_anchor import (
+    enumerate_cross_anchor_variants,
+    enumerate_loss_monster_pairs,
+)
 from component_fab.policies.promotion import (
     DEFAULT_PROMOTION_RULES,
     PROMOTION_PENDING,
@@ -191,6 +195,59 @@ def test_cross_anchor_excludes_per_position_hosts() -> None:
     specs = enumerate_cross_anchor_variants(["tropical_attention", "padic_gate"])
     assert len(specs) == 1
     assert specs[0].name.startswith("hybrid_tropical_attention_plus_padic_gate")
+
+
+def test_loss_monster_pairs_require_long_range_partner_evidence() -> None:
+    donor = make_spec(
+        {"op_block_template": "recursive_depth_router"},
+        "loss_donor",
+        name="recursive_depth_router_monster",
+    )
+    partner = AnchorAxes(
+        op_name="candidate_partner",
+        axes={
+            "op_algebraic_space": "tropical",
+            "op_dynamical_has_state": 1,
+            "op_dynamical_memory_length_class": "O(L)",
+            "op_geometric_receptive_field": "global",
+        },
+        eval_count=3,
+        pass_rate=0.8,
+    )
+
+    assert enumerate_loss_monster_pairs([donor], partners=[partner]) == []
+    specs = enumerate_loss_monster_pairs(
+        [donor],
+        partners=[partner],
+        evidence_by_op={"candidate_partner": {"induction_auc": 0.72}},
+    )
+
+    assert len(specs) == 1
+    spec = specs[0]
+    assert spec.math_axes["op_block_template"] == "loss_monster_paired"
+    assert spec.math_axes["op_candidate_role"] == "loss_specialist_pair"
+    assert spec.math_axes["op_loss_specialist_partner_op"] == "candidate_partner"
+    assert spec.math_axes["op_loss_specialist_donor_id"] == donor.proposal_id
+
+
+def test_loss_monster_pairs_use_known_partner_kind_for_validated_carrier() -> None:
+    donor = make_spec({"op_block_slot_loss": "routed_bottleneck"}, "loss_donor")
+    partner = AnchorAxes(
+        op_name="hyper_mor_b_145m",
+        axes={
+            "op_algebraic_space": "fab_promoted",
+            "op_dynamical_has_state": 1,
+            "op_dynamical_memory_length_class": "O(L)",
+            "op_geometric_receptive_field": "global",
+        },
+        eval_count=1,
+        pass_rate=1.0,
+    )
+
+    spec = enumerate_loss_monster_pairs([donor], partners=[partner])[0]
+
+    assert spec.math_axes["op_partner_kind"] == "hyper_mor"
+    assert spec.math_axes["op_block_slot_loss"] == "routed_bottleneck"
 
 
 # ---------- Promotion ----------

@@ -17,6 +17,8 @@ from component_fab.generator.dispatch import (
     DispatchRule,
     build_block_slot_factory,
     dispatch_first,
+    known_partner_kinds,
+    slot_name_for_partner_kind,
 )
 from component_fab.generator.dispatch.invention import (
     NativeParityEvidenceError as NativeParityEvidenceError,
@@ -24,6 +26,7 @@ from component_fab.generator.dispatch.invention import (
 )
 from component_fab.math_knobs import math_knobs_from_axes
 
+from ..harness.primitives import SwiGLU
 from ..proposer.nas_bridge import SOURCE_NAS, load_cached_graph_json
 from ..proposer.spec_generator import ProposalSpec
 from .block_templates import (
@@ -34,6 +37,7 @@ from .block_templates import (
     HeteroMoEBlock,
     HyperbolicBridgeBlock,
     LatentCompressBlock,
+    LossMonsterPairedBlock,
     RecursiveDepthBlock,
     RecursiveDepthRouterBlock,
     SparseMoEBlock,
@@ -71,12 +75,14 @@ from .primitive_templates import (
     TuckerDecompLane,
 )
 from .routing_primitives import (
+    RECURSION_SITES,
     ROUTING_KINDS,
     DifficultyRoutedLane,
     HashedMoELane,
     LowInfoSkipRouter,
     MixtureOfRecursionsLane,
     RoutedBottleneckLane,
+    SiteRecursionStack,
     SparseMoRLane,
 )
 
@@ -354,6 +360,90 @@ def _base_lane_factory(math_axes: dict[str, Any], *, top_k_frac: float) -> LaneF
     return factory
 
 
+def _recursion_sites(raw: Any) -> tuple[str, ...]:
+    if raw in (None, "", "none"):
+        return ("mixer",)
+    if isinstance(raw, str):
+        normalized = raw.replace(",", "+")
+        return tuple(part.strip() for part in normalized.split("+") if part.strip())
+    if isinstance(raw, (tuple, list, set)):
+        return tuple(str(part).strip() for part in raw if str(part).strip())
+    return (str(raw).strip(),)
+
+
+# Cap on the summed per-site recursion depth. The paired probe already makes
+# recursion pay for itself capability-wise (added halt/site params must beat the
+# anchor), but a 4-site x deep spec could still balloon the lane; this fails
+# loud at the pathological end instead of silently clamping.
+MAX_RECURSION_TOTAL_DEPTH = 32
+
+
+def _site_recursion_module(
+    site: str,
+    base: nn.Module,
+    *,
+    dim: int,
+    top_k_frac: float,
+    top_k: int,
+) -> nn.Module:
+    """Build the weighted submodule recursion wraps for a given site."""
+    if site == "mixer":
+        return base
+    if site == "ffn":
+        return SwiGLU(dim)
+    if site == "router":
+        return RoutedBottleneckLane(_expert_factory_pool(top_k_frac), dim, top_k=top_k)
+    if site == "embedding":
+        rank = max(1, int(round(dim * top_k_frac)))
+        return LowRankFactorizedLane(dim, rank=rank)
+    raise ValueError(f"unsupported recursion site {site!r}")
+
+
+def _build_site_recursion(
+    base: nn.Module,
+    math_axes: dict[str, Any],
+    *,
+    dim: int,
+    top_k_frac: float,
+    default_depth: int,
+    top_k: int,
+) -> nn.Module:
+    """Recurse over any weighted site (embedding/mixer/ffn/router), not just the
+    mixer lane — the "recursion anywhere there are weights" search axis."""
+    listed = set(_recursion_sites(math_axes.get("op_recursion_sites")))
+    unsupported = sorted(listed - set(RECURSION_SITES))
+    if unsupported:
+        raise NotImplementedError(
+            f"site_recursion supports sites={list(RECURSION_SITES)}; "
+            f"unsupported={unsupported}"
+        )
+    # The token mixer is the lane's reason to exist — always present, recursed
+    # (depth>1) only when explicitly requested; depth 1 == plain application.
+    sites = tuple(s for s in RECURSION_SITES if s in listed or s == "mixer")
+    depths = {
+        site: (
+            int(math_axes.get(f"op_max_depth_{site}") or default_depth)
+            if site in listed
+            else 1
+        )
+        for site in sites
+    }
+    total = sum(depths.values())
+    if total > MAX_RECURSION_TOTAL_DEPTH:
+        raise ValueError(
+            f"site_recursion total depth {total} exceeds budget "
+            f"{MAX_RECURSION_TOTAL_DEPTH} (sites={depths}); recursion must pay "
+            "for itself, not bloat the lane"
+        )
+    modules = {
+        site: _site_recursion_module(
+            site, base, dim=dim, top_k_frac=top_k_frac, top_k=top_k
+        )
+        for site in sites
+    }
+    return SiteRecursionStack(modules, dim, depths=depths, default_depth=default_depth)
+
+
 def _expert_factory_pool(
     top_k_frac: float,
 ) -> tuple[LaneFactory, LaneFactory, LaneFactory]:
@@ -386,6 +476,15 @@ def _apply_routing_wrap(
     base_factory = _base_lane_factory(math_axes, top_k_frac=top_k_frac)
     if kind == "depth_router":
         return MixtureOfRecursionsLane(base_factory, dim, max_depth=max_depth)
+    if kind == "site_recursion":
+        return _build_site_recursion(
+            base,
+            math_axes,
+            dim=dim,
+            top_k_frac=top_k_frac,
+            default_depth=max_depth,
+            top_k=top_k,
+        )
     if kind == "sparse_depth":
         return SparseMoRLane(
             base_factory, dim, max_depth=max_depth, top_k_frac=top_k_frac
@@ -501,6 +600,43 @@ def _build_gated_parallel(math_axes, anchor_factory, dim, top_k_frac):
     return GatedParallelBlock(anchor_factory, slot_b, dim)
 
 
+def _loss_partner_factory(math_axes, anchor_factory) -> LaneFactory:
+    explicit_slot = str(math_axes.get("op_block_slot_partner") or "").strip()
+    if explicit_slot:
+        return _block_slot_factory(explicit_slot)
+    partner_kind = str(math_axes.get("op_partner_kind") or "anchor").strip()
+    if partner_kind in ("", "anchor"):
+        return anchor_factory
+    slot_name = slot_name_for_partner_kind(partner_kind)
+    if slot_name is None:
+        known = ", ".join(known_partner_kinds())
+        raise ValueError(
+            f"unknown loss-monster partner kind {partner_kind!r}; known: {known}"
+        )
+    return _block_slot_factory(slot_name)
+
+
+def _loss_slot_name(math_axes: dict[str, Any]) -> str:
+    return str(
+        math_axes.get("op_block_slot_loss")
+        or math_axes.get("op_loss_monster_slot")
+        or "routed_bottleneck"
+    )
+
+
+def _build_loss_monster_paired(math_axes, anchor_factory, dim, top_k_frac):
+    del top_k_frac
+    partner_factory = _loss_partner_factory(math_axes, anchor_factory)
+    loss_factory = _block_slot_factory(_loss_slot_name(math_axes))
+    partner_floor = float(math_axes.get("op_partner_floor") or 0.5)
+    return LossMonsterPairedBlock(
+        partner_factory,
+        loss_factory,
+        dim,
+        partner_floor=partner_floor,
+    )
+
+
 def _build_recursive_depth_router(math_axes, anchor_factory, dim, top_k_frac):
     del top_k_frac
     max_depth = int(math_axes.get("op_max_depth") or 4)
@@ -550,6 +686,7 @@ _BLOCK_TEMPLATE_BUILDERS: dict[str, Callable[..., nn.Module]] = {
     "three_lane_adaptive": _build_three_lane_adaptive,
     "recursive_depth": _build_recursive_depth,
     "gated_parallel": _build_gated_parallel,
+    "loss_monster_paired": _build_loss_monster_paired,
     "recursive_depth_router": _build_recursive_depth_router,
     "sparse_moe_block": _build_sparse_moe_block,
     "hetero_moe_block": _build_hetero_moe_block,

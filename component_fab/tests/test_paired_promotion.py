@@ -151,6 +151,63 @@ def test_metadata_emits_ci_for_buildable_anchor():
     assert "paired_delta_ci_excludes_zero" in md
 
 
+def test_loss_specialist_metadata_pairs_against_declared_partner_slot(monkeypatch):
+    from component_fab.generator.memory_primitives import MultiHeadSlotTableMemoryLane
+
+    def fake_run(candidate_factory, anchor_factory, **kwargs):  # noqa: ANN001
+        candidate = candidate_factory()
+        anchor = anchor_factory()
+        assert candidate.__class__.__name__ == "LossMonsterPairedBlock"
+        assert isinstance(anchor, MultiHeadSlotTableMemoryLane)
+        assert kwargs["anchor_cache_key"] == (
+            "loss_specialist_partner_slot",
+            "slot_table_memory",
+        )
+        return paired_delta_ci([0.2, 0.21, 0.22])
+
+    monkeypatch.setattr("component_fab.validator.paired.run_paired_probe", fake_run)
+    md = paired_metadata_for_spec(
+        _spec(
+            {
+                "op_block_template": "loss_monster_paired",
+                "op_partner_kind": "slot_dplr",
+                "op_block_slot_loss": "routed_bottleneck",
+                "op_candidate_role": "loss_specialist_pair",
+            },
+            "",
+        ),
+        seeds=(0, 1, 2),
+        dim=16,
+    )
+
+    assert md["paired_anchor_op"] == "loss_partner:slot_dplr"
+    assert md["paired_delta_ci_excludes_zero"] is True
+
+
+def test_loss_specialist_metadata_skips_when_partner_unbuildable(monkeypatch):
+    def fail_if_called(*args, **kwargs):  # noqa: ANN001
+        raise AssertionError("loss specialist without buildable partner must skip")
+
+    monkeypatch.setattr(
+        "component_fab.validator.paired.run_paired_probe", fail_if_called
+    )
+    md = paired_metadata_for_spec(
+        _spec(
+            {
+                "op_block_template": "loss_monster_paired",
+                "op_partner_kind": "unknown_partner",
+                "op_candidate_role": "loss_specialist_pair",
+            },
+            "",
+        ),
+        dim=16,
+    )
+
+    assert md["paired_skipped_reason"].startswith(
+        "loss_specialist_partner_unbuildable"
+    )
+
+
 # --------------------------------------------------------------------------- #
 # Promotion gate (the WS-2 acceptance criterion)
 # --------------------------------------------------------------------------- #
@@ -241,3 +298,55 @@ def test_guard_off_ignores_ci(tmp_path: Path):
     entry = _streak_ledger(tmp_path, "off", md, cycles=2).entries["off"]
     rules = PromotionRules(require_ci_excludes_zero=False)
     assert decide_promotion(entry, rules).decision == PROMOTION_PROMOTED
+
+
+def test_loss_specialist_cannot_promote_without_carrier(tmp_path: Path):
+    md = {
+        "candidate_role": "loss_specialist",
+        "loss_specialist_paired": True,
+        "paired_delta_ci_excludes_zero": True,
+        "paired_delta_ci_low": 0.05,
+    }
+    entry = _streak_ledger(tmp_path, "loss_only", md, cycles=2).entries["loss_only"]
+    decision = decide_promotion(entry, PromotionRules())
+    assert decision.decision == PROMOTION_PENDING
+    assert "missing long-range carrier" in decision.reason
+
+
+def test_loss_specialist_cannot_promote_when_unpaired(tmp_path: Path):
+    md = {
+        "candidate_role": "loss_specialist",
+        "loss_specialist_partner_op": "hyper_mor_b_145m",
+        "paired_delta_ci_excludes_zero": True,
+        "paired_delta_ci_low": 0.05,
+    }
+    entry = _streak_ledger(tmp_path, "solo_loss", md, cycles=2).entries["solo_loss"]
+    decision = decide_promotion(entry, PromotionRules())
+    assert decision.decision == PROMOTION_PENDING
+    assert "must be paired" in decision.reason
+
+
+def test_loss_specialist_pair_promotes_with_positive_carrier_delta(tmp_path: Path):
+    md = {
+        "candidate_role": "loss_specialist_pair",
+        "loss_specialist_partner_op": "hyper_mor_b_145m",
+        "paired_delta_ci_excludes_zero": True,
+        "paired_delta_ci_low": 0.05,
+    }
+    entry = _streak_ledger(tmp_path, "paired_loss", md, cycles=2).entries["paired_loss"]
+    assert decide_promotion(entry, PromotionRules()).decision == PROMOTION_PROMOTED
+
+
+def test_loss_specialist_pair_guard_reads_nested_math_axes(tmp_path: Path):
+    md = {
+        "math_axes": {
+            "op_candidate_role": "loss_specialist_pair",
+            "op_loss_specialist_partner_op": "hyper_mor_b_145m",
+        },
+        "paired_delta_ci_excludes_zero": True,
+        "paired_delta_ci_low": 0.05,
+    }
+    entry = _streak_ledger(tmp_path, "nested_pair", md, cycles=2).entries[
+        "nested_pair"
+    ]
+    assert decide_promotion(entry, PromotionRules()).decision == PROMOTION_PROMOTED
