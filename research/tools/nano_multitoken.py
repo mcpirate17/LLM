@@ -103,18 +103,13 @@ def unigram_top1(stream: np.ndarray, vocab: int) -> float:
     return float(c.max() / c.sum())
 
 
-def run_family(
+def _train_eval(
+    model: torch.nn.Module,
     family: str,
-    graph_json: str,
     train: np.ndarray,
     val: np.ndarray,
-    vocab: int,
     args: argparse.Namespace,
 ) -> dict:
-    graph = graph_from_json(graph_json)
-    model = compile_model_native_first(
-        [graph] * args.n_layers, vocab_size=vocab, max_seq_len=args.seq
-    ).to(args.device)
     model.train()
     opt = torch.optim.AdamW(
         model.parameters(), lr=args.lr, betas=(0.9, 0.95), weight_decay=0.01
@@ -159,6 +154,22 @@ def run_family(
     return rec
 
 
+def run_family(family, graph_json, train, val, vocab, args) -> dict:
+    graph = graph_from_json(graph_json)
+    model = compile_model_native_first(
+        [graph] * args.n_layers, vocab_size=vocab, max_seq_len=args.seq
+    ).to(args.device)
+    return _train_eval(model, family, train, val, args)
+
+
+def run_softmax(train, val, vocab, args) -> dict:
+    """Softmax-attention control on the SAME structured corpus (the multi-token baseline)."""
+    from research.tools.softmax_control import TinyGPT
+
+    model = TinyGPT(vocab, 256, args.n_layers, 4, args.seq).to(args.device)
+    return _train_eval(model, "softmax_control", train, val, args)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument(
@@ -193,6 +204,9 @@ def main() -> int:
     champs = {c.family: c for c in select_family_champions(_RUNS_DB)}
     results = []
     for fam in args.families:
+        if fam == "softmax":
+            results.append(run_softmax(train, val, vocab, args))
+            continue
         if fam not in champs:
             print(f"  {fam}: no champion graph")
             continue
