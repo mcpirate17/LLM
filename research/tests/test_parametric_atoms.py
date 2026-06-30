@@ -14,6 +14,7 @@ from research.synthesis.parametric_atoms import (
     ATOM_KINDS,
     AtomSpec,
     ParametricBasis,
+    ParametricChannelMLP,
     ParametricNorm,
     ParametricScan,
     build_atom_stack,
@@ -35,7 +36,9 @@ def _rel(a: torch.Tensor, b: torch.Tensor) -> float:
 
 
 # ── identity at init ─────────────────────────────────────────────────
-@pytest.mark.parametrize("make", [ParametricNorm, ParametricBasis, ParametricScan])
+@pytest.mark.parametrize(
+    "make", [ParametricNorm, ParametricBasis, ParametricScan, ParametricChannelMLP]
+)
 def test_atom_is_passthrough_at_init(make) -> None:
     x = _x()
     atom = make(x.shape[-1])
@@ -49,7 +52,9 @@ def test_atom_stack_is_passthrough_at_init() -> None:
         assert _rel(stack(x), x) < 1e-3, f"stack {spec.key} not identity at init"
 
 
-@pytest.mark.parametrize("make", [ParametricNorm, ParametricBasis, ParametricScan])
+@pytest.mark.parametrize(
+    "make", [ParametricNorm, ParametricBasis, ParametricScan, ParametricChannelMLP]
+)
 def test_atom_is_finite_and_trainable(make) -> None:
     x = _x().requires_grad_(True)
     atom = make(x.shape[-1])
@@ -96,6 +101,22 @@ def test_scan_knob_introduces_order_dependence() -> None:
     opened = perm_equivariance(scan, x, perm)
     assert base > 0.99  # pass-through is order-free
     assert opened < base - 0.05  # causal state is order-dependent
+
+
+def test_channel_mlp_knob_introduces_channel_nonlinearity_only() -> None:
+    x = _x()
+    perm = torch.randperm(x.shape[1])
+    mlp = ParametricChannelMLP(x.shape[-1])
+    base_scale = scale_homogeneity(mlp, x)
+    with torch.no_grad():
+        mlp.blend_logit.fill_(6.0)
+        mlp.gate_logit.fill_(6.0)
+        mlp.swish_logit.fill_(6.0)
+    opened_scale = scale_homogeneity(mlp, x)
+    opened_perm = perm_equivariance(mlp, x, perm)
+    assert base_scale > 0.99  # pass-through is effectively linear
+    assert opened_scale < base_scale - 0.05  # gate/nonlinearity breaks homogeneity
+    assert opened_perm > 0.99  # channel-only MLP commutes with token permutation
 
 
 # ── spec validation fails loud ───────────────────────────────────────

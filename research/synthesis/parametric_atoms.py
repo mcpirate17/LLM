@@ -31,6 +31,7 @@ import math
 from dataclasses import dataclass
 
 import torch
+import torch.nn.functional as F
 from torch import Tensor, nn
 
 # Identity-at-init: sigmoid(_OFF) ~ 4.5e-5, so a gated atom is a pass-through
@@ -166,9 +167,52 @@ class ParametricScan(nn.Module):
 
 
 # --------------------------------------------------------------------------- #
+# Channel MLP atom — plain MLP <-> GLU <-> SwiGLU, continuously
+# --------------------------------------------------------------------------- #
+class ParametricChannelMLP(nn.Module):
+    """Channel-only nonlinear block, identity at init.
+
+    ``blend`` (sigmoid, ~0 at init) mixes the input with a per-token MLP output.
+    ``gate`` slides plain GELU MLP -> gated MLP, and ``swish`` slides GLU ->
+    SwiGLU inside that gated branch. The atom preserves token permutation
+    equivariance because it is applied independently at each token, while opening
+    ``blend`` introduces channel nonlinearities that lower ``scale_homogeneity``.
+    """
+
+    def __init__(self, dim: int, hidden_mult: int = 2) -> None:
+        super().__init__()
+        if hidden_mult <= 0:
+            raise ValueError(f"hidden_mult must be positive; got {hidden_mult}")
+        self.dim = dim
+        self.hidden_dim = int(dim * hidden_mult)
+        self.blend_logit = nn.Parameter(torch.tensor(_OFF))
+        self.gate_logit = nn.Parameter(torch.tensor(_OFF))
+        self.swish_logit = nn.Parameter(torch.tensor(_OFF))
+        self.up = nn.Linear(dim, 2 * self.hidden_dim)
+        self.down = nn.Linear(self.hidden_dim, dim)
+
+    def forward(self, x: Tensor) -> Tensor:
+        if x.dim() != 3:
+            raise ValueError(
+                f"ParametricChannelMLP needs [B, L, D]; got {tuple(x.shape)}"
+            )
+        value, gate_raw = self.up(x).chunk(2, dim=-1)
+        plain = F.gelu(value)
+        glu = value * torch.sigmoid(gate_raw)
+        swiglu = value * F.silu(gate_raw)
+        swish = torch.sigmoid(self.swish_logit)
+        gated = glu + swish * (swiglu - glu)
+        gate = torch.sigmoid(self.gate_logit)
+        hidden = plain + gate * (gated - plain)
+        projected = self.down(hidden)
+        blend = torch.sigmoid(self.blend_logit)
+        return x + blend * (projected - x)
+
+
+# --------------------------------------------------------------------------- #
 # Composition + spec
 # --------------------------------------------------------------------------- #
-ATOM_KINDS = ("norm", "basis", "scan")
+ATOM_KINDS = ("norm", "basis", "scan", "mlp")
 
 
 @dataclass(frozen=True)
@@ -204,6 +248,8 @@ def build_atom(kind: str, dim: int, spec: AtomSpec | None = None) -> nn.Module:
         return ParametricBasis(dim, axis=spec.basis_axis)
     if kind == "scan":
         return ParametricScan(dim)
+    if kind == "mlp":
+        return ParametricChannelMLP(dim)
     raise ValueError(f"unknown atom kind: {kind!r}")
 
 
