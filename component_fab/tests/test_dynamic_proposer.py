@@ -230,9 +230,7 @@ def test_autonomous_cycle_can_include_training_regime_specs(
         max_training_specs=1,
     )
 
-    training_specs = [
-        spec for spec in specs if spec.math_axes.get(AXIS_TRAIN_REGIME)
-    ]
+    training_specs = [spec for spec in specs if spec.math_axes.get(AXIS_TRAIN_REGIME)]
     assert len(training_specs) == 1
     assert training_specs[0].math_axes[AXIS_TRAIN_REGIME] == "embed_warm_then_all"
 
@@ -496,3 +494,103 @@ def test_collect_dynamic_cases_skips_over_recursed_dynamic_bases(
     )
 
     assert collect_dynamic_evidence_cases(ledger) == []
+
+
+# --- WS-1: compression is actively searched (weakness -> repair loop) ---
+
+from component_fab.proposer.dynamic import _compression_is_weak  # noqa: E402
+
+
+def _seed_compression_weak_ledger(tmp_path: Path) -> Ledger:
+    ledger = Ledger(tmp_path / "ledger.jsonl")
+    ledger.record_grade(
+        proposal_id="compress_cand_0000000000",
+        name="compress_cand",
+        category="lane",
+        synthesis_kind="novel_hybrid",
+        cycle=1,
+        composite_score=0.4,
+        smoke_pass=True,
+        learned_signal=True,
+        metadata={
+            "math_axes": base_dynamic_axes(),
+            "can_bind": True,
+            "compression_declared": True,
+            "compression_effective_rank_ratio": 0.18,
+            "compression_reconstruct_mse": 0.9,
+        },
+    )
+    return ledger
+
+
+def test_compression_weakness_requires_declared_and_a_real_metric() -> None:
+    # Not declared -> never weak, even with a bad metric value present.
+    assert not _compression_is_weak({"compression_effective_rank_ratio": 0.1})
+    # Declared but no measured metric -> not weak (never fabricate a weakness).
+    assert not _compression_is_weak({"compression_declared": True})
+    # Declared + under-utilized latent budget -> weak.
+    assert _compression_is_weak(
+        {"compression_declared": True, "compression_effective_rank_ratio": 0.2}
+    )
+    # Declared + high reconstruction error -> weak.
+    assert _compression_is_weak(
+        {"compression_declared": True, "compression_reconstruct_mse": 0.9}
+    )
+    # Declared + healthy compression -> not weak.
+    assert not _compression_is_weak(
+        {
+            "compression_declared": True,
+            "compression_effective_rank_ratio": 0.95,
+            "compression_reconstruct_mse": 0.01,
+        }
+    )
+
+
+def test_repairs_weak_compression_targets_content_bottleneck() -> None:
+    repairs = _repairs_for_case(_case("weak_compression"), {})
+    assert repairs[0].name == "compress_content_bottleneck"
+    delta = repairs[0].delta
+    assert delta["op_search_track"] == "physics_atom"
+    assert delta["op_physics_target"] == "compression_bottleneck_state"
+    assert delta["op_physics_aggregate_family"] == "semiring"
+    assert delta["op_dynamical_has_state"] == 1
+    assert delta["op_spectral_preferred_basis"] == "content"
+
+
+def test_dynamic_proposer_repairs_weak_compression(tmp_path: Path) -> None:
+    ledger = _seed_compression_weak_ledger(tmp_path)
+
+    cases = collect_dynamic_evidence_cases(ledger)
+    assert cases
+    assert "weak_compression" in cases[0].weaknesses
+
+    specs = enumerate_dynamic_proposals(
+        [],
+        ledger,
+        max_specs=8,
+        include_anchor_fallback=False,
+    )
+    repaired = [s for s in specs if "compress_content_bottleneck" in s.name]
+    assert repaired
+    spec = repaired[0]
+    assert spec.math_axes["op_search_track"] == "physics_atom"
+    assert spec.math_axes["op_physics_target"] == "compression_bottleneck_state"
+    assert spec.math_axes["op_spectral_preferred_basis"] == "content"
+    assert spec.math_axes["op_dynamical_has_state"] == 1
+
+
+def test_weak_compression_repair_spec_is_buildable(tmp_path: Path) -> None:
+    ledger = _seed_compression_weak_ledger(tmp_path)
+    spec = [
+        s
+        for s in enumerate_dynamic_proposals(
+            [], ledger, max_specs=8, include_anchor_fallback=False
+        )
+        if "compress_content_bottleneck" in s.name
+    ][0]
+
+    module = generate_module_from_spec(spec, dim=16)
+    x = torch.randn(2, 7, 16)
+    y = module(x)
+    assert y.shape == x.shape
+    assert torch.isfinite(y).all()

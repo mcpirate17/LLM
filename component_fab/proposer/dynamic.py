@@ -124,6 +124,45 @@ def _float_metadata(metadata: Mapping[str, Any], *keys: str) -> float | None:
         return None
 
 
+# A compression candidate is weak when its declared latent budget is
+# under-utilized (low effective rank) or it reconstructs poorly. These keys are
+# written by the grading path when the compiled graph contains a real
+# compression op (see component_fab.metrics.compression_quality); when no
+# compression op is present they are absent and this returns False (no fake).
+_COMPRESSION_MIN_RANK_RATIO = 0.5
+_COMPRESSION_MAX_RECONSTRUCT_MSE = 0.5
+
+
+def _compression_is_weak(metadata: Mapping[str, Any]) -> bool:
+    declared = _metadata_value(
+        metadata,
+        "compression_declared",
+        "compression_target",
+        "compression_target_op",
+    )
+    if not declared:
+        return False
+    rank_ratio = _float_metadata(
+        metadata,
+        "compression_effective_rank_ratio",
+        "effective_rank_ratio",
+    )
+    reconstruct_mse = _float_metadata(
+        metadata,
+        "compression_reconstruct_mse",
+        "reconstruct_mse",
+        "reconstruction_mse",
+    )
+    if rank_ratio is None and reconstruct_mse is None:
+        return False
+    under_utilized = rank_ratio is not None and rank_ratio < _COMPRESSION_MIN_RANK_RATIO
+    poor_reconstruct = (
+        reconstruct_mse is not None
+        and reconstruct_mse > _COMPRESSION_MAX_RECONSTRUCT_MSE
+    )
+    return under_utilized or poor_reconstruct
+
+
 def _weaknesses_from_metadata(
     metadata: Mapping[str, Any], score: float
 ) -> tuple[str, ...]:
@@ -154,8 +193,10 @@ def _weaknesses_from_metadata(
         "loss_ratio",
         "next_token_loss_ratio",
     )
-    if loss_ratio is not None and loss_ratio < 0.1 and not bool(
-        metadata.get("can_bind")
+    if (
+        loss_ratio is not None
+        and loss_ratio < 0.1
+        and not bool(metadata.get("can_bind"))
     ):
         weaknesses.append("strong_loss_floor_reasoning")
     eliminated_by = str(metadata.get("eliminated_by") or "")
@@ -174,6 +215,8 @@ def _weaknesses_from_metadata(
         weaknesses.append("range_blind")
     if not bool(metadata.get("can_bind")) and score >= 0.15:
         weaknesses.append("cannot_bind")
+    if _compression_is_weak(metadata):
+        weaknesses.append("weak_compression")
     if not weaknesses and score >= 0.55:
         weaknesses.append("promising_needs_novelty")
     return tuple(dict.fromkeys(weaknesses))
@@ -639,6 +682,29 @@ _REPAIR_RULES: tuple[_RepairRule, ...] = (
         "bind_sparse_content",
         "repair binding failure using content basis plus sparse/dynamic routing values mined from the ledger",
         dynamic_delta=_delta_bind_sparse_content,
+    ),
+    _RepairRule(
+        frozenset({"weak_compression", "eliminated_compression"}),
+        "compress_content_bottleneck",
+        (
+            "repair under-utilized/low-fidelity compression with a content-addressed "
+            "bounded-state bottleneck — the non-QKV state-compression specialty"
+        ),
+        static_delta={
+            "op_search_track": "physics_atom",
+            "op_physics_atom_kinds": "scan+basis",
+            "op_physics_basis_axis": "channel",
+            "op_physics_address_family": "cosine",
+            "op_physics_score_norm_family": "sharpen",
+            "op_physics_aggregate_family": "semiring",
+            "op_physics_knob_scale": 1.5,
+            "op_physics_target": "compression_bottleneck_state",
+            "op_dynamical_has_state": 1,
+            "op_dynamical_memory_length_class": "O(L)",
+            "op_geometric_receptive_field": "global",
+            "op_spectral_preferred_basis": "content",
+            "op_activation_sparsity_pattern": "learned_structured",
+        },
     ),
     _RepairRule(
         frozenset({"eliminated_s05_causality_stability"}),
