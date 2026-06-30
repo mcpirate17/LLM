@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import hashlib
 from dataclasses import dataclass
+from itertools import zip_longest
 from typing import Any, Iterable, Mapping, Sequence
 
 from component_fab.proposer.spec_generator import ProposalSpec, build_spec_from_axes
@@ -113,6 +114,33 @@ _DEFAULT_EXPERIMENTS: tuple[PhysicsExperiment, ...] = (
         base_priority=1.2,
     ),
     PhysicsExperiment(
+        name="channel_gated_transform",
+        target="channel_mlp_gated_nonlinearity",
+        descriptor_target={
+            "perm_equivariance": 0.70,
+            "shift_equivariance": 0.70,
+            "scale_homogeneity": 0.40,
+            "spectral_radius": 0.90,
+        },
+        atom_specs=(
+            AtomSpec(kinds=("mlp",)),
+            AtomSpec(kinds=("norm", "mlp")),
+            AtomSpec(kinds=("mlp", "norm")),
+            AtomSpec(kinds=("mlp", "basis"), basis_axis="channel"),
+        ),
+        stage_specs=(
+            StageSpec("dot", "sharpen", "mean"),
+            StageSpec("cosine", "sharpen", "semiring"),
+            StageSpec("reciprocal", "sharpen", "semiring"),
+        ),
+        knob_scales=(0.75, 1.5, 2.25),
+        rationale=(
+            "Test channel-only gated MLP structure as a name-free FFN/search "
+            "slot: nonlinear and contractive without introducing token routing."
+        ),
+        base_priority=1.15,
+    ),
+    PhysicsExperiment(
         name="induction_symmetry_break",
         target="induction_symmetry_break",
         descriptor_target={
@@ -149,8 +177,10 @@ _DEFAULT_EXPERIMENTS: tuple[PhysicsExperiment, ...] = (
             "spectral_radius": 0.85,
         },
         atom_specs=(
+            AtomSpec(kinds=("mlp", "norm")),
             AtomSpec(kinds=("norm", "scan")),
             AtomSpec(kinds=("scan", "norm")),
+            AtomSpec(kinds=("norm", "mlp", "scan")),
             AtomSpec(kinds=("norm", "basis"), basis_axis="token"),
             AtomSpec(kinds=("basis", "norm", "scan"), basis_axis="token"),
         ),
@@ -312,9 +342,27 @@ def _iter_scored_candidates(
         )
 
 
+def _interleave_scored_rows(
+    rows_by_experiment: Sequence[Sequence[ScoredPhysicsProgram]],
+) -> Iterable[ScoredPhysicsProgram]:
+    """Yield rank-0 from each experiment, then rank-1, etc.
+
+    This prevents one high-priority experiment family from consuming the entire
+    cycle budget before other descriptor targets get a chance to reach the Fab
+    grader. Priority still matters because experiment families are ordered before
+    interleaving.
+    """
+
+    for rank_group in zip_longest(*rows_by_experiment):
+        for row in rank_group:
+            if row is not None:
+                yield row
+
+
 def _axes_for_scored(row: ScoredPhysicsProgram) -> dict[str, Any]:
     kinds = "+".join(row.spec.atom.kinds) if row.spec.atom.kinds else "identity"
     has_scan = "scan" in row.spec.atom.kinds
+    has_mlp = "mlp" in row.spec.atom.kinds
     axes: dict[str, Any] = {
         "op_search_track": "physics_atom",
         "op_physics_source": "name_free_experiment",
@@ -333,11 +381,13 @@ def _axes_for_scored(row: ScoredPhysicsProgram) -> dict[str, Any]:
         "op_physics_descriptor_distance": round(row.distance, 5),
         "op_dynamical_has_state": 1 if has_scan else 0,
         "op_dynamical_memory_length_class": "O(L)" if has_scan else "O(L^2)",
+        "op_channel_transform": "gated_mlp" if has_mlp else "identity",
         "op_geometric_receptive_field": "global",
         "op_activation_sparsity_pattern": (
             "learned_structured"
             if row.spec.stage.aggregate == "semiring"
             or row.spec.stage.score_norm == "sharpen"
+            or has_mlp
             else "dense"
         ),
         "op_spectral_preferred_basis": (
@@ -414,22 +464,22 @@ def enumerate_name_free_physics_experiments(
     failed = _failed_physics_coordinates(ledger)
     specs: list[ProposalSpec] = []
     seen_coords: set[tuple[str, ...]] = set()
-    for experiment in experiments:
-        if len(specs) >= max_specs:
-            break
-        scored = _score_experiment(
+    scored_rows = [
+        _score_experiment(
             experiment,
             dim=probe_dim,
             cycle=cycle,
             max_candidates=max_candidates_per_experiment,
         )
-        for row in scored:
-            axes = _axes_for_scored(row)
-            coord = _coordinate_key(axes)
-            if coord in failed or coord in seen_coords:
-                continue
-            seen_coords.add(coord)
-            specs.append(_spec_from_scored(row))
-            if len(specs) >= max_specs:
-                break
+        for experiment in experiments
+    ]
+    for row in _interleave_scored_rows(scored_rows):
+        if len(specs) >= max_specs:
+            break
+        axes = _axes_for_scored(row)
+        coord = _coordinate_key(axes)
+        if coord in failed or coord in seen_coords:
+            continue
+        seen_coords.add(coord)
+        specs.append(_spec_from_scored(row))
     return specs

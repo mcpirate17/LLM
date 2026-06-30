@@ -62,6 +62,29 @@ def test_cycle_includes_name_free_physics_specs(tmp_path: Path) -> None:
     )
 
 
+def test_name_free_interleaves_families_and_emits_mlp_atom(tmp_path: Path) -> None:
+    ledger = Ledger(tmp_path / "ledger.jsonl")
+
+    specs = enumerate_name_free_physics_experiments(
+        ledger,
+        cycle=2,
+        dim=16,
+        max_specs=10,
+        max_candidates_per_experiment=12,
+    )
+
+    experiments = {str(spec.math_axes["op_physics_experiment"]) for spec in specs}
+    assert len(experiments) >= 3
+    mlp_spec = next(
+        spec for spec in specs if "mlp" in str(spec.math_axes["op_physics_atom_kinds"])
+    )
+    assert mlp_spec.math_axes["op_channel_transform"] == "gated_mlp"
+    module = generate_module_from_spec(mlp_spec, dim=16)
+    y = module(torch.randn(2, 7, 16))
+    assert y.shape == (2, 7, 16)
+    assert torch.isfinite(y).all()
+
+
 def test_name_free_physics_gets_exploration_priority(tmp_path: Path) -> None:
     ledger = Ledger(tmp_path / "ledger.jsonl")
     spec = enumerate_name_free_physics_experiments(
