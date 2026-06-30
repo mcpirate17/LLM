@@ -21,6 +21,7 @@ from component_fab.generator.code_generator import (
     generate_module,
     generate_module_from_spec,
 )
+from component_fab.metrics.compression_probe import score_compression_in_module
 from component_fab.proposer.spec_generator import ProposalSpec
 from component_fab.state.gates import GATE_ERF_DENSITY, GATE_NANO_BIND
 from component_fab.validator.capability import (
@@ -47,6 +48,7 @@ class GradeBundle:
     solo: SoloScorecard | None
     in_context: InContextScorecard | None
     observables: MechanisticObservable | None = None
+    compression: dict[str, Any] | None = None
 
 
 def eliminated_solo_scorecard(spec: ProposalSpec, eliminated_by: str) -> SoloScorecard:
@@ -126,6 +128,10 @@ def grade_candidate(
     if run_mechanisms:
         observables = probe_observables(module, dim=dim, seq_len=seq_len)
 
+    # Real compression scorecard from the candidate's own compress/restore
+    # (empty when the compiled graph declares no compression op — never faked).
+    compression = score_compression_in_module(module, dim=dim, seq_len=seq_len) or None
+
     solo: SoloScorecard | None = None
     if run_solo:
         solo = validate_solo(spec, module, dim=dim, seq_len=seq_len)
@@ -152,6 +158,7 @@ def grade_candidate(
         solo=solo,
         in_context=in_context,
         observables=observables,
+        compression=compression,
     )
 
 

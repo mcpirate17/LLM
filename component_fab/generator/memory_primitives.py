@@ -21,6 +21,8 @@ All preserve ``[B, L, D]`` shape and produce finite gradients at init.
 
 from __future__ import annotations
 
+from typing import Callable
+
 import torch
 from torch import nn
 
@@ -131,7 +133,13 @@ class HierarchicalResidualCompressorLane(nn.Module):
         self.n_levels = n_levels
         self.dim = dim
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def _summaries(self, x: torch.Tensor) -> torch.Tensor:
+        """Causal multi-timescale summary stack: (B, S, dim*n_levels).
+
+        This is the compressed state read by ``self.read``; ``forward`` is just
+        ``read(_summaries(x))``. Exposed so the compression-quality probe can
+        treat the summary stack as the latent of an autoencoder bottleneck.
+        """
         batch_size, seq_len, dim = x.shape
         summaries = [
             torch.zeros(batch_size, dim, device=x.device, dtype=x.dtype)
@@ -150,8 +158,28 @@ class HierarchicalResidualCompressorLane(nn.Module):
                 gate = torch.sigmoid(self.gates[level](token))
                 summaries[level] = (1.0 - gate) * summaries[level] + gate * candidate
             outputs.append(torch.cat(summaries, dim=-1))
+        return torch.stack(outputs, dim=1)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         # One batched read over [B, L, d*levels] instead of L per-step GEMMs.
-        return self.read(torch.stack(outputs, dim=1))
+        return self.read(self._summaries(x))
+
+    def compression_probe_pair(
+        self,
+    ) -> tuple[
+        Callable[[torch.Tensor], torch.Tensor],
+        Callable[[torch.Tensor], torch.Tensor],
+        int,
+    ]:
+        """Expose the summary-stack bottleneck as a (compress, restore) pair.
+
+        ``compress`` produces the multi-timescale summary stack (the compressed
+        state); ``restore`` is the learned readout. ``restore(compress(x)) ==
+        forward(x)``. The declared latent budget is ``dim * n_levels`` — the
+        effective-rank ratio then measures how much of that summary space the
+        lane actually spans (low ratio = under-utilized compression budget).
+        """
+        return self._summaries, self.read, self.dim * self.n_levels
 
 
 class _SurpriseMemoryBase(nn.Module):

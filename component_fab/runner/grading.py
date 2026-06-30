@@ -25,8 +25,8 @@ def grade_spec(
     skip_probe: bool,
     run_range_probe: bool = False,
     range_train_steps: int = 300,
-) -> tuple[SoloScorecard, dict | None, dict, str | None, Any | None]:
-    """Return ``(solo, probe, capability, eliminated_by, mechanism)`` for one spec."""
+) -> tuple[SoloScorecard, dict | None, dict, str | None, Any | None, dict | None]:
+    """Return ``(solo, probe, capability, eliminated_by, mechanism, compression)``."""
 
     bundle = grade_candidate(
         spec,
@@ -40,10 +40,17 @@ def grade_spec(
     )
     if bundle.eliminated_by is not None:
         solo = eliminated_solo_scorecard(spec, bundle.eliminated_by)
-        return solo, None, bundle.capability, bundle.eliminated_by, None
+        return solo, None, bundle.capability, bundle.eliminated_by, None, None
     assert bundle.solo is not None
     probe_dict = asdict(bundle.in_context) if bundle.in_context is not None else None
-    return bundle.solo, probe_dict, bundle.capability, None, bundle.observables
+    return (
+        bundle.solo,
+        probe_dict,
+        bundle.capability,
+        None,
+        bundle.observables,
+        bundle.compression,
+    )
 
 
 def _physics_probe_metadata(spec: ProposalSpec, probe: dict | None) -> dict[str, Any]:
@@ -73,6 +80,7 @@ def metadata_for_grade(
     eliminated_by: str | None,
     probe: dict | None = None,
     mechanism: Any | None = None,
+    compression: dict | None = None,
 ) -> dict[str, Any]:
     """Ledger metadata for one graded spec (pure assembly, no side effects)."""
 
@@ -109,6 +117,8 @@ def metadata_for_grade(
                 "mechanism_passed": bool(mechanism.passed),
             }
         )
+    if compression:
+        meta.update(compression)
     return meta
 
 
@@ -185,7 +195,7 @@ def grade_active_specs(
     eliminated_by_gate: dict[str, int] = {}
     survivors: list[dict[str, Any]] = []
     for spec in active_specs:
-        solo, probe, capability, eliminated_by, mechanism = grade_spec(
+        solo, probe, capability, eliminated_by, mechanism, compression = grade_spec(
             spec,
             dim=dim,
             seq_len=seq_len,
@@ -199,7 +209,9 @@ def grade_active_specs(
             cycle_probes[spec.proposal_id] = probe
         if capability is not None:
             cycle_capabilities[spec.proposal_id] = capability
-        metadata = metadata_for_grade(spec, capability, eliminated_by, probe, mechanism)
+        metadata = metadata_for_grade(
+            spec, capability, eliminated_by, probe, mechanism, compression
+        )
         if eliminated_by is not None:
             record_eliminated(ledger, spec, solo, metadata, cycle=cycle)
             eliminated_by_gate[eliminated_by] = (
