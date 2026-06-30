@@ -70,6 +70,17 @@ def _add_loop_args(parser: argparse.ArgumentParser) -> None:
         help="max ledger-feedback proposals synthesized per cycle",
     )
     parser.add_argument(
+        "--max-name-free-specs",
+        default=12,
+        type=int,
+        help="max measured physics/name-free experiment specs per cycle",
+    )
+    parser.add_argument(
+        "--disable-name-free-physics",
+        action="store_true",
+        help="disable the measured physics/name-free experiment proposal track",
+    )
+    parser.add_argument(
         "--tier2-feedback",
         nargs="*",
         default=None,
@@ -264,6 +275,8 @@ def _drive_loop(
             max_knob_specs=args.max_knob_specs,
             max_dynamic_specs=args.max_dynamic_specs,
             max_nas_specs=args.max_nas_specs,
+            max_name_free_specs=args.max_name_free_specs,
+            include_name_free_physics=not args.disable_name_free_physics,
             nas_archive_guided=args.nas_archive_guided,
             run_range_probe=args.range_probe,
             range_train_steps=args.range_train_steps,

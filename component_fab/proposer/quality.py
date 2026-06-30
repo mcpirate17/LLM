@@ -328,11 +328,20 @@ def _dynamic_physics_variant_bonus(
     spec: ProposalSpec, entry: LedgerEntry | None
 ) -> tuple[float, tuple[str, ...]]:
     axes = spec.math_axes
-    if (
-        entry is not None
-        or not spec.name.startswith("dynamic_")
-        or axes.get("op_search_track") != "physics_atom"
-    ):
+    if entry is not None or axes.get("op_search_track") != "physics_atom":
+        return 0.0, ()
+    if axes.get("op_physics_source") == "name_free_experiment":
+        experiment = str(axes.get("op_physics_experiment") or "unknown")
+        distance = float(axes.get("op_physics_descriptor_distance") or 1.0)
+        bonus = 0.12 + 0.08 * _clamp(1.0 - distance)
+        return (
+            _clamp(bonus, hi=0.20),
+            (
+                "unseen name-free physics experiment: measured descriptor "
+                f"target {experiment}, distance={distance:.4f}",
+            ),
+        )
+    if not spec.name.startswith("dynamic_"):
         return 0.0, ()
     variant = str(axes.get("op_physics_variant") or "")
     if variant:

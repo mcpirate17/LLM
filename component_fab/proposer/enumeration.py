@@ -33,6 +33,7 @@ from component_fab.proposer.dynamic import (
     enumerate_dynamic_proposals,
     specs_from_ledger_entries,
 )
+from component_fab.proposer.name_free import enumerate_name_free_physics_experiments
 from component_fab.proposer.nas_bridge import nas_graph_specs
 from component_fab.proposer.spec_generator import (
     ProposalSpec,
@@ -126,8 +127,10 @@ def enumerate_cycle_specs(
     max_knob_specs: int = 48,
     max_dynamic_specs: int = 32,
     max_nas_specs: int = 6,
+    max_name_free_specs: int = 12,
     max_training_specs: int = 24,
     include_training_regimes: bool = True,
+    include_name_free_physics: bool = True,
     nas_archive_guided: bool = False,
     tier2_feedback_by_id: Mapping[str, Tier2Feedback] | None = None,
 ) -> list[ProposalSpec]:
@@ -152,6 +155,14 @@ def enumerate_cycle_specs(
         max_specs=max_dynamic_specs,
         tier2_feedback_by_id=tier2_feedback_by_id,
     )
+    name_free_specs: list[ProposalSpec] = []
+    if include_name_free_physics:
+        name_free_specs = enumerate_name_free_physics_experiments(
+            ledger,
+            cycle=cycle,
+            dim=dim,
+            max_specs=max_name_free_specs,
+        )
     # "Frontier + delta": grade the proven binder cores standalone, and graft
     # each novel anchor's mechanism (state/memory/sparsity) onto every core.
     # This is the only path that starts from a frontier-tied binder, which is a
@@ -210,6 +221,7 @@ def enumerate_cycle_specs(
         + adaptive_cross_specs
         + knob_specs
         + dynamic_specs
+        + name_free_specs
         + frontier_specs
         + nas_specs
         + training_specs

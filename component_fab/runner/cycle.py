@@ -30,6 +30,8 @@ def run_cycle(
     max_knob_specs: int = 48,
     max_dynamic_specs: int = 32,
     max_nas_specs: int = 6,
+    max_name_free_specs: int = 12,
+    include_name_free_physics: bool = True,
     nas_archive_guided: bool = False,
     run_range_probe: bool = False,
     range_train_steps: int = 300,
@@ -62,6 +64,8 @@ def run_cycle(
         max_knob_specs=max_knob_specs,
         max_dynamic_specs=max_dynamic_specs,
         max_nas_specs=max_nas_specs,
+        max_name_free_specs=max_name_free_specs,
+        include_name_free_physics=include_name_free_physics,
         nas_archive_guided=nas_archive_guided,
         tier2_feedback_by_id=tier2_feedback_by_id,
     )
