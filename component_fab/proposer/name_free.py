@@ -273,28 +273,43 @@ def _score_experiment(
 ) -> list[ScoredPhysicsProgram]:
     probe = PhysicsDescriptorProbe(dim=dim, vocab=64, n_seeds=1, device="cpu")
     archive = MapElitesArchive(axes=physics_behavior_axes())
-    scored: list[ScoredPhysicsProgram] = []
     seed_base = _stable_seed("name_free", experiment.name, cycle)
+    return sorted(
+        _iter_scored_candidates(
+            experiment,
+            dim=dim,
+            max_candidates=max_candidates,
+            probe=probe,
+            archive=archive,
+            seed_base=seed_base,
+        ),
+        key=lambda row: row.distance,
+    )
+
+
+def _iter_scored_candidates(
+    experiment: PhysicsExperiment,
+    *,
+    dim: int,
+    max_candidates: int,
+    probe: PhysicsDescriptorProbe,
+    archive: MapElitesArchive,
+    seed_base: int,
+) -> Iterable[ScoredPhysicsProgram]:
     for index, program in enumerate(_candidate_specs(experiment)):
         if index >= max_candidates:
             break
         seed = seed_base + index
         op = build_program(program, dim=dim, seed=seed)
         descriptors = probe.describe_operator(op)
-        niche = archive.niche_for(descriptors)
-        distance = _descriptor_distance(descriptors, experiment.descriptor_target)
-        scored.append(
-            ScoredPhysicsProgram(
-                experiment=experiment,
-                spec=program,
-                descriptors=descriptors,
-                niche=niche,
-                distance=distance,
-                seed=seed,
-            )
+        yield ScoredPhysicsProgram(
+            experiment=experiment,
+            spec=program,
+            descriptors=descriptors,
+            niche=archive.niche_for(descriptors),
+            distance=_descriptor_distance(descriptors, experiment.descriptor_target),
+            seed=seed,
         )
-    scored.sort(key=lambda row: row.distance)
-    return scored
 
 
 def _axes_for_scored(row: ScoredPhysicsProgram) -> dict[str, Any]:
