@@ -13,8 +13,15 @@ from component_fab.proposer.dynamic import (
 )
 from component_fab.state.ledger import Ledger, PROMOTION_PROMOTED, PROMOTION_REJECTED
 from component_fab.improver.axis_variants import DEFAULT_META_DB
-from component_fab.proposer.enumeration import enumerate_cycle_specs
+from component_fab.proposer.enumeration import (
+    enumerate_cycle_specs,
+    enumerate_training_regime_variants,
+)
 from component_fab.tests.conftest import base_dynamic_axes
+from research.synthesis.training_regime_grammar import (
+    AXIS_TRAIN_REGIME,
+    AXIS_TRAIN_STAGES,
+)
 
 
 def _seed_range_blind_ledger(tmp_path: Path) -> Ledger:
@@ -185,6 +192,49 @@ def test_autonomous_cycle_includes_loss_monster_pair_axis_variants(
         spec.math_axes.get("op_block_template") == "loss_monster_paired"
         for spec in specs
     )
+
+
+def test_training_regime_variants_add_explicit_train_axes() -> None:
+    if not DEFAULT_META_DB.exists():
+        pytest.skip("meta_analysis.db not present")
+
+    specs = enumerate_training_regime_variants(
+        ["tropical_attention"],
+        max_specs=2,
+    )
+
+    assert len(specs) == 2
+    regimes = {spec.math_axes[AXIS_TRAIN_REGIME] for spec in specs}
+    assert regimes == {"embed_warm_then_all", "body_warm_then_all"}
+    assert all(AXIS_TRAIN_STAGES in spec.math_axes for spec in specs)
+    assert all(spec.anchor_witness_op == "tropical_attention" for spec in specs)
+    assert all("op_algebraic_space" in spec.math_axes for spec in specs)
+
+
+def test_autonomous_cycle_can_include_training_regime_specs(
+    tmp_path: Path,
+) -> None:
+    if not DEFAULT_META_DB.exists():
+        pytest.skip("meta_analysis.db not present")
+    ledger = Ledger(tmp_path / "ledger.jsonl")
+
+    specs = enumerate_cycle_specs(
+        ledger,
+        ["tropical_attention"],
+        cycle=1,
+        include_frontier=False,
+        include_nas=False,
+        max_cross_pairs=0,
+        max_knob_specs=0,
+        max_dynamic_specs=0,
+        max_training_specs=1,
+    )
+
+    training_specs = [
+        spec for spec in specs if spec.math_axes.get(AXIS_TRAIN_REGIME)
+    ]
+    assert len(training_specs) == 1
+    assert training_specs[0].math_axes[AXIS_TRAIN_REGIME] == "embed_warm_then_all"
 
 
 def test_ledger_entry_reconstructs_dynamic_spec_by_exact_axes(tmp_path: Path) -> None:

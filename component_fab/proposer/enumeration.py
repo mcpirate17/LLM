@@ -17,7 +17,10 @@ from component_fab.improver.adaptive import (
     adaptive_cross_anchor_variants,
     build_anchor_pool,
 )
-from component_fab.improver.axis_variants import enumerate_axis_variants
+from component_fab.improver.axis_variants import (
+    anchor_axes_for_op,
+    enumerate_axis_variants,
+)
 from component_fab.improver.cross_anchor import (
     enumerate_cross_anchor_variants,
     enumerate_frontier_core_specs,
@@ -31,9 +34,81 @@ from component_fab.proposer.dynamic import (
     specs_from_ledger_entries,
 )
 from component_fab.proposer.nas_bridge import nas_graph_specs
-from component_fab.proposer.spec_generator import ProposalSpec, dedupe_specs_by_axes
+from component_fab.proposer.spec_generator import (
+    ProposalSpec,
+    build_spec_from_axes,
+    dedupe_specs_by_axes,
+)
 from component_fab.proposer.tier2_feedback import Tier2Feedback
 from component_fab.state.ledger import Ledger
+from research.synthesis.training_regime_grammar import (
+    TrainingRegimeSpec,
+    implemented_training_regimes,
+    training_regime_to_axes,
+)
+
+DEFAULT_TRAINING_REGIME_NAMES = ("embed_warm_then_all", "body_warm_then_all")
+
+
+def _training_regime_rationale(regime: TrainingRegimeSpec) -> str:
+    stages = " -> ".join(
+        f"{stage.target}:{stage.steps}@{stage.lr_scale:g}x" for stage in regime.stages
+    )
+    return (
+        f"Train the same architecture under staged regime {regime.name} "
+        f"({stages}) and grade capability at matched budget."
+    )
+
+
+def enumerate_training_regime_variants(
+    anchor_op_names: Sequence[str],
+    *,
+    regime_names: Sequence[str] = DEFAULT_TRAINING_REGIME_NAMES,
+    max_specs: int = 24,
+) -> list[ProposalSpec]:
+    """Attach staged-training genotypes to existing anchor specs.
+
+    These specs do not change the generated module. They make the training
+    regime an explicit proposal axis so a run ledger can compare embedding or
+    body warmup against the same architecture trained normally.
+    """
+
+    if max_specs <= 0:
+        return []
+    regimes = implemented_training_regimes()
+    out: list[ProposalSpec] = []
+    for regime_name in regime_names:
+        if regime_name not in regimes:
+            raise ValueError(
+                f"unknown training regime {regime_name!r}; valid={list(regimes)}"
+            )
+    for name in anchor_op_names:
+        anchor = anchor_axes_for_op(name)
+        if anchor is None:
+            continue
+        for regime_name in regime_names:
+            regime = regimes[regime_name]
+            axes = {**anchor.axes, **training_regime_to_axes(regime)}
+            rationale = _training_regime_rationale(regime)
+            out.append(
+                build_spec_from_axes(
+                    f"train_{anchor.op_name}_{regime.name}",
+                    axes,
+                    witness_ops=(anchor.op_name,),
+                    anchor_axes=anchor.axes,
+                    notes=(
+                        f"anchor={anchor.op_name} "
+                        f"(pass_rate={anchor.pass_rate:.2f} on "
+                        f"{anchor.eval_count} evals)",
+                        rationale,
+                    ),
+                    fingerprint_dispatched_axes=True,
+                    rationale=rationale,
+                )
+            )
+            if len(out) >= max_specs:
+                return out
+    return out
 
 
 def enumerate_cycle_specs(
@@ -51,6 +126,8 @@ def enumerate_cycle_specs(
     max_knob_specs: int = 48,
     max_dynamic_specs: int = 32,
     max_nas_specs: int = 6,
+    max_training_specs: int = 24,
+    include_training_regimes: bool = True,
     nas_archive_guided: bool = False,
     tier2_feedback_by_id: Mapping[str, Tier2Feedback] | None = None,
 ) -> list[ProposalSpec]:
@@ -95,6 +172,12 @@ def enumerate_cycle_specs(
             seed=cycle,
             archive_guided=nas_archive_guided,
         )
+    training_specs: list[ProposalSpec] = []
+    if include_training_regimes:
+        training_specs = enumerate_training_regime_variants(
+            anchor_list,
+            max_specs=max_training_specs,
+        )
 
     static_axis_specs: list[ProposalSpec] = []
     static_cross_specs: list[ProposalSpec] = []
@@ -129,5 +212,6 @@ def enumerate_cycle_specs(
         + dynamic_specs
         + frontier_specs
         + nas_specs
+        + training_specs
         + ledger_specs
     )
