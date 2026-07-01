@@ -1174,6 +1174,59 @@ def _op_ultrametric_tree_mix(module, inputs, config):
     return torch.matmul(o, module.ut_o_proj.to(dt)) + x
 
 
+def _op_fno_spectral_mix(module, inputs, config):
+    """Novel non-QKV Fourier neural-operator (FNO) sequence mixer.
+
+    Learns a COMPLEX low-pass spectral filter across the sequence axis: rfft the (projected) token
+    sequence, apply a per-low-mode complex channel weight, zero the high Fourier modes (learned
+    low-pass truncation), irfft back. This is a GLOBAL linear operator applied in frequency space
+    (O(S log S)) — every output token depends on every input token via the Fourier basis, in one op.
+    Structurally != softmax: no score-weighted aggregation, no exp/normalize — mixing is complex
+    multiplication on retained low modes, not exp-of-additive-bilinear. Different geometry from
+    optimal transport (sinkhorn_ot_mix) and the ultrametric tree (ultrametric_tree_mix): spectral /
+    function-space mixing, targeting long-range (W2) gaps with param-efficient frequency selectivity.
+
+        Xf = rfft(Wi x)                       # (B, S//2+1, D) complex
+        Yf[:, :k] = Xf[:, :k] * (Wr + i Wi)   # per-low-mode complex channel weight, high modes -> 0
+        out = Wo(irfft(Yf) + b) + x
+
+    FFT runs in float32 (precision) and casts back. Python-only dispatch (no native softmax bypass).
+    """
+    x = inputs[0]
+    if not hasattr(module, "fno_in_proj"):
+        return x
+    dt = x.dtype
+    B, S, D = x.shape
+    h = torch.matmul(
+        x, module.fno_in_proj.to(dt)
+    ).float()  # (B, S, D); float32 for FFT precision
+    Xf = torch.fft.rfft(h, dim=1, norm="ortho")  # (B, S//2+1, D) complex64
+    k = min(
+        module.fno_modes_real.shape[0], Xf.shape[1]
+    )  # keep only available low modes
+    Wr = module.fno_modes_real[:k].float()  # (k, D, D)
+    Wi = module.fno_modes_imag[:k].float()
+    Xr = Xf.real[:, :k, :]  # (B, k, D)
+    Xi = Xf.imag[:, :k, :]
+    # Per-mode complex channel mixing: Y = Xf * (Wr + i Wi)  (complex matmul on the channel axis).
+    Yr = torch.einsum("bkd,kde->bke", Xr, Wr) - torch.einsum("bkd,kde->bke", Xi, Wi)
+    Yi = torch.einsum("bkd,kde->bke", Xr, Wi) + torch.einsum("bkd,kde->bke", Xi, Wr)
+    # Reassemble the full spectrum: low modes filtered, high modes zeroed (low-pass truncation).
+    pad = Xf.shape[1] - k
+    if pad > 0:
+        zr = torch.zeros(B, pad, D, device=x.device, dtype=Yr.dtype)
+        zi = torch.zeros(B, pad, D, device=x.device, dtype=Yi.dtype)
+        full_real = torch.cat([Yr, zr], dim=1)
+        full_imag = torch.cat([Yi, zi], dim=1)
+    else:
+        full_real, full_imag = Yr, Yi
+    y = torch.fft.irfft(
+        torch.complex(full_real, full_imag), n=S, dim=1, norm="ortho"
+    )  # (B, S, D)
+    y = (y + module.fno_bias.float()).to(dt)
+    return torch.matmul(y, module.fno_out_proj.to(dt)) + x
+
+
 # ── Exotic Ops (Phase 4) ─────────────────────────────────────────────
 
 
@@ -1423,6 +1476,7 @@ OP_IMPLS: Dict[str, Callable] = {
     "padic_gated_mixer": _op_padic_gated_mixer,
     "sinkhorn_ot_mix": _op_sinkhorn_ot_mix,
     "ultrametric_tree_mix": _op_ultrametric_tree_mix,
+    "fno_spectral_mix": _op_fno_spectral_mix,
     "token_entropy": _op_token_entropy,
     "relu_gated_moe": _op_relu_gated_moe,
     "difficulty_blend_3way": _op_difficulty_blend_3way,

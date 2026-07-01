@@ -1412,6 +1412,30 @@ _register(
 )
 _register(
     PrimitiveOp(
+        "fno_spectral_mix",
+        OpCategory.PARAMETERIZED,
+        1,
+        "identity",
+        has_params=True,
+        param_formula="D*D*10 + D",
+        binding_range_class="full",
+        description=(
+            "Fourier neural-operator (FNO) sequence mixer: learns a COMPLEX low-pass spectral filter"
+            " across the sequence axis. Projects tokens, rfft's the sequence, applies a per-low-mode"
+            " complex channel weight, zeros the high Fourier modes (learned low-pass truncation), and"
+            " irfft's back — a GLOBAL linear operator applied in frequency space (O(S log S)): every"
+            " output token depends on every input token via the Fourier basis, in one op. Structurally"
+            " != softmax: no score-weighted aggregation, no exp/normalize — mixing is complex"
+            " multiplication on retained low modes. Different geometry from optimal-transport"
+            " (sinkhorn_ot_mix) and the ultrametric tree (ultrametric_tree_mix): this is"
+            " spectral/function-space mixing, targeting long-range (W2) gaps with param-efficient"
+            " frequency selectivity. Python-only dispatch (no native softmax bypass). 4 low modes"
+            " fixed so param accounting matches the formula."
+        ),
+    )
+)
+_register(
+    PrimitiveOp(
         "learned_token_gate",  # was: cascade
         OpCategory.PARAMETERIZED,
         1,

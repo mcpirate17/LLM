@@ -27,6 +27,10 @@ def test_new_mixing_op_param_formulas_match_initialized_modules():
         "wavelet_packet_mix": 32 * 32 * 4 + 32 * 2,
         "retention_mix": 32 * 32 * 4 + 32 * 2,
         "product_key_memory": 32 * 32 + 1056 * 32,
+        # Novel non-QKV mixers: NM-4 OT sinkhorn, NM-5 ultrametric tree, NM-6 FNO spectral.
+        "sinkhorn_ot_mix": 32 * 32 * 4 + 1,
+        "ultrametric_tree_mix": 32 * 32 * 4 + 32 * 8 + 9,
+        "fno_spectral_mix": 32 * 32 * 10 + 32,
     }
     for op_name, n_params in expected.items():
         assert estimate_op_params(get_primitive(op_name), 32) == n_params

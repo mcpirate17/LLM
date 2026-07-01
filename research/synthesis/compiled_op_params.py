@@ -242,6 +242,7 @@ class CompiledOpParamInitMixin:
             "padic_gated_mixer": lambda: self._init_padic_gated_mixer(d_in),
             "sinkhorn_ot_mix": lambda: self._init_sinkhorn_ot_mix(d_in),
             "ultrametric_tree_mix": lambda: self._init_ultrametric_tree_mix(d_in),
+            "fno_spectral_mix": lambda: self._init_fno_spectral_mix(d_in),
             "token_class_proj": lambda: self._init_token_class_proj(config, d_in),
             "adaptive_rank_gate": lambda: self._init_adaptive_rank_gate(d_in, d_out),
             "dual_compression_blend": lambda: self._init_dual_compression_blend(
@@ -877,6 +878,18 @@ class CompiledOpParamInitMixin:
         self.ut_scale_dirs = self._make_param((8, d_in), std=0.02)
         self.ut_scale_bias = nn.Parameter(torch.zeros(8))
         self.ut_scale_log_temp = nn.Parameter(torch.zeros(()))
+
+    def _init_fno_spectral_mix(self, d_in: int) -> None:
+        # Fourier neural-operator (FNO) mixer params. in/out projections bookend a spectral branch:
+        # rfft the sequence, apply a per-low-mode COMPLEX channel weight (stored as real/imag), zero
+        # the high modes, irfft back (see _op_fno_spectral_mix). 4 low modes are FIXED so param
+        # accounting matches param_formula="D*D*10 + D": in_proj D*D + out_proj D*D + 4*D*D*2 (modes
+        # real+imag) + D (bias).
+        self.fno_in_proj = self._make_param((d_in, d_in), std=0.02)
+        self.fno_out_proj = self._make_param((d_in, d_in), std=0.02)
+        self.fno_modes_real = self._make_param((4, d_in, d_in), std=0.02)
+        self.fno_modes_imag = self._make_param((4, d_in, d_in), std=0.02)
+        self.fno_bias = nn.Parameter(torch.zeros(d_in))
 
     def _init_relu_gated_moe(self, config: Dict, d_in: int) -> None:
         n_experts = int(config.get("n_experts", 8))
