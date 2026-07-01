@@ -23,6 +23,7 @@ from component_fab.generator.memory_primitives import (
 from component_fab.generator.novel_math_primitives import (
     FractionalIntegralMemoryLane,
     MeraRenormMixerLane,
+    OctonionicMixerLane,
     SheafDiffusionMixerLane,
 )
 from component_fab.generator.native_surprise_memory import (
@@ -72,6 +73,12 @@ def _symplectic_residual_mixer_lane(dim: int) -> nn.Module:
     return SymplecticResidualMixerLane(dim)
 
 
+def _octonionic_mixer_lane(dim: int) -> nn.Module:
+    if dim % 8 != 0:
+        return nn.Linear(dim, dim)
+    return OctonionicMixerLane(dim)
+
+
 _INVENTION_MECHANISMS: dict[str, LaneFactory] = {
     "causal_fast_weight_memory": CausalFastWeightMemoryLane,
     "data_dependent_decay_memory": DataDependentDecayMemoryLane,
@@ -88,6 +95,7 @@ _INVENTION_MECHANISMS: dict[str, LaneFactory] = {
     "fractional_integral_memory": FractionalIntegralMemoryLane,
     "sheaf_consistent_slot_mixer": SheafDiffusionMixerLane,
     "mera_block": MeraRenormMixerLane,
+    "octonionic_mixer": _octonionic_mixer_lane,
     "native_read_before_write_surprise_memory": NativeReadBeforeWriteSurpriseMemoryLane,
     "native_context_gated_surprise_memory": NativeContextGatedSurpriseMemoryLane,
     "native_atlas_poly_surprise_memory": NativeAtlasPolySurpriseMemoryLane,

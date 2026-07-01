@@ -1,6 +1,6 @@
-"""Novel-math invention lanes for component_fab (Tier-1 expansion).
+"""Novel-math invention lanes for component_fab (Tier-1 + long-tail expansion).
 
-Two genuinely new, non-QKV sequence mixers, both anti-softmax-twin by structure:
+Genuinely new, non-QKV sequence mixers, all anti-softmax-twin by structure:
 
 - ``FractionalIntegralMemoryLane`` (NM-T1-3) — a causal depthwise convolution
   whose kernel is the Grünwald–Letnikov *fractional-integral* weight sequence
@@ -207,3 +207,103 @@ class MeraRenormMixerLane(nn.Module):
             cur = self.isometries[level](dis)  # coarse-grain (average at init)
             scale_feats.append(cur)
         return self.read(torch.cat(scale_feats, dim=-1))
+
+
+def _quaternion_mul(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+    """Hamilton product of two quaternions, batched over the last dim (size 4)."""
+    a0, a1, a2, a3 = a.unbind(-1)
+    b0, b1, b2, b3 = b.unbind(-1)
+    return torch.stack(
+        (
+            a0 * b0 - a1 * b1 - a2 * b2 - a3 * b3,
+            a0 * b1 + a1 * b0 + a2 * b3 - a3 * b2,
+            a0 * b2 - a1 * b3 + a2 * b0 + a3 * b1,
+            a0 * b3 + a1 * b2 - a2 * b1 + a3 * b0,
+        ),
+        dim=-1,
+    )
+
+
+def _quaternion_conj(a: torch.Tensor) -> torch.Tensor:
+    """Quaternion conjugate ``(a0, -a1, -a2, -a3)``."""
+    sign = a.new_tensor([1.0, -1.0, -1.0, -1.0])
+    return a * sign
+
+
+def octonion_mul(x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
+    """Octonion product, batched over the last dim (size 8), via Cayley–Dickson.
+
+    An octonion is a pair of quaternions ``(p, q)``; the product is
+    ``(p, q)(r, s) = (p r - conj(s) q,  s p + q conj(r))``. Octonions are a
+    NON-ASSOCIATIVE normed division algebra: ``|xy| = |x||y|`` (so multiplying by
+    a unit octonion preserves norm — no blow-up), but ``(xy)z != x(yz)`` in
+    general — a genuinely new algebraic structure with no softmax analog.
+    """
+    p, q = x[..., :4], x[..., 4:]
+    r, s = y[..., :4], y[..., 4:]
+    real = _quaternion_mul(p, r) - _quaternion_mul(_quaternion_conj(s), q)
+    imag = _quaternion_mul(s, p) + _quaternion_mul(q, _quaternion_conj(r))
+    return torch.cat((real, imag), dim=-1)
+
+
+class OctonionicMixerLane(nn.Module):
+    """Causal non-associative octonionic sequence mixer (NM-9 long-tail exotic).
+
+    Channels are grouped into octonions (blocks of 8). Each token group is mixed
+    with a causal power-law-decayed context ``c_t = Σ_{s≤t} ρ**(t-s) x_s`` through
+    the OCTONION product — a non-associative normed division algebra. The readout
+    uses the left-associated bracketing ``(u · c_t) · x_t`` where ``u`` is a
+    learned UNIT octonion (norm-preserving, so the mix cannot blow up); the
+    distinct bracketing is where non-associativity carries information a
+    commutative/associative averager cannot. There is no score normalization and
+    no convex token average, so it is anti-softmax-twin by construction: a
+    token-constant input is NOT preserved (``c·x`` of a constant ≠ that constant)
+    and the map is degree-2 (non-homogeneous), both far from the softmax basin.
+
+    ``dim`` must be a multiple of 8; the dispatcher falls back to a dense linear
+    map otherwise. Finite forward/backward at init (unit twist = identity
+    octonion → the mix is ``c_t · x_t``), and non-degenerate (the gated residual
+    starts at ``tanh(0.5) ≈ 0.46`` of the octonionic path).
+    """
+
+    def __init__(self, dim: int, decay_init: float = 0.9) -> None:
+        super().__init__()
+        if dim <= 0 or dim % 8 != 0:
+            raise ValueError("OctonionicMixerLane requires dim to be a multiple of 8")
+        if not 0.0 < decay_init < 1.0:
+            raise ValueError("decay_init must be in (0, 1)")
+        self.dim = dim
+        self.groups = dim // 8
+        # Learned twist octonions, one per group; init to the identity octonion
+        # e0 = (1, 0, ..., 0) so the mix starts as c_t · x_t.
+        twist = torch.zeros(self.groups, 8)
+        twist[:, 0] = 1.0
+        self.twist = nn.Parameter(twist)
+        # Per-group decay ρ = sigmoid(log_decay) ∈ (0, 1).
+        logit = torch.logit(torch.tensor(decay_init))
+        self.log_decay = nn.Parameter(torch.full((self.groups,), float(logit)))
+        self.out_proj = nn.Linear(dim, dim, bias=False)
+        # Gated residual: start at tanh(0.5) ≈ 0.46 so the lane is non-degenerate.
+        self.mix_gate = nn.Parameter(torch.full((dim,), 0.5))
+
+    def _decayed_context(self, xo: torch.Tensor) -> torch.Tensor:
+        """Causal power-law context ``c[b,t,g,:] = Σ_{s≤t} ρ_g**(t-s) x[b,s,g,:]``."""
+        length = xo.shape[1]
+        idx = torch.arange(length, device=xo.device)
+        exps = (idx[:, None] - idx[None, :]).clamp(min=0).to(xo.dtype)  # [L, L]
+        causal = (idx[:, None] >= idx[None, :]).to(xo.dtype)  # lower-tri mask
+        decay = torch.sigmoid(self.log_decay).clamp(1e-4, 1 - 1e-4)  # [G]
+        # exp(exps * log ρ) keeps the gradient clean at exps == 0.
+        powmat = torch.exp(exps[None] * torch.log(decay)[:, None, None]) * causal[None]
+        return torch.einsum("gts,bsgd->btgd", powmat, xo)  # [B, L, G, 8]
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        b, length, _ = x.shape
+        xo = x.view(b, length, self.groups, 8)
+        context = self._decayed_context(xo)
+        unit_twist = self.twist / (self.twist.norm(dim=-1, keepdim=True) + 1e-8)
+        twist = unit_twist.view(1, 1, self.groups, 8).expand(b, length, self.groups, 8)
+        twisted = octonion_mul(twist, context)  # norm-preserving rotation of context
+        mixed = octonion_mul(twisted, xo)  # (u · c_t) · x_t — non-associative combine
+        mixed = mixed.reshape(b, length, self.dim)
+        return x + torch.tanh(self.mix_gate) * self.out_proj(mixed)

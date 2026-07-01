@@ -270,6 +270,25 @@ DEFAULT_INVENTION_BLUEPRINTS: tuple[InventionBlueprint, ...] = (
         expected_baseline="hierarchical_residual_compressor",
         complexity="O(n_levels * L * D^2) for the disentangler/isometry projections",
     ),
+    InventionBlueprint(
+        mechanism_id="octonionic_mixer",
+        category=CATEGORY_LANE,
+        axes={
+            "op_invention_mechanism": "octonionic_mixer",
+            "op_algebraic_space": "octonion_nonassociative",
+            "op_dynamical_has_state": 1,
+            "op_dynamical_memory_length_class": "O(L)",
+            "op_activation_sparsity_pattern": "dense",
+            "op_geometric_receptive_field": "global",
+            "op_spectral_preferred_basis": "content",
+        },
+        information_flow="channels are grouped into octonions (blocks of 8); each token group is combined with a causal power-law-decayed context via the NON-ASSOCIATIVE octonion product using the left-associated bracketing (u . c_t) . x_t, where u is a learned unit octonion (norm-preserving rotation)",
+        forgetting_rule="per-group geometric decay rho on the running octonion context (power-law-weighted history)",
+        causality_argument="the context is a strictly causal decayed sum over tokens <= t, so the octonion product at t reads only prior and current tokens",
+        target_failure_mode="binding/mixing that a commutative or associative averager cannot represent; octonion non-associativity makes bracketing order carry information, and the normed-division algebra keeps the mix norm-bounded",
+        expected_baseline="symplectic_residual_mixer",
+        complexity="O(L^2 * G) for the decayed context plus O(L * D) octonion products (G = D/8 groups)",
+    ),
 )
 
 

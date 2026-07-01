@@ -14,12 +14,15 @@ from component_fab.generator.code_generator import generate_module_from_spec
 from component_fab.generator.novel_math_primitives import (
     FractionalIntegralMemoryLane,
     MeraRenormMixerLane,
+    OctonionicMixerLane,
     SheafDiffusionMixerLane,
+    octonion_mul,
 )
 from component_fab.inventor.mechanism_catalog import (
     enumerate_invention_specs,
     is_invention_spec,
 )
+from component_fab.proposer.algebraic_properties import measure_algebraic_properties
 
 
 def _fwd_bwd_finite(lane: torch.nn.Module, shape: tuple[int, int, int]) -> torch.Tensor:
@@ -165,6 +168,84 @@ def test_mera_receptive_field_is_multiscale() -> None:
 
 
 # --------------------------------------------------------------------------- #
+# NM-9 — octonionic non-associative mixer
+# --------------------------------------------------------------------------- #
+
+
+def test_octonion_mul_is_normed_division_algebra() -> None:
+    """|xy| = |x||y| — the defining property that keeps the mix norm-bounded."""
+    torch.manual_seed(0)
+    x, y = torch.randn(500, 8), torch.randn(500, 8)
+    prod_norm = octonion_mul(x, y).norm(dim=-1)
+    factor_norm = x.norm(dim=-1) * y.norm(dim=-1)
+    assert torch.allclose(prod_norm, factor_norm, atol=1e-4)
+
+
+def test_octonion_mul_is_non_associative() -> None:
+    """(xy)z != x(yz) — the novel structure a semiring/associative scan lacks."""
+    torch.manual_seed(1)
+    x, y, z = torch.randn(500, 8), torch.randn(500, 8), torch.randn(500, 8)
+    left = octonion_mul(octonion_mul(x, y), z)
+    right = octonion_mul(x, octonion_mul(y, z))
+    assert not torch.allclose(left, right, atol=1e-3)
+
+
+def test_octonionic_shape_and_grad_finite() -> None:
+    torch.manual_seed(0)
+    lane = OctonionicMixerLane(24)
+    _fwd_bwd_finite(lane, (4, 16, 24))
+
+
+def test_octonionic_requires_multiple_of_eight() -> None:
+    import pytest
+
+    with pytest.raises(ValueError):
+        OctonionicMixerLane(20)
+
+
+def test_octonionic_is_causal() -> None:
+    torch.manual_seed(2)
+    lane = OctonionicMixerLane(16)
+    x_a = torch.randn(1, 16, 16)
+    x_b = x_a.clone()
+    x_b[:, 9:] += torch.randn(1, 7, 16)
+    with torch.no_grad():
+        assert torch.allclose(lane(x_a)[:, :9], lane(x_b)[:, :9], atol=1e-5)
+
+
+def test_octonionic_mixes_but_is_not_a_softmax_twin() -> None:
+    """Genuinely mixes tokens yet is anti-softmax-twin: it is NOT a convex
+    averager (a token-constant input is not preserved) and is non-linear."""
+    torch.manual_seed(0)
+    lane = OctonionicMixerLane(24)
+    props = measure_algebraic_properties(lane, dim=24, n_seeds=3)
+    assert props.cross_token_mixing > 0.5  # it does mix across tokens
+    assert not props.is_softmax_twin()  # but not by convex averaging
+    assert props.constant_token_preservation < 0.7  # breaks partition-of-unity
+
+
+# --------------------------------------------------------------------------- #
+# NM-9 verification — the symplectic residual mixer lane is real, not a stub
+# --------------------------------------------------------------------------- #
+
+
+def test_symplectic_residual_mixer_is_real() -> None:
+    specs = {
+        s.math_axes["op_invention_mechanism"]: s for s in enumerate_invention_specs()
+    }
+    assert "symplectic_residual_mixer" in specs
+    module = generate_module_from_spec(specs["symplectic_residual_mixer"], dim=16)
+    # A real lane, not an identity/stub: finite fwd/bwd and it transforms input.
+    x = torch.randn(2, 8, 16, requires_grad=True)
+    y = module(x)
+    assert y.shape == x.shape and torch.isfinite(y).all()
+    y.sum().backward()
+    assert x.grad is not None and torch.isfinite(x.grad).all()
+    with torch.no_grad():
+        assert not torch.allclose(module(x.detach()), x.detach())
+
+
+# --------------------------------------------------------------------------- #
 # Blueprints + end-to-end dispatch
 # --------------------------------------------------------------------------- #
 
@@ -177,6 +258,7 @@ def test_blueprints_enumerated_and_gate_clean() -> None:
         "fractional_integral_memory",
         "sheaf_consistent_slot_mixer",
         "mera_block",
+        "octonionic_mixer",
     ):
         assert mech in mechanisms
         assert is_invention_spec(mechanisms[mech])
@@ -191,6 +273,7 @@ def test_codegen_dispatches_novel_lanes() -> None:
         "fractional_integral_memory": FractionalIntegralMemoryLane,
         "sheaf_consistent_slot_mixer": SheafDiffusionMixerLane,
         "mera_block": MeraRenormMixerLane,
+        "octonionic_mixer": OctonionicMixerLane,
     }
     for mech, cls in expected.items():
         module = generate_module_from_spec(specs[mech], dim=16)
