@@ -18,13 +18,16 @@ The binding subscore replaces the ad-hoc ``+0.2 if can_bind`` bonus that
 Passing ``capability_scorecard=None`` reproduces the legacy 0/0.3/0.3/0.4
 weighting so older callers still work.
 
-Two additional stability-gated bonuses reward the user's "maximum mixing" and
-"minimum steps" objectives: ``_MIXING_BONUS`` (intrinsic reach+breadth) and
-``_LEARN_SPEED_BONUS`` (fewer steps to cross the AR recall bar). Both are zero
-unless the candidate clears ``STABILITY_FLOOR`` on some capability axis, so a
-broad mixer that cannot bind/induce never wins on mixing alone. They are also
-first-class Pareto objectives (``mixing``, ``learning_speed`` in
-``OBJECTIVE_KEYS``).
+Three additional stability-gated bonuses reward the user's "maximum mixing",
+"minimum steps", and "minimum footprint" objectives: ``_MIXING_BONUS`` (intrinsic
+reach+breadth), ``_LEARN_SPEED_BONUS`` (fewer steps to cross the AR recall bar),
+and ``_FOOTPRINT_BONUS`` (capability per *non-embedding* param — the compaction
+analog of NM-10, NM-C21; the active-params definition, so shrinking the vocab
+table is not rewarded over shrinking the mechanism). All are zero unless the
+candidate clears ``STABILITY_FLOOR`` on some capability axis, so a
+broad/fast/compact mixer that cannot bind/induce never wins on that axis alone.
+They are also first-class Pareto objectives (``mixing``, ``learning_speed``,
+``footprint`` in ``OBJECTIVE_KEYS``).
 """
 
 from __future__ import annotations
@@ -60,6 +63,19 @@ _LEARN_SPEED_BONUS = 0.10
 # Reference budget for the speed map: the largest DEFAULT AR probe trains for 60
 # steps, so reaching the recall bar at step s scores 1 - s/60.
 _LEARN_SPEED_REF_STEPS = 60.0
+# NM-C21 footprint (2026-07-01): the compaction analog of NM-10. A stability-gated
+# bonus + Pareto objective scoring a mechanism by *capability per non-embedding
+# param* (the active-params definition: at cl100k the tied embedding is ~75% of
+# params, so raw param_count mostly measures vocab size and disadvantages the
+# mechanism). ``non_embedding_params`` is attached to the capability scorecard by
+# ``validate_capabilities`` (lane trainable params minus any ``nn.Embedding``
+# submodule), so this subscore is free at rank time.
+_FOOTPRINT_BONUS = 0.10
+# Reference compute-param budget for the compactness map: ``ref / (ref + params)``
+# is 0.5 at the budget and rises as the mechanism shrinks (a smooth monotonic
+# [0, 1] compactness). At probe scale a dense d*d mixer is ~d^2 params; compact
+# mechanisms (Monarch/butterfly) sit well under this.
+_FOOTPRINT_REF = 4096.0
 
 _SMOKE_KEYS_REQUIRED = (
     "forward_passed",
@@ -180,6 +196,27 @@ def learning_speed_subscore(capability_scorecard: dict[str, Any] | None) -> floa
     return max(0.0, 1.0 - float(mean_steps) / _LEARN_SPEED_REF_STEPS)
 
 
+def footprint_subscore(
+    *, capability_strength: float, non_embedding_params: int
+) -> float:
+    """NM-C21: capability discounted by non-embedding param count.
+
+    Pure metric: ``capability_strength * compactness(non_embedding_params)`` with
+    ``compactness = _FOOTPRINT_REF / (_FOOTPRINT_REF + params)`` -> maximised by a
+    mechanism that is *both* capable and compact (the scalar blend of the user's
+    "keep accuracy + shrink size" goal). ``capability_strength`` is the caller's best
+    capability axis (max of binding/induction/learning/state_tracking). Returns 0.0
+    when ``non_embedding_params <= 0`` (no param signal -> inert, like the legacy
+    ``efficiency`` axis which the niche path never populates). Free: reads the
+    ``non_embedding_params`` field that ``validate_capabilities`` attaches to the
+    capability scorecard ([[feedback_active_params_mean_non_embedding]]).
+    """
+    if non_embedding_params <= 0:
+        return 0.0
+    compactness = _FOOTPRINT_REF / (_FOOTPRINT_REF + float(non_embedding_params))
+    return max(0.0, min(1.0, float(capability_strength))) * compactness
+
+
 def orthogonality_subscore(solo_scorecard: dict[str, Any]) -> float:
     """Orthogonality signal (distance from state degeneracy with clones + baselines).
 
@@ -238,6 +275,12 @@ def composite_score(
     orthogonality = orthogonality_subscore(solo_scorecard)
     mixing = mixing_subscore(capability_scorecard)
     learn_speed = learning_speed_subscore(capability_scorecard)
+    induction = float((capability_scorecard or {}).get("ind_max_accuracy") or 0.0)
+    non_embed = int((capability_scorecard or {}).get("non_embedding_params") or 0)
+    footprint = footprint_subscore(
+        capability_strength=max(bind, induction, learn, state_track),
+        non_embedding_params=non_embed,
+    )
 
     components = {
         "smoke": smoke,
@@ -248,6 +291,7 @@ def composite_score(
         "orthogonality": orthogonality,
         "mixing": mixing,
         "learning_speed": learn_speed,
+        "footprint": footprint,
     }
     score = smoke_w * smoke + cross_w * cross + learn_w * learn + bind_w * bind
 
@@ -255,15 +299,15 @@ def composite_score(
     score += _STATE_TRACK_BONUS * state_track
 
     # Degeneracy penalty: reward mechanistic distinctness (orthogonality), plus
-    # the mixing/learning-speed bonuses — all gated by the stability floor so a
-    # broad or fast lane that binds/induces nothing earns no credit.
-    induction = float((capability_scorecard or {}).get("ind_max_accuracy") or 0.0)
+    # the mixing/learning-speed/footprint bonuses — all gated by the stability
+    # floor so a broad/fast/compact lane that binds/induces nothing earns no credit.
     if meets_stability_floor(
         binding=bind, induction=induction, learning=learn, state_tracking=state_track
     ):
         score += _ORTHOGONALITY_LIFT * orthogonality
         score += _MIXING_BONUS * mixing
         score += _LEARN_SPEED_BONUS * learn_speed
+        score += _FOOTPRINT_BONUS * footprint
 
     return score, components
 
@@ -325,6 +369,7 @@ OBJECTIVE_KEYS: tuple[str, ...] = (
     "mixing",
     "learning_speed",
     "efficiency",
+    "footprint",
 )
 
 
@@ -357,6 +402,11 @@ def objective_vector(
         learning=learning,
         state_tracking=state_tracking,
     )
+    non_embed = int(cap.get("non_embedding_params") or 0)
+    footprint = footprint_subscore(
+        capability_strength=max(binding, induction, learning, state_tracking),
+        non_embedding_params=non_embed,
+    )
     return {
         "binding": binding,
         "induction": induction,
@@ -366,6 +416,7 @@ def objective_vector(
         "mixing": mixing if stable else 0.0,
         "learning_speed": learn_speed if stable else 0.0,
         "efficiency": -float(param_count),
+        "footprint": footprint if stable else 0.0,
     }
 
 

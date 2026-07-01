@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import torch.nn as nn
+
 from component_fab.metrics.behavior_fingerprint import (
     DEFAULT_DEGENERACY_EPS,
     Normalizer,
@@ -13,8 +15,10 @@ from component_fab.metrics.behavior_fingerprint import (
     spectrum_from_metadata,
 )
 from component_fab.improver.ranking import (
+    _FOOTPRINT_BONUS,
     _ORTHOGONALITY_LIFT,
     composite_score,
+    footprint_subscore,
     meets_stability_floor,
     non_dominated_sort,
     objective_vector,
@@ -30,6 +34,11 @@ from component_fab.policies.promotion import (
 from component_fab.runner.grading import finalize_survivors
 from component_fab.runner.niche import annotate_niche_metadata
 from component_fab.state.ledger import Ledger
+from component_fab.validator.capability import (
+    CapabilityScorecard,
+    _non_embedding_param_count,
+    capability_scorecard_to_dict,
+)
 
 
 # --------------------------------------------------------------------------- #
@@ -333,3 +342,160 @@ def test_front_member_shielded_from_reject(tmp_path: Path):
     assert decide_promotion(on, rules).decision == PROMOTION_PROMOTED
     off = _front_streak_entry(tmp_path, "off", on_front=False, cycles=4, composite=0.1)
     assert decide_promotion(off, rules).decision == PROMOTION_REJECTED
+
+
+# --------------------------------------------------------------------------- #
+# NM-C21: footprint objective (capability per non-embedding param)
+# --------------------------------------------------------------------------- #
+def _smoke_solo() -> dict:
+    """Minimal solo scorecard: clean smoke pass, no orthogonality signal."""
+    return {
+        "smoke": {
+            "forward_passed": True,
+            "backward_passed": True,
+            "output_finite": True,
+            "param_grad_finite": True,
+        },
+        "property_cross_check": {},
+    }
+
+
+def test_footprint_metric_rewards_compact_and_capable():
+    # Pure metric: compact+capable > big+capable > anything-incapable == 0. The
+    # user's "keep accuracy + shrink size" goal as a scalar blend.
+    compact_capable = footprint_subscore(
+        capability_strength=0.8, non_embedding_params=1_000
+    )
+    big_capable = footprint_subscore(
+        capability_strength=0.8, non_embedding_params=100_000
+    )
+    assert compact_capable > big_capable > 0.0
+    # No capability signal -> inert: a junk lane earns no footprint credit.
+    assert (
+        footprint_subscore(capability_strength=0.0, non_embedding_params=1_000) == 0.0
+    )
+    # No param signal -> inert (mirrors the legacy efficiency axis the niche path
+    # never populates; never divide-by-zero nor credit unknown-size lanes).
+    assert footprint_subscore(capability_strength=0.8, non_embedding_params=0) == 0.0
+
+
+def test_footprint_objective_fires_from_capability_scorecard():
+    # footprint reads capability_scorecard["non_embedding_params"], NOT the legacy
+    # param_count kwarg (which feeds efficiency). Two equally-capable lanes; the
+    # compact one must dominate on the footprint axis.
+    probe = {"aggregate_loss_ratio": 100.0}
+    strong = {
+        "binds_per_probe": {"p": True},
+        "relative_recall_per_probe": {"p": 0.9},
+        "ind_max_accuracy": 0.9,
+    }
+    compact = objective_vector(probe, {**strong, "non_embedding_params": 1_000})
+    big = objective_vector(probe, {**strong, "non_embedding_params": 100_000})
+    assert compact["footprint"] > big["footprint"] > 0.0
+    # identical on every other axis -> compact non-dominated, big dominated.
+    assert non_dominated_sort([big, compact]) == [1, 0]
+
+
+def test_footprint_objective_gated_by_stability_floor():
+    # Sub-floor capability (ind 0.03 < 0.05 floor): the RAW metric is strictly
+    # positive, yet the objective axis floors it to 0 — a not-yet-functional
+    # compact lane must not ride the footprint axis onto the front, exactly like
+    # orthogonality/mixing.
+    assert (
+        footprint_subscore(capability_strength=0.03, non_embedding_params=1_000) > 0.0
+    )
+    sub_floor = objective_vector(
+        {"aggregate_loss_ratio": 1.0},
+        {"ind_max_accuracy": 0.03, "non_embedding_params": 1_000},
+    )
+    assert sub_floor["footprint"] == 0.0
+
+
+def test_composite_footprint_bonus_fires_when_stable():
+    # Stable lanes: the compact one earns exactly _FOOTPRINT_BONUS *
+    # (footprint_compact - footprint_big) more. capability_strength is identical
+    # (same capability inputs; only non_embedding_params differs), so every other
+    # bonus cancels and the score delta isolates the footprint bonus.
+    probe = {"aggregate_loss_ratio": 100.0}
+    strong = {
+        "binds_per_probe": {"p": True},
+        "relative_recall_per_probe": {"p": 1.0},
+        "ind_max_accuracy": 0.8,
+    }
+    compact_score, compact_comp = composite_score(
+        _smoke_solo(), probe, {**strong, "non_embedding_params": 1_000}
+    )
+    big_score, big_comp = composite_score(
+        _smoke_solo(), probe, {**strong, "non_embedding_params": 100_000}
+    )
+    expected_delta = _FOOTPRINT_BONUS * (
+        compact_comp["footprint"] - big_comp["footprint"]
+    )
+    assert expected_delta > 0.0
+    assert abs((compact_score - big_score) - expected_delta) < 1e-9
+
+
+def test_composite_footprint_bonus_gated_by_stability_floor():
+    # Sub-floor lanes (ind 0.03) record a strictly-positive footprint *component*
+    # but earn ZERO bonus — the compact one gains nothing over the big one despite
+    # the component differing. Confirms the bonus (not just the metric) is gated.
+    probe = {"aggregate_loss_ratio": 1.0}
+    sub_floor = {"ind_max_accuracy": 0.03}
+    compact_score, compact_comp = composite_score(
+        _smoke_solo(), probe, {**sub_floor, "non_embedding_params": 1_000}
+    )
+    big_score, big_comp = composite_score(
+        _smoke_solo(), probe, {**sub_floor, "non_embedding_params": 100_000}
+    )
+    assert compact_comp["footprint"] > big_comp["footprint"] > 0.0  # metric recorded
+    assert abs(compact_score - big_score) < 1e-9  # ...but no bonus applied
+
+
+def test_non_embedding_param_count_excludes_embedding():
+    # validate_capabilities seeds capability_scorecard["non_embedding_params"] from
+    # this helper. It counts trainable params MINUS nn.Embedding submodules: at
+    # cl100k the tied embedding is ~75% of params and counting it would
+    # disadvantage the novel mechanism on the footprint axis
+    # ([[feedback_active_params_mean_non_embedding]]).
+
+    class MixerLane(nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.embed = nn.Embedding(100, 32)  # 3200 params — must be excluded
+            self.proj = nn.Linear(32, 32)  # 1056 params — the mechanism's compute
+
+    lane = MixerLane()
+    total = sum(p.numel() for p in lane.parameters() if p.requires_grad)
+    assert total == 3200 + 1056
+    assert _non_embedding_param_count(lane) == 1056
+
+
+def test_capability_scorecard_round_trips_non_embedding_params():
+    # The field survives serialization so the footprint axis is populated
+    # end-to-end: lane -> validate_capabilities -> scorecard ->
+    # objective_vector/composite_score.
+    card = CapabilityScorecard(
+        proposal_id="x",
+        name="x",
+        s05_passed=True,
+        s05_stability_passed=True,
+        s05_causality_passed=True,
+        s05_max_first_half_drift=0.0,
+        erf_passed=True,
+        erf_density=0.3,
+        erf_density_entropy=0.5,
+        erf_decay_slope=-0.1,
+        nb_passed=True,
+        nb_max_accuracy=0.8,
+        nb_rejected_persistent_zero=False,
+        ind_ran=True,
+        ind_max_accuracy=0.6,
+        ind_final_accuracy=0.5,
+        ind_above_baseline=True,
+        can_bind=True,
+        binds_per_probe={"p": True},
+        relative_recall_per_probe={"p": 0.9},
+        eliminated_by=None,
+        non_embedding_params=12345,
+    )
+    assert capability_scorecard_to_dict(card)["non_embedding_params"] == 12345

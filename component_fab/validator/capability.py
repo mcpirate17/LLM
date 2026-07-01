@@ -80,6 +80,7 @@ class CapabilityScorecard:
     mixing_breadth_subscore: float = 0.0
     mixing_offdiag_mass_fraction: float = 0.0
     mixing_effective_rank: float = 0.0
+    non_embedding_params: int = 0
     range_ran: bool = False
     range_aggregate_acc: float = 0.0
     range_effective_distance: int = 0
@@ -109,6 +110,7 @@ _DEFAULT_SIGNALS: dict[str, Any] = {
     "mixing_breadth_subscore": 0.0,
     "mixing_offdiag_mass_fraction": 0.0,
     "mixing_effective_rank": 0.0,
+    "non_embedding_params": 0,
 }
 
 
@@ -321,6 +323,27 @@ def _run_post_nb_signals(
     return extra, binds, recall, curves, steps, ind.notes
 
 
+def _non_embedding_param_count(module: nn.Module) -> int:
+    """Trainable params excluding ``nn.Embedding`` submodules (active-params defn).
+
+    At cl100k the tied embedding is ~75% of params; counting it would disadvantage
+    the mechanism on the NM-C21 footprint axis. For a mechanism ``lane`` this is
+    usually the full trainable count (lanes rarely embed); the subtraction is a
+    safety net for lanes that carry their own embedding.
+    """
+    embed_ids: set[int] = set()
+    for sub in module.modules():
+        if isinstance(sub, nn.Embedding):
+            embed_ids.update(id(p) for p in sub.parameters(recurse=False))
+    return int(
+        sum(
+            p.numel()
+            for p in module.parameters()
+            if p.requires_grad and id(p) not in embed_ids
+        )
+    )
+
+
 def validate_capabilities(
     spec: ProposalSpec,
     lane: nn.Module,
@@ -338,7 +361,7 @@ def validate_capabilities(
     range_distances: tuple[int, ...] = DEFAULT_DISTANCES,
 ) -> CapabilityScorecard:
     """Run the tiered gate stack on ``lane``."""
-    signals: dict[str, Any] = {}
+    signals: dict[str, Any] = {"non_embedding_params": _non_embedding_param_count(lane)}
 
     s05 = causality_stability_gate(
         LaneTestBlock(lane, dim).eval(),
@@ -443,6 +466,7 @@ def capability_scorecard_to_dict(card: CapabilityScorecard) -> dict[str, Any]:
         "mixing_breadth_subscore": card.mixing_breadth_subscore,
         "mixing_offdiag_mass_fraction": card.mixing_offdiag_mass_fraction,
         "mixing_effective_rank": card.mixing_effective_rank,
+        "non_embedding_params": card.non_embedding_params,
         "eliminated_by": card.eliminated_by,
         "notes": list(card.notes),
     }
