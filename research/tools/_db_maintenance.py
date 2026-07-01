@@ -22,7 +22,11 @@ def connect_writer(db_path: Path) -> sqlite3.Connection:
     check_writer_lock(Path(f"{db_path}.writer-lock"))
     conn = sqlite3.connect(str(db_path), timeout=30.0)
     conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=DELETE")
+    # WAL, matching every other writer (and the aria-db native crate, which is
+    # built around a single persistent WAL connection). journal_mode persists
+    # per-DB, so a DELETE here would flip the whole DB back to writer<->reader
+    # exclusion for the dashboard/API until the next WAL writer connects.
+    conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA synchronous=NORMAL")
     conn.execute("PRAGMA busy_timeout=15000")
     return conn

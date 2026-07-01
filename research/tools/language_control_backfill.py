@@ -605,7 +605,9 @@ def main() -> int:
     )
 
     con = sqlite3.connect(str(args.db), timeout=30.0)
-    con.execute("PRAGMA journal_mode=DELETE")
+    # WAL like every other runs.db writer; journal_mode persists per-DB, so
+    # DELETE here would knock the live DB out of WAL for all readers.
+    con.execute("PRAGMA journal_mode=WAL")
     con.execute("PRAGMA busy_timeout=15000")
     _ensure_backfill_columns(con)
 
