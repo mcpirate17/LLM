@@ -116,3 +116,25 @@ def test_calibrate_proxy_warns_when_proxy_does_not_track_real() -> None:
         report = calibrate_proxy(elites, real_scorer=lambda p: -p, threshold=0.4)
     assert report.ok is False
     assert report.rho < 0.4
+
+
+# ── NM-10: novelty-aware archive (distance-from-softmax axis) ─────────────────
+
+
+def test_run_novelty_aware_adds_distance_axis() -> None:
+    """NM-10: a novelty-aware run bins on a geometric-novelty axis (distance from
+    the softmax/attention basin) on top of the physics symmetry classes, so
+    far-from-softmax niches are illuminated rather than crowded out by
+    softmax-shaped mechanisms."""
+    from research.synthesis.novelty_distance import NOVELTY_AXIS_NAME
+
+    disc = OpenDiscovery(dim=16, vocab=32, n_seeds=1, novelty_aware=True)
+    result = disc.run(iters=12, seed=0)
+    assert result.evaluated > 0
+    assert result.inserted > 0
+    axis_names = [a.name for a in result.archive.axes]
+    assert NOVELTY_AXIS_NAME in axis_names
+    # physics axes are still present, so the novelty axis is additive
+    assert "perm_equivariance" in axis_names
+    # every archived elite carries a measured geometric-novelty coordinate
+    assert all(NOVELTY_AXIS_NAME in e.descriptors for e in result.archive.elites)

@@ -81,6 +81,27 @@ Ordered by leverage on the known capability gaps (multi-slot binding/retrieval a
 
 **NM-10 — Geometric-novelty MAP-Elites cell dimension.** Add a cell axis = distance of the op's measured-descriptor signature (`long_range_reach`, `content_dependence`, `spectral_radius`, `self_dominance`, …) from the softmax/attention basin. Drives search toward unexplored geometry instead of sampling by luck. Files: MAP-Elites archive (see `project_scale_leaderboard_builder` memory) + descriptor extractor.
 - *Done-when:* archive maintains a novelty cell; a cycle preferentially fills low-novelty-distance-occupied cells.
+- **STATUS: DONE (2026-07-01 — GLM —).** New `research/synthesis/novelty_distance.py`
+  + `novelty_aware_axes()` opt-in on `OpenDiscovery.run()` + 13 unit tests + 1
+  open-discovery smoke test. Design: the novelty coordinate is the STANDARDIZED
+  distance of the candidate's PHYSICS fingerprint (the loop's existing niche
+  coordinate — perm/shift-equivariance, scale-homogeneity, spectral-radius,
+  energy-gain) to the NEAREST MEASURED softmax-shaped basin signature
+  (softmax-QK attention + uniform mean-pool, fixed-seed reference ops probed via
+  `PhysicsDescriptorProbe`). Physics-fingerprint was chosen over the
+  capability-correlated measured_descriptors (`long_range_reach` etc.) on purpose:
+  those ARE the fitness signal, so using them as a niche coordinate too would
+  conflate fitness with novelty; the physics fingerprint is the orthogonal
+  "how-softmax-shaped is the transform" view. The NM-11 measured
+  `softmax_twin_score` folds in as an optional `twin_score=` refiner
+  (`(0.25+0.75*(1-twin))`; twin≈1→floor, twin≈0→full distance) — supplied by the
+  caller so `research.synthesis` still imports NO `component_fab`. The mission
+  assertion is test-pinned: `test_archive_keeps_far_from_softmax_mechanism` shows
+  a far-from-softmax mechanism SURVIVES in the archive with lower fitness than a
+  near-softmax one. OPEN follow-up: flip `novelty_aware=True` on in
+  `research/tools/run_open_discovery.py` + adopt the axis in component_fab's
+  `novelty_archive.py` once codex's proposer work settles (it's a 1-line
+  `axes=novelty_aware_axes()` change).
 
 **NM-11 — Algebraic-property mining as a discovery signal.** Thicken `component_fab/proposer/property_miner.py`: detect equivariance / symmetry / idempotence / associativity at init. Use as novelty feature AND as an axis to break (softmax's tell = shift-equivariance + row-stochasticity).
 - *Done-when:* ≥3 properties mined per candidate; softmax-twin signature detectable.

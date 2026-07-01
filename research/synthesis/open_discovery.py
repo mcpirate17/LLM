@@ -228,6 +228,12 @@ class OpenDiscovery:
     vocab: int = 64
     n_seeds: int = 2
     device: str = "cpu"
+    # When True, the archive crosses the physics symmetry classes with a
+    # geometric-novelty axis (distance from the softmax/attention basin), so an
+    # elite is kept per (symmetry class × distance-from-softmax) niche — driving
+    # the loop toward unexplored, non-softmax geometry instead of letting
+    # softmax-shaped mechanisms crowd it out (NM-10).
+    novelty_aware: bool = False
     physics: PhysicsDescriptorProbe = field(init=False)
     capability: MeasuredDescriptorExtractor = field(init=False)
 
@@ -261,8 +267,22 @@ class OpenDiscovery:
         return phys, float(capability_score_from_descriptors(capd))
 
     def run(self, iters: int, seed: int = 0) -> DiscoveryResult:
+        from .novelty_distance import (
+            augment_with_novelty,
+            novelty_aware_axes,
+            softmax_basin_signatures,
+        )
+
         gen = torch.Generator().manual_seed(seed)
-        archive = MapElitesArchive(axes=physics_behavior_axes())
+        if self.novelty_aware:
+            axes = novelty_aware_axes()
+            # Measured at the candidate dim so the basin reference matches the
+            # probe scale; cached per dim after the first call.
+            basins = softmax_basin_signatures(dim=self.dim)
+        else:
+            axes = physics_behavior_axes()
+            basins = None
+        archive = MapElitesArchive(axes=axes)
         evaluated = inserted = 0
         for i in range(iters):
             spec = sample_spec(gen, archive)
@@ -270,6 +290,8 @@ class OpenDiscovery:
             if graded is None:
                 continue
             phys, fitness = graded
+            if basins is not None:
+                phys = augment_with_novelty(phys, basins=basins)
             evaluated += 1
             if archive.add(f"{spec.key}#{i}", phys, fitness, payload=spec):
                 inserted += 1
