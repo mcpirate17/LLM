@@ -27,7 +27,10 @@ from __future__ import annotations
 import torch
 from torch import nn
 
-from research.runtime.native.torch_extension_loader import load_local_cuda_extension
+from research.runtime.native.torch_extension_loader import (
+    load_local_cpp_extension,
+    load_local_cuda_extension,
+)
 
 from .native_surprise_memory import (
     NativeAdaptiveSemiringBiLaneSurpriseMemoryLane,
@@ -43,10 +46,25 @@ def _mor_refine_cuda_ext():
     )
 
 
+def _mor_refine_cpu_ext():
+    return load_local_cpp_extension(
+        __file__,
+        "native_mor_refine.cpp",
+        "component_fab_native_mor_refine_cpu",
+    )
+
+
+def _mor_refine_ext(reference: torch.Tensor):
+    """CUDA kernel on GPU, C++ port on CPU — same entry points and math."""
+    return _mor_refine_cuda_ext() if reference.is_cuda else _mor_refine_cpu_ext()
+
+
 class _NativeMoRRefineScan(torch.autograd.Function):
-    """CUDA forward/backward for the refine-each-step MoR scan with the MLP
-    halting router. Validated rel<2e-5 (fwd + every input grad) against the torch
-    reference ``MoRRefineMLPLaneA._scan`` (see validate_mor_refine_kernel.py).
+    """Native forward/backward for the refine-each-step MoR scan with the MLP
+    halting router. The CUDA kernel is validated rel<2e-5 (fwd + every input
+    grad) against the torch reference ``MoRRefineMLPLaneA._scan`` (see
+    validate_mor_refine_kernel.py); the CPU port is pinned against the same
+    reference by test_mor_refine_native_cpu.py (float64 parity + gradcheck).
     """
 
     @staticmethod
@@ -67,7 +85,7 @@ class _NativeMoRRefineScan(torch.autograd.Function):
         a_coupling,
         max_steps,
     ):
-        ext = _mor_refine_cuda_ext()
+        ext = _mor_refine_ext(q)
         q, k, v = q.contiguous(), k.contiguous(), v.contiguous()
         write, forget = write.contiguous(), forget.contiguous()
         W1, b1, W2 = W1.contiguous(), b1.contiguous(), W2.contiguous()
@@ -129,7 +147,7 @@ class _NativeMoRRefineScan(torch.autograd.Function):
             b2,
             a_coupling,
         ) = ctx.saved_tensors
-        ext = _mor_refine_cuda_ext()
+        ext = _mor_refine_ext(q)
         if grad_depth is None:
             grad_depth = torch.zeros(
                 q.shape[0], q.shape[1], device=q.device, dtype=q.dtype
@@ -504,8 +522,12 @@ class MoRRefineMLPLaneA(MoRRefineLaneA):
         return torch.cat([base, r_norm], dim=-1)  # [B, 3]
 
     def _scan(self, x: torch.Tensor) -> torch.Tensor:
-        """CUDA kernel on GPU, torch reference on CPU / force-max ablation."""
-        if (not x.is_cuda) or self.force_max_depth:
+        """Native scan (CUDA kernel on GPU, C++ port on CPU); torch reference
+        only for the force-max ablation and unported dtypes."""
+        native_ok = x.dtype == torch.float32 or (
+            not x.is_cuda and x.dtype == torch.float64
+        )
+        if self.force_max_depth or not native_ok:
             return super()._scan(x)
         q, k, v, write, forget, momentum, beta, balance = self._scan_params(x)
         a = self._a_coupling()

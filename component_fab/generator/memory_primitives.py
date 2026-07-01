@@ -28,6 +28,11 @@ from torch import nn
 
 from ..harness.rope import RotaryEmbedding as RotaryEmbedding  # noqa: PLC0414 (re-export keeps autoflake)
 from ..harness.rope import apply_rope as apply_rope  # noqa: PLC0414
+from ._postread_scan import (
+    SemiringPostreadScan,
+    TropicalPostreadScan,
+    native_postread_supported,
+)
 
 
 class CausalFastWeightMemoryLane(nn.Module):
@@ -53,27 +58,29 @@ class CausalFastWeightMemoryLane(nn.Module):
         self.memory_dim = memory_dim
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        batch_size, seq_len, _ = x.shape
+        from research.synthesis.compiler_ops_sequence import (
+            _parallel_associative_scan,
+        )
+
+        seq_len = x.shape[1]
         q = torch.tanh(self.q(x))
         k = torch.tanh(self.k(x))
         v = torch.tanh(self.v(x))
         gates = torch.sigmoid(self.write_gate(x)).squeeze(-1)
         decay = torch.sigmoid(self.decay_logit)
-        memory = torch.zeros(
-            batch_size,
-            self.memory_dim,
-            self.memory_dim,
-            device=x.device,
-            dtype=x.dtype,
-        )
-        outputs = []
         scale = float(self.memory_dim) ** -0.5
-        for t in range(seq_len):
-            write = torch.einsum("bi,bj->bij", k[:, t], v[:, t]) * scale
-            memory = decay * memory + gates[:, t].view(batch_size, 1, 1) * write
-            outputs.append(torch.einsum("bi,bij->bj", q[:, t], memory))
+        # Same recurrence as the old per-token loop
+        # (M_t = decay·M_{t-1} + g_t·(k_t ⊗ v_t)·scale), evaluated with the
+        # shared O(log L) Kogge-Stone scan instead of L Python steps.
+        writes = torch.einsum("bli,blj->blij", k, v) * (
+            gates.unsqueeze(-1).unsqueeze(-1) * scale
+        )
+        log_decay = torch.log(decay).expand(seq_len).reshape(1, 1, 1, seq_len)
+        memory = _parallel_associative_scan(
+            log_decay, writes.permute(0, 2, 3, 1).contiguous()
+        )
         # One batched projection over [B, L, m] instead of L per-step GEMMs.
-        return self.out(torch.stack(outputs, dim=1))
+        return self.out(torch.einsum("bli,bijl->blj", q, memory))
 
 
 class CausalSlotRouterMemoryLane(nn.Module):
@@ -304,15 +311,36 @@ class _SurpriseMemoryBase(nn.Module):
         memory = (1.0 - forget).unsqueeze(-1) * memory + surprise
         return memory, surprise, self._read(memory, q_t)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        batch_size, seq_len, _ = x.shape
+    def _scan_inputs(
+        self, x: torch.Tensor
+    ) -> tuple[
+        torch.Tensor,
+        torch.Tensor,
+        torch.Tensor,
+        torch.Tensor,
+        torch.Tensor,
+        torch.Tensor,
+    ]:
+        """Shared q/k/v/gate projections for the delta-rule scan family."""
         q, k = self._addr(x)
         v = self.v(x)
         write = torch.sigmoid(self.write_gate(x)).squeeze(-1)  # [B, L]
         forget = torch.sigmoid(self.forget_gate(x))  # [B, L, m]
         momentum = torch.sigmoid(self.momentum_logit)
-        memory = x.new_zeros(batch_size, self.memory_dim, self.memory_dim)
-        surprise = x.new_zeros(batch_size, self.memory_dim, self.memory_dim)
+        return q, k, v, write, forget, momentum
+
+    def _scan_python(
+        self,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        write: torch.Tensor,
+        forget: torch.Tensor,
+        momentum: torch.Tensor,
+    ) -> torch.Tensor:
+        batch_size, seq_len, _ = q.shape
+        memory = q.new_zeros(batch_size, self.memory_dim, self.memory_dim)
+        surprise = q.new_zeros(batch_size, self.memory_dim, self.memory_dim)
         outputs = []
         for t in range(seq_len):
             memory, surprise, read = self._delta_step(
@@ -326,8 +354,37 @@ class _SurpriseMemoryBase(nn.Module):
                 momentum=momentum,
             )
             outputs.append(read)
+        return torch.stack(outputs, dim=1)
+
+    def _scan_native(
+        self,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        write: torch.Tensor,
+        forget: torch.Tensor,
+        momentum: torch.Tensor,
+    ) -> torch.Tensor | None:
+        """CPU-native port of the scan when this class's ``_read`` has one.
+
+        Guarded on the *actual* ``_read`` so a subclass overriding the
+        retrieval algebra can never be routed onto the wrong native scan;
+        unknown algebras return ``None`` → the Python loop runs. The C++
+        scan is the exact post-write-read delta-rule math of ``_delta_step``.
+        """
+        if not native_postread_supported(q):
+            return None
+        if type(self)._read is not _SurpriseMemoryBase._read:
+            return None
+        return TropicalPostreadScan.apply(q, k, v, write, forget, momentum.reshape(()))
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        scan_inputs = self._scan_inputs(x)
+        read = self._scan_native(*scan_inputs)
+        if read is None:
+            read = self._scan_python(*scan_inputs)
         # One batched projection over [B, L, m] instead of L per-step GEMMs.
-        return self.out(torch.stack(outputs, dim=1))
+        return self.out(read)
 
 
 class TropicalSurpriseMemoryLane(_SurpriseMemoryBase):
@@ -410,6 +467,24 @@ class SemiringSurpriseMemoryLane(_SurpriseMemoryBase):
         )
         return (lse - log_m) / beta
 
+    def _scan_native(
+        self,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        write: torch.Tensor,
+        forget: torch.Tensor,
+        momentum: torch.Tensor,
+    ) -> torch.Tensor | None:
+        if not native_postread_supported(q):
+            return None
+        if type(self)._read is not SemiringSurpriseMemoryLane._read:
+            return None
+        beta = torch.nn.functional.softplus(self.semiring_temp).clamp(1e-2, 30.0)
+        return SemiringPostreadScan.apply(
+            q, k, v, write, forget, momentum.reshape(()), beta.reshape(())
+        )
+
 
 class PadicSurpriseMemoryLane(_SurpriseMemoryBase):
     """Test-time surprise memory over an ultrametric (p-adic) hierarchy.
@@ -450,51 +525,31 @@ class PadicSurpriseMemoryLane(_SurpriseMemoryBase):
         self.level_gate = nn.Parameter(torch.ones(levels) / float(levels))
 
     def _pool(self, addr: torch.Tensor, block: int) -> torch.Tensor:
-        """Ultrametric block-mean: collapse addr within nested blocks."""
+        """Ultrametric block-mean: collapse addr within nested blocks ([B, L, m])."""
         if block <= 1:
             return addr
-        batch, m = addr.shape
-        pooled = addr.view(batch, m // block, block).mean(dim=-1, keepdim=True)
-        return pooled.expand(batch, m // block, block).reshape(batch, m)
+        batch, seq_len, m = addr.shape
+        pooled = addr.view(batch, seq_len, m // block, block).mean(dim=-1, keepdim=True)
+        return pooled.expand(batch, seq_len, m // block, block).reshape(
+            batch, seq_len, m
+        )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        batch_size, seq_len, _ = x.shape
-        q = self._unit(torch.tanh(self.q(x)))
-        k = self._unit(torch.tanh(self.k(x)))
-        v = self.v(x)
-        write = torch.sigmoid(self.write_gate(x)).squeeze(-1)
-        forget = torch.sigmoid(self.forget_gate(x))
-        momentum = torch.sigmoid(self.momentum_logit)
+        # Levels are independent scans over the same v/gates with block-pooled
+        # addressing, so each runs as one full-sequence scan (native on CPU)
+        # instead of interleaving levels inside a per-token Python loop.
+        q, k, v, write, forget, momentum = self._scan_inputs(x)
         gates = torch.softmax(self.level_gate, dim=0)
-        blocks = [
-            self.p ** (self.n_levels - 1 - level) for level in range(self.n_levels)
-        ]
-        memories = [
-            x.new_zeros(batch_size, self.memory_dim, self.memory_dim)
-            for _ in range(self.n_levels)
-        ]
-        surprises = [
-            x.new_zeros(batch_size, self.memory_dim, self.memory_dim)
-            for _ in range(self.n_levels)
-        ]
-        outputs = []
-        for t in range(seq_len):
-            read_sum = x.new_zeros(batch_size, self.memory_dim)
-            for level, block in enumerate(blocks):
-                memories[level], surprises[level], read = self._delta_step(
-                    memories[level],
-                    surprises[level],
-                    k_t=self._pool(k[:, t], block),
-                    v_t=v[:, t],
-                    q_t=self._pool(q[:, t], block),
-                    write=write[:, t],
-                    forget=forget[:, t],
-                    momentum=momentum,
-                )
-                read_sum = read_sum + gates[level] * read
-            outputs.append(read_sum)
+        read_sum = torch.zeros_like(q)
+        for level in range(self.n_levels):
+            block = self.p ** (self.n_levels - 1 - level)
+            q_level, k_level = self._pool(q, block), self._pool(k, block)
+            read = self._scan_native(q_level, k_level, v, write, forget, momentum)
+            if read is None:
+                read = self._scan_python(q_level, k_level, v, write, forget, momentum)
+            read_sum = read_sum + gates[level] * read
         # One batched projection over [B, L, m] instead of L per-step GEMMs.
-        return self.out(torch.stack(outputs, dim=1))
+        return self.out(read_sum)
 
 
 class DataDependentDecayMemoryLane(nn.Module):
@@ -523,7 +578,10 @@ class DataDependentDecayMemoryLane(nn.Module):
         self.memory_dim = memory_dim
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        batch_size, seq_len, _ = x.shape
+        from research.synthesis.compiler_ops_sequence import (
+            _parallel_associative_scan,
+        )
+
         q = torch.tanh(self.q(x))
         k = torch.tanh(self.k(x))
         v = torch.tanh(self.v(x))
@@ -532,25 +590,17 @@ class DataDependentDecayMemoryLane(nn.Module):
         write_strength = torch.sigmoid(self.write_gate(x))
         decay = torch.sigmoid(self.decay_gate(x))
 
-        memory = torch.zeros(
-            batch_size,
-            self.memory_dim,
-            self.memory_dim,
-            device=x.device,
-            dtype=x.dtype,
-        )
-        outputs = []
         scale = float(self.memory_dim) ** -0.5
-        for t in range(seq_len):
-            write = torch.einsum("bi,bj->bij", k[:, t], v[:, t]) * scale
-            # Elementwise broadcasting of decay and write_strength
-            memory = (
-                decay[:, t].unsqueeze(-1) * memory
-                + write_strength[:, t].unsqueeze(-1) * write
-            )
-            outputs.append(torch.einsum("bi,bij->bj", q[:, t], memory))
+        # Same recurrence as the old per-token loop
+        # (M_t[i,j] = decay_t[i]·M_{t-1}[i,j] + w_t[i]·k_t[i]·v_t[j]·scale),
+        # via the shared O(log L) scan; the per-row decay broadcasts over j.
+        writes = torch.einsum("bli,blj->blij", write_strength * k, v) * scale
+        log_decay = torch.log(decay).permute(0, 2, 1).unsqueeze(2).contiguous()
+        memory = _parallel_associative_scan(
+            log_decay, writes.permute(0, 2, 3, 1).contiguous()
+        )
         # One batched projection over [B, L, m] instead of L per-step GEMMs.
-        return self.out(torch.stack(outputs, dim=1))
+        return self.out(torch.einsum("bli,bijl->blj", q, memory))
 
 
 class LegendreSSMLane(nn.Module):
