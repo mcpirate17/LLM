@@ -18,6 +18,7 @@ from component_fab.generator.novel_math_primitives import (
     SheafDiffusionMixerLane,
     octonion_mul,
 )
+from component_fab.generator.reversible_primitives import ReversibleCouplingMixerLane
 from component_fab.inventor.mechanism_catalog import (
     enumerate_invention_specs,
     is_invention_spec,
@@ -259,6 +260,7 @@ def test_blueprints_enumerated_and_gate_clean() -> None:
         "sheaf_consistent_slot_mixer",
         "mera_block",
         "octonionic_mixer",
+        "reversible_coupling_mixer",
     ):
         assert mech in mechanisms
         assert is_invention_spec(mechanisms[mech])
@@ -274,6 +276,7 @@ def test_codegen_dispatches_novel_lanes() -> None:
         "sheaf_consistent_slot_mixer": SheafDiffusionMixerLane,
         "mera_block": MeraRenormMixerLane,
         "octonionic_mixer": OctonionicMixerLane,
+        "reversible_coupling_mixer": ReversibleCouplingMixerLane,
     }
     for mech, cls in expected.items():
         module = generate_module_from_spec(specs[mech], dim=16)

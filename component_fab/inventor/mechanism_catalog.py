@@ -289,6 +289,25 @@ DEFAULT_INVENTION_BLUEPRINTS: tuple[InventionBlueprint, ...] = (
         expected_baseline="symplectic_residual_mixer",
         complexity="O(L^2 * G) for the decayed context plus O(L * D) octonion products (G = D/8 groups)",
     ),
+    InventionBlueprint(
+        mechanism_id="reversible_coupling_mixer",
+        category=CATEGORY_LANE,
+        axes={
+            "op_invention_mechanism": "reversible_coupling_mixer",
+            "op_algebraic_space": "reversible_coupling",
+            "op_dynamical_has_state": 1,
+            "op_dynamical_memory_length_class": "O(L)",
+            "op_activation_sparsity_pattern": "dense",
+            "op_geometric_receptive_field": "global",
+            "op_spectral_preferred_basis": "content",
+        },
+        information_flow="channels split into halves x1,x2; additive coupling y1=x1+F(x2), y2=x2+G(y1) where F,G are causal power-law decayed-context GELU MLPs (non-QKV); exactly invertible so the backward reconstructs inputs from outputs and recomputes activations instead of storing them",
+        forgetting_rule="per-channel geometric decay in each coupling function's causal context",
+        causality_argument="each coupling function reads only a causal decayed sum over tokens <= t, and additive coupling is position-wise, so output at t depends only on tokens <= t",
+        target_failure_mode="training-VRAM ceiling on deep novel-mechanism stacks: activation memory is O(1) in depth because the reversible block stores no coupling activations",
+        expected_baseline="causal_conv",
+        complexity="O(L^2 * D) for the decayed context; activation memory O(1) in stack depth",
+    ),
 )
 
 

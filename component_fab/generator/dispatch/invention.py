@@ -43,6 +43,7 @@ from component_fab.generator.native_surprise_memory import (
     NativeTitansMACSurpriseMemoryLane,
 )
 from component_fab.generator.primitive_templates import SymplecticResidualMixerLane
+from component_fab.generator.reversible_primitives import ReversibleCouplingMixerLane
 
 LaneFactory = Callable[[int], nn.Module]
 
@@ -79,6 +80,12 @@ def _octonionic_mixer_lane(dim: int) -> nn.Module:
     return OctonionicMixerLane(dim)
 
 
+def _reversible_coupling_mixer_lane(dim: int) -> nn.Module:
+    if dim % 2 != 0:
+        return nn.Linear(dim, dim)
+    return ReversibleCouplingMixerLane(dim)
+
+
 _INVENTION_MECHANISMS: dict[str, LaneFactory] = {
     "causal_fast_weight_memory": CausalFastWeightMemoryLane,
     "data_dependent_decay_memory": DataDependentDecayMemoryLane,
@@ -96,6 +103,7 @@ _INVENTION_MECHANISMS: dict[str, LaneFactory] = {
     "sheaf_consistent_slot_mixer": SheafDiffusionMixerLane,
     "mera_block": MeraRenormMixerLane,
     "octonionic_mixer": _octonionic_mixer_lane,
+    "reversible_coupling_mixer": _reversible_coupling_mixer_lane,
     "native_read_before_write_surprise_memory": NativeReadBeforeWriteSurpriseMemoryLane,
     "native_context_gated_surprise_memory": NativeContextGatedSurpriseMemoryLane,
     "native_atlas_poly_surprise_memory": NativeAtlasPolySurpriseMemoryLane,
