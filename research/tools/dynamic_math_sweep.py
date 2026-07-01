@@ -137,6 +137,10 @@ class TargetProfile:
     min_effective_rank: float = 1.05
     max_spectral_radius: float = 2.5
     max_energy_gain: float = 4.0
+    # Measured convex-token-averaging (softmax-twin) gate: a variant whose forward
+    # measures as a softmax-shaped averager at/above this is rejected even if the
+    # catalog did not hand-flag it. See component_fab.proposer.algebraic_properties.
+    max_softmax_twin_score: float = 0.85
     spectral_radius_target: float = 1.0
     spectral_penalty: float = 0.08
     causality_penalty: float = 2.0
@@ -286,9 +290,7 @@ class MathVariantWrapper(nn.Module):
     def __init__(self, parent: nn.Module, descriptor: VariantDescriptor) -> None:
         super().__init__()
         if not 0.0 <= descriptor.blend <= 1.0:
-            raise ValueError(
-                f"variant blend must be in [0, 1]; got {descriptor.blend}"
-            )
+            raise ValueError(f"variant blend must be in [0, 1]; got {descriptor.blend}")
         self.parent = parent
         self.descriptor = descriptor
 
@@ -373,6 +375,16 @@ def measure_operator_descriptors(
     )
     if measured is None:
         raise RuntimeError("MeasuredDescriptorExtractor returned no valid seeds")
+    # Measured softmax-twin signature (NM-11): honest, operator-level replacement
+    # for the hand-declared ``VariantDescriptor.softmax_twin_like`` prior.
+    from component_fab.proposer.algebraic_properties import (
+        measure_algebraic_properties,
+    )
+
+    twin = measure_algebraic_properties(
+        op, dim=dim, seq_len=physics_seq_len, n_seeds=max(1, int(physics_n_seeds))
+    )
+    measured = {**measured, "softmax_twin_score": twin.softmax_twin_score}
     return DescriptorBundle(physics=physics, measured=measured)
 
 
@@ -505,9 +517,7 @@ def score_variant(record: SweepRecord, profile: TargetProfile) -> float:
     return float(score)
 
 
-def hard_failure_reason(
-    record: SweepRecord, profile: TargetProfile
-) -> FailureReason:
+def hard_failure_reason(record: SweepRecord, profile: TargetProfile) -> FailureReason:
     """Return a hard rejection reason for a measured variant, if any."""
 
     if record.variant.softmax_twin_like:
@@ -515,6 +525,11 @@ def hard_failure_reason(
     desc = record.combined_descriptors()
     if not _all_finite(desc):
         return "nonfinite_descriptor"
+    # Measured twin gate: catch variants that reconverge on the softmax basin even
+    # when the catalog did not hand-flag them (the honest replacement for the
+    # ``softmax_twin_like`` prior above).
+    if desc.get("softmax_twin_score", 0.0) >= profile.max_softmax_twin_score:
+        return "softmax_twin_regression"
     causality = float(desc.get("causality_violation", 0.0))
     if causality > profile.max_causality_violation:
         return "causality_violation"

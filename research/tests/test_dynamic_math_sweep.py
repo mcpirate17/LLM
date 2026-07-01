@@ -11,6 +11,7 @@ from research.tools.dynamic_math_sweep import (
     build_variant_operator,
     default_variant_catalog,
     finalize_sweep_decisions,
+    hard_failure_reason,
     measure_operator_descriptors,
     run_dynamic_math_sweep,
     selected_summary,
@@ -21,6 +22,14 @@ from research.tools.dynamic_math_sweep import (
 class IdentityOperator(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return x
+
+
+class SoftmaxMixOperator(nn.Module):
+    """Content-dependent softmax token average: a measured softmax twin."""
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        scores = (x @ x.transpose(1, 2)) / (x.shape[-1] ** 0.5)
+        return torch.softmax(scores, dim=-1) @ x
 
 
 class CausalShiftMix(nn.Module):
@@ -77,7 +86,9 @@ def test_default_catalog_covers_required_variant_families() -> None:
 
 def test_variant_wrapper_builds_finite_distinct_output() -> None:
     variant = next(
-        v for v in default_variant_catalog() if v.variant_id == "dynamical_causal_integral"
+        v
+        for v in default_variant_catalog()
+        if v.variant_id == "dynamical_causal_integral"
     )
     op = build_variant_operator(IdentityOperator(), variant)
     x = torch.randn(2, 8, 6)
@@ -217,3 +228,38 @@ def test_real_cpu_descriptor_runner_returns_finite_descriptors() -> None:
     combined = bundle.combined()
     assert {"spectral_radius", "long_range_reach", "effective_rank"} <= set(combined)
     assert all(torch.isfinite(torch.tensor(value)) for value in combined.values())
+
+
+def test_bundle_carries_measured_softmax_twin_score() -> None:
+    twin_bundle = measure_operator_descriptors(
+        SoftmaxMixOperator(), dim=16, physics_seq_len=12, physics_n_seeds=1
+    )
+    novel_bundle = measure_operator_descriptors(
+        CausalShiftMix(), dim=16, physics_seq_len=12, physics_n_seeds=1
+    )
+    twin_score = twin_bundle.combined()["softmax_twin_score"]
+    novel_score = novel_bundle.combined()["softmax_twin_score"]
+    assert twin_score > 0.7  # softmax averaging measures as a twin
+    assert novel_score < twin_score  # a signed causal mixer does not
+
+
+def test_measured_twin_gate_rejects_unflagged_softmax_variant() -> None:
+    profile = target_profile("binding")
+    # Not hand-flagged (softmax_twin_like defaults False) but measures as a twin.
+    record = SweepRecord(
+        run_id="r",
+        candidate_id="c",
+        candidate_name="toy",
+        variant=VariantDescriptor("sneaky", "algebraic", "reciprocal_cauchy_read"),
+        parent_variant_id="parent",
+        build_passed=True,
+        validate_passed=True,
+        compile_passed=True,
+        physics_descriptors=dict(_bundle(reach=0.2, dep=0.4, gate=0.3).physics),
+        measured_descriptors={
+            **dict(_bundle(reach=0.2, dep=0.4, gate=0.3).measured),
+            "softmax_twin_score": 0.95,
+        },
+    )
+    assert record.variant.softmax_twin_like is False
+    assert hard_failure_reason(record, profile) == "softmax_twin_regression"
