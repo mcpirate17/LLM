@@ -38,6 +38,8 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
+from component_fab.generator._causal_scan import causal_decay_context
+
 
 class _CausalDecayMLP(nn.Module):
     """Per-channel causal power-law decayed context + GELU MLP (non-QKV coupling).
@@ -59,17 +61,9 @@ class _CausalDecayMLP(nn.Module):
         self.w_in = nn.Linear(dim, expansion * dim)
         self.w_out = nn.Linear(expansion * dim, dim)
 
-    def _causal_decay_context(self, x: torch.Tensor) -> torch.Tensor:
-        length = x.shape[1]
-        idx = torch.arange(length, device=x.device)
-        exps = (idx[:, None] - idx[None, :]).clamp(min=0).to(x.dtype)  # [L, L]
-        causal = (idx[:, None] >= idx[None, :]).to(x.dtype)  # lower-tri
-        decay = torch.sigmoid(self.log_decay).clamp(1e-4, 1 - 1e-4)  # [D]
-        powmat = torch.exp(exps[None] * torch.log(decay)[:, None, None]) * causal[None]
-        return torch.einsum("dts,bsd->btd", powmat, x)  # [B, L, D]
-
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        context = self._causal_decay_context(x)
+        decay = torch.sigmoid(self.log_decay).clamp(1e-4, 1 - 1e-4)  # [D]
+        context = causal_decay_context(x, decay)
         return self.w_out(F.gelu(self.w_in(context)))
 
 

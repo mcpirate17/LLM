@@ -31,6 +31,8 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
+from component_fab.generator._causal_scan import causal_decay_context
+
 
 class FractionalIntegralMemoryLane(nn.Module):
     """Causal fractional-integral memory (Riemann–Liouville ``I**α``).
@@ -287,15 +289,17 @@ class OctonionicMixerLane(nn.Module):
         self.mix_gate = nn.Parameter(torch.full((dim,), 0.5))
 
     def _decayed_context(self, xo: torch.Tensor) -> torch.Tensor:
-        """Causal power-law context ``c[b,t,g,:] = Σ_{s≤t} ρ_g**(t-s) x[b,s,g,:]``."""
-        length = xo.shape[1]
-        idx = torch.arange(length, device=xo.device)
-        exps = (idx[:, None] - idx[None, :]).clamp(min=0).to(xo.dtype)  # [L, L]
-        causal = (idx[:, None] >= idx[None, :]).to(xo.dtype)  # lower-tri mask
+        """Causal power-law context ``c[b,t,g,:] = Σ_{s≤t} ρ_g**(t-s) x[b,s,g,:]``.
+
+        Delegates to the shared chunked scan (O(L·chunk), not O(L²)); the per-group
+        decay is broadcast to the 8 octonion channels of each group.
+        """
+        b, length, groups, _ = xo.shape
         decay = torch.sigmoid(self.log_decay).clamp(1e-4, 1 - 1e-4)  # [G]
-        # exp(exps * log ρ) keeps the gradient clean at exps == 0.
-        powmat = torch.exp(exps[None] * torch.log(decay)[:, None, None]) * causal[None]
-        return torch.einsum("gts,bsgd->btgd", powmat, xo)  # [B, L, G, 8]
+        per_channel_decay = decay.repeat_interleave(8)  # [G*8]
+        flat = xo.reshape(b, length, groups * 8)
+        context = causal_decay_context(flat, per_channel_decay)
+        return context.reshape(b, length, groups, 8)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         b, length, _ = x.shape
