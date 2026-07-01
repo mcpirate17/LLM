@@ -18,6 +18,7 @@ import torch
 from torch import nn
 
 from ..metrics.routing_health import measure_routing_health
+from ..proposer.algebraic_properties import measure_algebraic_properties
 
 
 @dataclass(frozen=True, slots=True)
@@ -29,6 +30,10 @@ class MechanisticObservable:
     relaxation_slope: float = 0.0
     address_entropy: float = 0.0
     ablation_delta: float = 0.0
+    #: Measured convex-token-averaging signature in [0, 1]; high = the lane's
+    #: end-to-end forward behaves like a softmax-shaped averager (a pathology to
+    #: steer away from, per the non-QKV mission), low = genuinely novel geometry.
+    softmax_twin_score: float = 0.0
     passed: bool = True
     notes: tuple[str, ...] = ()
 
@@ -60,7 +65,14 @@ def probe_observables(
         lane, dim=dim, seq_len=seq_len, batch_size=batch_size
     )
 
-    # 4. Ablation Delta (if applicable)
+    # 4. Softmax-twin signature: measure whether the lane's end-to-end forward
+    #    behaves like a convex token-averager (the softmax structural tell). High
+    #    is the pathology to demote downstream, not a target.
+    twin_score = _check_softmax_twin(
+        lane, dim=dim, seq_len=seq_len, batch_size=batch_size
+    )
+
+    # 5. Ablation Delta (if applicable)
     # TODO: Implement ablation delta probe
 
     return MechanisticObservable(
@@ -70,9 +82,30 @@ def probe_observables(
         active_lane_fraction=routing.get("active_frac", 1.0),
         relaxation_slope=relaxation_slope,
         address_entropy=addr_entropy,
+        softmax_twin_score=twin_score,
         passed=bool(trainable_params or n_train_steps <= 0),
         notes=tuple(notes),
     )
+
+
+def _check_softmax_twin(
+    lane: nn.Module,
+    *,
+    dim: int,
+    seq_len: int,
+    batch_size: int,
+) -> float:
+    """Measured convex-token-averaging (softmax-twin) score for the lane forward.
+
+    The lane obeys the same ``[B, L, D] -> [B, L, D]`` contract exercised by the
+    relaxation probe, so it is directly usable as the operator ``f``. Sequence
+    length is capped so this stays a cheap structural check.
+    """
+    probe_len = max(4, min(int(seq_len), 16))
+    props = measure_algebraic_properties(
+        lane, dim=dim, seq_len=probe_len, batch=batch_size, n_seeds=2
+    )
+    return props.softmax_twin_score
 
 
 def _check_relaxation(

@@ -116,6 +116,7 @@ def metadata_for_grade(
                 "active_lane_fraction": round(float(mechanism.active_lane_fraction), 4),
                 "relaxation_slope": round(float(mechanism.relaxation_slope), 4),
                 "address_entropy": round(float(mechanism.address_entropy), 4),
+                "softmax_twin_score": round(float(mechanism.softmax_twin_score), 4),
                 "mechanism_passed": bool(mechanism.passed),
             }
         )

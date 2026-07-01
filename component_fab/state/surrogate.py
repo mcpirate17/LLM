@@ -142,6 +142,11 @@ def _training_rows(
             composite *= 0.5
         if meta.get("state_degeneracy", 0.0) > 0.9:
             composite *= 0.5
+        # A candidate whose forward measures as a convex token-averager has
+        # reconverged on the softmax basin — the mission's pathology to steer
+        # away from. Demote so search prefers genuinely novel geometry.
+        if meta.get("softmax_twin_score", 0.0) > 0.85:
+            composite *= 0.5
 
         frontier_delta = meta.get("deep_probe_mean_delta")
         slope = meta.get("slope")
