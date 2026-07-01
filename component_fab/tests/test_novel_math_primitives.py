@@ -13,6 +13,7 @@ import torch
 from component_fab.generator.code_generator import generate_module_from_spec
 from component_fab.generator.novel_math_primitives import (
     FractionalIntegralMemoryLane,
+    MeraRenormMixerLane,
     SheafDiffusionMixerLane,
 )
 from component_fab.inventor.mechanism_catalog import (
@@ -128,6 +129,42 @@ def test_sheaf_diffusion_actually_mixes() -> None:
 
 
 # --------------------------------------------------------------------------- #
+# NM-T1-4 — MERA renormalization mixer
+# --------------------------------------------------------------------------- #
+
+
+def test_mera_shape_and_grad_finite() -> None:
+    torch.manual_seed(0)
+    lane = MeraRenormMixerLane(32, n_levels=3)
+    _fwd_bwd_finite(lane, (2, 20, 32))
+
+
+def test_mera_is_causal() -> None:
+    torch.manual_seed(1)
+    lane = MeraRenormMixerLane(16, n_levels=3)
+    x_a = torch.randn(1, 16, 16)
+    x_b = x_a.clone()
+    x_b[:, 10:] += torch.randn(1, 6, 16)
+    with torch.no_grad():
+        assert torch.allclose(lane(x_a)[:, :10], lane(x_b)[:, :10], atol=1e-5)
+
+
+def test_mera_receptive_field_is_multiscale() -> None:
+    """n_levels=3 → causal lookback 2**3 - 1 = 7. Perturbing token 0 changes the
+    output at position 7 (lag 7, in reach) but not position 8 (lag 8, out of
+    reach) — proving the receptive field doubles across levels."""
+    torch.manual_seed(0)
+    lane = MeraRenormMixerLane(8, n_levels=3)
+    x_a = torch.randn(1, 12, 8)
+    x_b = x_a.clone()
+    x_b[:, 0] += 1.0
+    with torch.no_grad():
+        ya, yb = lane(x_a), lane(x_b)
+    assert not torch.allclose(ya[:, 7], yb[:, 7], atol=1e-6)  # in reach
+    assert torch.allclose(ya[:, 8], yb[:, 8], atol=1e-6)  # out of reach
+
+
+# --------------------------------------------------------------------------- #
 # Blueprints + end-to-end dispatch
 # --------------------------------------------------------------------------- #
 
@@ -136,7 +173,11 @@ def test_blueprints_enumerated_and_gate_clean() -> None:
     mechanisms = {
         s.math_axes["op_invention_mechanism"]: s for s in enumerate_invention_specs()
     }
-    for mech in ("fractional_integral_memory", "sheaf_consistent_slot_mixer"):
+    for mech in (
+        "fractional_integral_memory",
+        "sheaf_consistent_slot_mixer",
+        "mera_block",
+    ):
         assert mech in mechanisms
         assert is_invention_spec(mechanisms[mech])
 
@@ -149,6 +190,7 @@ def test_codegen_dispatches_novel_lanes() -> None:
     expected = {
         "fractional_integral_memory": FractionalIntegralMemoryLane,
         "sheaf_consistent_slot_mixer": SheafDiffusionMixerLane,
+        "mera_block": MeraRenormMixerLane,
     }
     for mech, cls in expected.items():
         module = generate_module_from_spec(specs[mech], dim=16)

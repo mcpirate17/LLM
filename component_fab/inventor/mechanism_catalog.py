@@ -251,6 +251,25 @@ DEFAULT_INVENTION_BLUEPRINTS: tuple[InventionBlueprint, ...] = (
         expected_baseline="softmax_attention",
         complexity="O(n_steps * L * D^2) for the restriction projections",
     ),
+    InventionBlueprint(
+        mechanism_id="mera_block",
+        category=CATEGORY_COMPRESSION,
+        axes={
+            "op_invention_mechanism": "mera_block",
+            "op_algebraic_space": "mera_renorm",
+            "op_dynamical_has_state": 0,
+            "op_dynamical_memory_length_class": "O(log L)",
+            "op_activation_sparsity_pattern": "structured",
+            "op_geometric_receptive_field": "hybrid_local_global",
+            "op_spectral_preferred_basis": "content",
+        },
+        information_flow="dilated binary-tree renormalization: at level l each token is paired with its 2**l-ago predecessor, a learned disentangler U removes the cross-scale correlation and a learned isometry W coarse-grains the pair to one site; the per-token readout concatenates all scales",
+        forgetting_rule="none (stateless); coarse-graining compresses each scale via the isometry, doubling the receptive field per level",
+        causality_argument="every level only pairs a token with a strictly earlier (2**l-ago) predecessor, so output at t depends only on tokens <= t (receptive field 2**n_levels - 1)",
+        target_failure_mode="long-range hierarchical structure that a single-scale mixer cannot compress; MERA disentanglers remove cross-scale correlations so each scale holds a cleanly bounded chunk",
+        expected_baseline="hierarchical_residual_compressor",
+        complexity="O(n_levels * L * D^2) for the disentangler/isometry projections",
+    ),
 )
 
 

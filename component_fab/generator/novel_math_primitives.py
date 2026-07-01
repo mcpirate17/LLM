@@ -142,3 +142,68 @@ class SheafDiffusionMixerLane(nn.Module):
             update = disagree @ self.restrict.weight  # Rᵀ applied
             h = h - alpha * update
         return self.out(h)
+
+
+class MeraRenormMixerLane(nn.Module):
+    """Causal MERA-style multi-scale renormalization mixer (NM-T1-4).
+
+    A dilated binary-tree renormalization group: at level ``l`` each token is
+    paired with its ``2**l``-ago predecessor, a learned **disentangler** ``U``
+    removes the cross-scale correlation, and a learned **isometry** ``W``
+    coarse-grains the disentangled pair to one site — so the receptive field
+    doubles per level (Vidal-style MERA: alternating disentanglers + isometries,
+    the strict tensor-network renorm group, not level-wise gated summaries). The
+    per-token readout concatenates every scale. At init ``U = identity`` and
+    ``W = average``, so the lane is a stable causal multi-scale moving-average
+    pyramid; training moves ``U``/``W`` off that. Strictly causal (each level
+    only looks back ``2**l``) and finite at init.
+    """
+
+    def __init__(self, dim: int, n_levels: int = 3) -> None:
+        super().__init__()
+        if dim <= 0:
+            raise ValueError("dim must be positive")
+        if n_levels <= 0:
+            raise ValueError("n_levels must be positive")
+        self.dim = dim
+        self.n_levels = n_levels
+        self.disentanglers = nn.ModuleList(
+            nn.Linear(2 * dim, 2 * dim) for _ in range(n_levels)
+        )
+        self.isometries = nn.ModuleList(
+            nn.Linear(2 * dim, dim) for _ in range(n_levels)
+        )
+        self.read = nn.Linear(dim * (n_levels + 1), dim, bias=False)
+        self._init_renorm()
+
+    def _init_renorm(self) -> None:
+        """U = identity (no disentangling), W = average (coarse = mean of pair)."""
+        with torch.no_grad():
+            eye2 = torch.eye(2 * self.dim)
+            avg = torch.cat(
+                [0.5 * torch.eye(self.dim), 0.5 * torch.eye(self.dim)], dim=1
+            )
+            for u in self.disentanglers:
+                u.weight.copy_(eye2)
+                u.bias.zero_()
+            for w in self.isometries:
+                w.weight.copy_(avg)
+                w.bias.zero_()
+
+    @staticmethod
+    def _shift(z: torch.Tensor, lag: int) -> torch.Tensor:
+        """Causal right-shift by ``lag`` along the sequence axis (zero-filled)."""
+        if lag <= 0:
+            return z
+        return F.pad(z, (0, 0, lag, 0))[:, : z.shape[1]]
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        scale_feats = [x]
+        cur = x
+        for level in range(self.n_levels):
+            prev = self._shift(cur, 1 << level)  # 2**level-ago partner
+            pair = torch.cat([prev, cur], dim=-1)  # [B, L, 2D]
+            dis = self.disentanglers[level](pair)  # disentangle (identity at init)
+            cur = self.isometries[level](dis)  # coarse-grain (average at init)
+            scale_feats.append(cur)
+        return self.read(torch.cat(scale_feats, dim=-1))

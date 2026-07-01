@@ -22,6 +22,7 @@ from component_fab.generator.memory_primitives import (
 )
 from component_fab.generator.novel_math_primitives import (
     FractionalIntegralMemoryLane,
+    MeraRenormMixerLane,
     SheafDiffusionMixerLane,
 )
 from component_fab.generator.native_surprise_memory import (
@@ -86,6 +87,7 @@ _INVENTION_MECHANISMS: dict[str, LaneFactory] = {
     "padic_surprise_memory": PadicSurpriseMemoryLane,
     "fractional_integral_memory": FractionalIntegralMemoryLane,
     "sheaf_consistent_slot_mixer": SheafDiffusionMixerLane,
+    "mera_block": MeraRenormMixerLane,
     "native_read_before_write_surprise_memory": NativeReadBeforeWriteSurpriseMemoryLane,
     "native_context_gated_surprise_memory": NativeContextGatedSurpriseMemoryLane,
     "native_atlas_poly_surprise_memory": NativeAtlasPolySurpriseMemoryLane,
