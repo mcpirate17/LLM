@@ -23,17 +23,24 @@ from component_fab.generator.primitive_templates import (
     FourierBasisLane,
     GraphDiffusionAdapterLane,
     GraphDiffusionLane,
+    HyperbolicAdapterLane,
+    CliffordAdapterLane,
+    CliffordAttention,
     LambdaFunctionalAdapterLane,
     LambdaFunctionalLane,
     LowRankAdapterLane,
     LowRankFactorizedLane,
     MultiscaleWaveletAdapterLane,
     MultiscaleWaveletLane,
+    PadicAdapterLane,
+    PadicProjection,
+    PoincareAttention,
     RandomFeatureKernelAdapterLane,
     RandomFeatureKernelLane,
     SparseBandedAdapterLane,
     SparseBandedMatrixLane,
     TopKLinear,
+    TropicalAdapterLane,
     TropicalAttention,
     TropicalStateSpace,
 )
@@ -229,6 +236,40 @@ def test_lambda_functional_gate_changes_output() -> None:
     assert (opened - closed).abs().mean().item() > 1e-4
 
 
+def test_dispatch_exotic_algebra_math_knob_families() -> None:
+    cases = [
+        (
+            {"op_math_family": "tropical", "op_tropical_adapter": "maxplus_read"},
+            TropicalAttention,
+        ),
+        (
+            {"op_math_family": "padic", "op_padic_adapter": "ultrametric_projection"},
+            PadicProjection,
+        ),
+        (
+            {
+                "op_math_family": "clifford",
+                "op_clifford_adapter": "geometric_product",
+            },
+            CliffordAttention,
+        ),
+        (
+            {
+                "op_math_family": "hyperbolic",
+                "op_hyperbolic_adapter": "poincare_projection",
+            },
+            PoincareAttention,
+        ),
+    ]
+    x = torch.randn(2, 8, 16)
+    for axes, expected_type in cases:
+        module = generate_module(axes, dim=16)
+        assert isinstance(module, expected_type)
+        y = module(x)
+        assert y.shape == x.shape
+        assert torch.isfinite(y).all()
+
+
 def test_dispatch_composes_math_knobs_over_base_lane() -> None:
     m = generate_module(
         {
@@ -283,6 +324,49 @@ def test_dispatch_composes_lambda_math_knob_over_base_lane() -> None:
     assert isinstance(m.base, TropicalAttention)
     x = torch.randn(2, 8, 16)
     assert m(x).shape == x.shape
+
+
+def test_dispatch_composes_exotic_algebra_knobs_over_hyperbolic_anchor() -> None:
+    axes = {
+        "op_algebraic_space": "hyperbolic",
+        "op_math_knobs": ("tropical_knob", "padic_knob"),
+    }
+    stacked = generate_module(axes, dim=16)
+    tropical_only = generate_module(
+        {"op_algebraic_space": "hyperbolic", "op_math_knobs": ("tropical_knob",)},
+        dim=16,
+    )
+    padic_only = generate_module(
+        {"op_algebraic_space": "hyperbolic", "op_math_knobs": ("padic_knob",)},
+        dim=16,
+    )
+
+    assert isinstance(stacked, PadicAdapterLane)
+    assert isinstance(stacked.base, TropicalAdapterLane)
+    assert isinstance(stacked.base.base, PoincareAttention)
+    x = torch.randn(2, 8, 16)
+    y_stack = stacked(x)
+    y_tropical = tropical_only(x)
+    y_padic = padic_only(x)
+    assert y_stack.shape == x.shape
+    assert torch.isfinite(y_stack).all()
+    assert not torch.allclose(y_stack, y_tropical)
+    assert not torch.allclose(y_stack, y_padic)
+
+
+def test_dispatch_composes_clifford_and_hyperbolic_knobs() -> None:
+    module = generate_module(
+        {
+            "op_algebraic_space": "tropical",
+            "op_math_knobs": ("clifford_knob", "hyperbolic_knob"),
+        },
+        dim=16,
+    )
+    assert isinstance(module, HyperbolicAdapterLane)
+    assert isinstance(module.base, CliffordAdapterLane)
+    assert isinstance(module.base.base, TropicalAttention)
+    x = torch.randn(2, 8, 16)
+    assert torch.isfinite(module(x)).all()
 
 
 def test_dispatch_site_recursion_wraps_anchor_mixer() -> None:

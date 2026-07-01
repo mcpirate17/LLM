@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from math import comb
+
 import pytest
 
 from component_fab.generator.code_generator import generate_module_from_spec
@@ -29,6 +31,10 @@ def test_default_math_knob_catalog_covers_requested_families() -> None:
     assert "multiscale" in families
     assert "graph_diffusion" in families
     assert "lambda_functional" in families
+    assert "tropical" in families
+    assert "padic" in families
+    assert "clifford" in families
+    assert "hyperbolic" in families
 
 
 def test_math_knobs_from_axes_parses_explicit_stack() -> None:
@@ -46,6 +52,16 @@ def test_math_knobs_from_axes_uses_family_fallbacks() -> None:
     assert math_knobs_from_axes({"op_math_family": "lambda_functional"}) == (
         "lambda_functional_blend",
     )
+    assert math_knobs_from_axes({"op_math_family": "tropical"}) == (
+        "tropical_knob",
+    )
+    assert math_knobs_from_axes({"op_math_family": "padic"}) == ("padic_knob",)
+    assert math_knobs_from_axes({"op_math_family": "clifford"}) == (
+        "clifford_knob",
+    )
+    assert math_knobs_from_axes({"op_math_family": "hyperbolic"}) == (
+        "hyperbolic_knob",
+    )
 
 
 def test_enumerate_math_knob_compositions_against_real_db() -> None:
@@ -54,8 +70,9 @@ def test_enumerate_math_knob_compositions_against_real_db() -> None:
     specs = enumerate_math_knob_compositions(
         ["tropical_attention"], min_depth=2, max_depth=3
     )
-    # Seven knobs at depth 2/3 => C(7,2) + C(7,3) = 56 specs per anchor.
-    assert len(specs) == 56
+    assert len(specs) == comb(len(DEFAULT_MATH_KNOBS), 2) + comb(
+        len(DEFAULT_MATH_KNOBS), 3
+    )
     assert any(
         spec.math_axes["op_math_knobs"]
         == "calculus_finite_difference+linear_algebra_low_rank+sparse_matrix_banded"
@@ -66,6 +83,14 @@ def test_enumerate_math_knob_compositions_against_real_db() -> None:
         == "kernel_random_features+multiscale_wavelet+graph_laplacian_diffusion"
         for spec in specs
     )
+    exotic = next(
+        spec
+        for spec in specs
+        if spec.math_axes["op_math_knobs"] == "tropical_knob+hyperbolic_knob"
+    )
+    assert exotic.math_axes["op_tropical_adapter"] == "maxplus_read"
+    assert exotic.math_axes["op_hyperbolic_adapter"] == "poincare_projection"
+    assert exotic.math_axes["op_algebraic_space"] == "tropical"
 
 
 def test_composed_math_knob_spec_dispatches_to_stack() -> None:

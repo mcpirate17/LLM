@@ -299,6 +299,16 @@ def _math_knob_cross_check(
             and drift < 1e-5
         )
 
+    exotic_checks = {
+        "tropical_knob": ("tropical_knob_consistent", "Tropical"),
+        "padic_knob": ("padic_knob_consistent", "Padic"),
+        "clifford_knob": ("clifford_knob_consistent", "Clifford"),
+        "hyperbolic_knob": ("hyperbolic_knob_consistent", "Poincare"),
+    }
+    for knob, (key, class_fragment) in exotic_checks.items():
+        if knob in knobs:
+            findings[key] = _module_has_class_fragment(module, class_fragment)
+
     if "lambda_functional_blend" in knobs:
         gate_values = [
             float(torch.sigmoid(child.gate_logit).mean().item())

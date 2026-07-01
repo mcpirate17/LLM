@@ -54,6 +54,8 @@ from .primitive_templates import (
     FourierBasisLane,
     GraphDiffusionAdapterLane,
     GraphDiffusionLane,
+    HyperbolicAdapterLane,
+    CliffordAdapterLane,
     LambdaFunctionalAdapterLane,
     LambdaFunctionalLane,
     LinearStateSpaceLane,
@@ -69,7 +71,9 @@ from .primitive_templates import (
     SparseBandedAdapterLane,
     SparseBandedMatrixLane,
     SpikingActivationGate,
+    PadicAdapterLane,
     TopKLinear,
+    TropicalAdapterLane,
     TropicalAttention,
     TropicalStateSpace,
     TropicalTopKStateSpace,
@@ -233,6 +237,24 @@ def _dispatch_math_knob(
         topology = _axis(math_axes, "op_graph_topology")
         if topology in ("causal_path_laplacian", "causal_path"):
             return GraphDiffusionLane(dim)
+    if family == "tropical":
+        adapter = _axis(math_axes, "op_tropical_adapter")
+        if adapter in ("maxplus_read", ""):
+            return TropicalAttention(dim)
+    if family == "padic":
+        adapter = _axis(math_axes, "op_padic_adapter")
+        if adapter in ("ultrametric_projection", ""):
+            if dim % 2 != 0:
+                return None
+            return PadicProjection(dim, p=2, n_levels=3 if dim % 8 == 0 else 1)
+    if family == "clifford":
+        adapter = _axis(math_axes, "op_clifford_adapter")
+        if adapter in ("geometric_product", "") and dim % 4 == 0:
+            return CliffordAttention(dim)
+    if family == "hyperbolic":
+        adapter = _axis(math_axes, "op_hyperbolic_adapter")
+        if adapter in ("poincare_projection", ""):
+            return PoincareAttention(dim)
     if family == "lambda_functional":
         transform = _axis(math_axes, "op_lambda_transform")
         if transform in ("learned_functional_blend", ""):
@@ -351,6 +373,14 @@ def _apply_math_knobs(
             module = MultiscaleWaveletAdapterLane(module, dim)
         elif knob == "graph_laplacian_diffusion":
             module = GraphDiffusionAdapterLane(module, dim)
+        elif knob == "tropical_knob":
+            module = TropicalAdapterLane(module, dim)
+        elif knob == "padic_knob":
+            module = PadicAdapterLane(module, dim)
+        elif knob == "clifford_knob":
+            module = CliffordAdapterLane(module, dim)
+        elif knob == "hyperbolic_knob":
+            module = HyperbolicAdapterLane(module, dim)
         elif knob == "lambda_functional_blend":
             module = LambdaFunctionalAdapterLane(
                 module,

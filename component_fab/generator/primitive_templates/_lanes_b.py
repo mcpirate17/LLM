@@ -12,6 +12,7 @@ from ._lanes_a import (
     FiniteDifferenceCalculusLane,
     LowRankFactorizedLane,
     SparseBandedMatrixLane,
+    TropicalAttention,
 )
 
 
@@ -186,6 +187,47 @@ class GraphDiffusionAdapterLane(_ResidualAdapterLane):
             base, GraphDiffusionLane(dim, diffusion_steps=diffusion_steps), dim
         )
         self.diffusion_steps = diffusion_steps
+
+
+def _padic_levels_for_dim(dim: int, *, p: int = 2, max_levels: int = 3) -> int:
+    levels = 0
+    for level in range(1, max_levels + 1):
+        if dim % (p**level) == 0:
+            levels = level
+    if levels == 0:
+        raise ValueError(f"dim {dim} must be divisible by {p} for p-adic adapter")
+    return levels
+
+
+class TropicalAdapterLane(_ResidualAdapterLane):
+    """Wrap a base lane with a stackable max-plus tropical read."""
+
+    def __init__(self, base: nn.Module, dim: int) -> None:
+        super().__init__(base, TropicalAttention(dim), dim)
+
+
+class PadicAdapterLane(_ResidualAdapterLane):
+    """Wrap a base lane with an ultrametric p-adic projection."""
+
+    def __init__(self, base: nn.Module, dim: int, p: int = 2) -> None:
+        levels = _padic_levels_for_dim(dim, p=p)
+        super().__init__(base, PadicProjection(dim, p=p, n_levels=levels), dim)
+        self.p = p
+        self.n_levels = levels
+
+
+class CliffordAdapterLane(_ResidualAdapterLane):
+    """Wrap a base lane with Clifford geometric-product composition."""
+
+    def __init__(self, base: nn.Module, dim: int) -> None:
+        super().__init__(base, CliffordAttention(dim), dim)
+
+
+class HyperbolicAdapterLane(_ResidualAdapterLane):
+    """Wrap a base lane with Poincare-ball hyperbolic mixing."""
+
+    def __init__(self, base: nn.Module, dim: int) -> None:
+        super().__init__(base, PoincareAttention(dim), dim)
 
 
 class LambdaFunctionalLane(nn.Module):

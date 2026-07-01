@@ -82,6 +82,42 @@ DEFAULT_MATH_KNOBS: tuple[MathKnob, ...] = (
         cost_class="low",
         rationale="identity-biased lambda-gated functional blend",
     ),
+    MathKnob(
+        knob_id="tropical_knob",
+        family="tropical",
+        axes={
+            "op_tropical_adapter": "maxplus_read",
+        },
+        cost_class="medium",
+        rationale="stackable max-plus tropical read adapter",
+    ),
+    MathKnob(
+        knob_id="padic_knob",
+        family="padic",
+        axes={
+            "op_padic_adapter": "ultrametric_projection",
+        },
+        cost_class="medium",
+        rationale="stackable ultrametric p-adic projection adapter",
+    ),
+    MathKnob(
+        knob_id="clifford_knob",
+        family="clifford",
+        axes={
+            "op_clifford_adapter": "geometric_product",
+        },
+        cost_class="medium",
+        rationale="stackable Clifford geometric-product adapter",
+    ),
+    MathKnob(
+        knob_id="hyperbolic_knob",
+        family="hyperbolic",
+        axes={
+            "op_hyperbolic_adapter": "poincare_projection",
+        },
+        cost_class="medium",
+        rationale="stackable Poincare-ball hyperbolic adapter",
+    ),
 )
 
 KNOB_ID_BY_FAMILY: dict[str, str] = {
