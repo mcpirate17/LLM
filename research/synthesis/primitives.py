@@ -1338,6 +1338,80 @@ _register(
 )
 _register(
     PrimitiveOp(
+        "padic_depth_route",
+        OpCategory.PARAMETERIZED,
+        1,
+        "identity",
+        has_params=True,
+        param_formula="D*D*4+D",
+        description=(
+            "P-adic ultrametric depth routing: recursion depth chosen by the token's intrinsic "
+            "p-adic valuation (reciprocal/inverse-distance weighting over learnable depth "
+            "anchors, non-softmax) — collapse-resistant replacement for depth_weighted_proj"
+        ),
+        config_keys=("max_depth",),
+    )
+)
+_register(
+    PrimitiveOp(
+        "padic_gated_mixer",
+        OpCategory.PARAMETERIZED,
+        1,
+        "identity",
+        has_params=True,
+        param_formula="D*D*3+D",
+        description=(
+            "Learned p-adic gated mixer: highway gate sigmoid(Wg x + Wv valuation(x) + b) mixes a "
+            "learned projection with identity — learnable (recovers capability) + ultrametric "
+            "scale structure + sigmoid per-channel (collapse-proof, no softmax expert competition)"
+        ),
+    )
+)
+_register(
+    PrimitiveOp(
+        "sinkhorn_ot_mix",
+        OpCategory.PARAMETERIZED,
+        1,
+        "identity",
+        has_params=True,
+        param_formula="D*D*4+1",
+        binding_range_class="full",
+        description=(
+            "Optimal-transport sequence mixer: entropic Sinkhorn transport plan with UNIFORM BALANCED"
+            " marginals (doubly-stochastic) — structurally != softmax attention (row-stochastic, no"
+            " column constraint). Transport is the geometry of matching; balanced marginals push"
+            " distinct queries toward distinct keys, attacking multi-slot associative binding. Learned"
+            " epsilon slides soft-mean <-> near-hard assignment; the column-marginal constraint forbids"
+            " single-key collapse. Python-only dispatch (no native softmax bypass)."
+        ),
+        config_keys=("sinkhorn_iters",),
+    )
+)
+_register(
+    PrimitiveOp(
+        "ultrametric_tree_mix",
+        OpCategory.PARAMETERIZED,
+        1,
+        "identity",
+        has_params=True,
+        param_formula="D*D*4 + 8*D + 9",
+        binding_range_class="full",
+        description=(
+            "Content-addressed ultrametric (p-adic / Bruhat-Tits-tree) sequence mixer. Extends the"
+            " validated padic direction from PER-TOKEN valuation (a scalar intrinsic signal) to PAIRWISE"
+            " ultrametric tree-distance between tokens — closing the associative-retrieval gap the"
+            " rdr_padic 42.7M floor-result found (single-pass gate has no retrieval pathway). Affinity"
+            " is NOT softmax (exp of an additive bilinear): it is the PRODUCT over 8 learned resolution"
+            " scales of per-scale soft agreements, so one scale disagreement zeros the pair mass — the"
+            " strong triangle inequality that gives the similarity graph a hierarchical-tree topology,"
+            " not softmax's flat Euclidean one. Causal (look-back only), row-normalized; closes the"
+            " retrieval gap the single-pass p-adic gate cannot. Python-only dispatch (no native softmax"
+            " bypass). 8 scales fixed so param accounting matches the formula."
+        ),
+    )
+)
+_register(
+    PrimitiveOp(
         "learned_token_gate",  # was: cascade
         OpCategory.PARAMETERIZED,
         1,

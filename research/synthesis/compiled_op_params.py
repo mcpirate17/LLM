@@ -238,6 +238,10 @@ class CompiledOpParamInitMixin:
             "lane_conditioned_block": lambda: self._init_lane_conditioned_block(d_in),
             "default_path": lambda: None,
             "depth_weighted_proj": lambda: self._init_depth_weighted_proj(config, d_in),
+            "padic_depth_route": lambda: self._init_padic_depth_route(config, d_in),
+            "padic_gated_mixer": lambda: self._init_padic_gated_mixer(d_in),
+            "sinkhorn_ot_mix": lambda: self._init_sinkhorn_ot_mix(d_in),
+            "ultrametric_tree_mix": lambda: self._init_ultrametric_tree_mix(d_in),
             "token_class_proj": lambda: self._init_token_class_proj(config, d_in),
             "adaptive_rank_gate": lambda: self._init_adaptive_rank_gate(d_in, d_out),
             "dual_compression_blend": lambda: self._init_dual_compression_blend(
@@ -824,6 +828,55 @@ class CompiledOpParamInitMixin:
             p.data.normal_(std=0.02)
             projs.append(p)
         self.step_projs = nn.ParameterList(projs)
+
+    def _init_padic_depth_route(self, config: Dict, d_in: int) -> None:
+        # Same per-step transforms as depth_weighted_proj, but NO learned softmax scorer.
+        # Routing is driven by the token's intrinsic p-adic valuation onto learnable depth
+        # anchors (standardized space, init spread so depths cover the valuation range) with
+        # a learnable reciprocal sharpness — see _op_padic_depth_route.
+        max_depth = max(1, min(6, int(config.get("max_depth", 3))))
+        projs = []
+        for _ in range(max_depth):
+            p = nn.Parameter(torch.empty(d_in, d_in))
+            p.data.normal_(std=0.02)
+            projs.append(p)
+        self.step_projs = nn.ParameterList(projs)
+        self.depth_anchors = nn.Parameter(torch.linspace(-1.5, 1.5, max_depth))
+        self.route_log_sharpness = nn.Parameter(torch.zeros(()))
+
+    def _init_padic_gated_mixer(self, d_in: int) -> None:
+        # Learned highway gate informed by p-adic valuation + a learned projection.
+        # gate_bias=0 -> sigmoid starts balanced (0.5); see _op_padic_gated_mixer.
+        self.gate_x = self._make_param((d_in, d_in), std=0.02)
+        self.gate_v = self._make_param((d_in, d_in), std=0.02)
+        self.proj_w = self._make_param((d_in, d_in), std=0.02)
+        self.gate_bias = nn.Parameter(torch.zeros(d_in))
+
+    def _init_sinkhorn_ot_mix(self, d_in: int) -> None:
+        # Optimal-transport mixer params: query/key projections define the transport cost
+        # (squared Euclidean on L2-normalized projections), the value is read by the plan, and
+        # the output projection merges. sinkhorn_log_eps=0 -> eps = softplus(0)+0.1 ~= 0.79
+        # (moderate transport sharpness). See _op_sinkhorn_ot_mix.
+        self.ot_q_proj = self._make_param((d_in, d_in), std=0.02)
+        self.ot_k_proj = self._make_param((d_in, d_in), std=0.02)
+        self.ot_v_proj = self._make_param((d_in, d_in), std=0.02)
+        self.ot_o_proj = self._make_param((d_in, d_in), std=0.02)
+        self.sinkhorn_log_eps = nn.Parameter(torch.zeros(()))
+
+    def _init_ultrametric_tree_mix(self, d_in: int) -> None:
+        # Content-addressed ultrametric (Bruhat-Tits-tree) mixer params. q/k/v/o projections map
+        # tokens to content codes; ut_scale_dirs are L=8 learned resolution directions, ut_scale_bias
+        # the per-scale agreement threshold, ut_scale_log_temp the sharpness (softplus-floored). The
+        # affinity is the PRODUCT of per-scale agreements (see _op_ultrametric_tree_mix). L=8 is FIXED
+        # so param accounting matches param_formula="D*D*4 + 8*D + 9": 4*D*D (projs) + 8*D (dirs) +
+        # 8 (bias) + 1 (temp).
+        self.ut_q_proj = self._make_param((d_in, d_in), std=0.02)
+        self.ut_k_proj = self._make_param((d_in, d_in), std=0.02)
+        self.ut_v_proj = self._make_param((d_in, d_in), std=0.02)
+        self.ut_o_proj = self._make_param((d_in, d_in), std=0.02)
+        self.ut_scale_dirs = self._make_param((8, d_in), std=0.02)
+        self.ut_scale_bias = nn.Parameter(torch.zeros(8))
+        self.ut_scale_log_temp = nn.Parameter(torch.zeros(()))
 
     def _init_relu_gated_moe(self, config: Dict, d_in: int) -> None:
         n_experts = int(config.get("n_experts", 8))

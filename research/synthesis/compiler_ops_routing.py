@@ -1018,6 +1018,162 @@ def _op_depth_weighted_proj(module, inputs, config):
     return x * scale.unsqueeze(-1)
 
 
+def _op_padic_depth_route(module, inputs, config):
+    """Novel non-softmax recursion routing (replaces depth_weighted_proj's softmax scorer).
+
+    Per-token recursion depth is chosen by the token's INTRINSIC p-adic valuation — an
+    ultrametric / tree-distance signal — reciprocal-weighted (inverse-distance, NOT softmax)
+    over ``max_depth`` learnable depth anchors. Because the routing signal is the token's
+    fixed ultrametric structure rather than a free learned linear gate, the weights track the
+    real spread of token hierarchy and structurally resist the single-expert collapse the
+    softmax depth-router suffers (6/8 routers collapsed at scale, 2026-06-29). Per-step
+    transforms are the same ``step_projs`` mixture as ``depth_weighted_proj``.
+    """
+    from ..mathspaces.padic import padic_valuation
+
+    x = inputs[0]
+    if not hasattr(module, "step_projs") or not hasattr(module, "depth_anchors"):
+        return x
+    dt = x.dtype
+    k = min(max(1, int(config.get("max_depth", 3))), len(module.step_projs))
+    # intrinsic ultrametric routing signal, standardized for activation-scale robustness
+    val = padic_valuation(x.float()).mean(dim=-1)  # (B, S)
+    val = (val - val.mean()) / (val.std() + 1e-5)
+    anchors = module.depth_anchors[:k].to(val.dtype)  # (k,)
+    sharp = F.softplus(module.route_log_sharpness.to(val.dtype)) + 0.5
+    dist = (val.unsqueeze(-1) - anchors).abs()  # (B, S, k)
+    # bounded reciprocal (Cauchy/Lorentzian) proximity in [0,1] — inverse-distance, non-softmax,
+    # gradient-safe as dist -> 0 (unlike a raw dist**-sharp pole).
+    inv = 1.0 / (1.0 + (dist * sharp).pow(2))
+    weights = (inv / inv.sum(dim=-1, keepdim=True)).to(dt)  # (B, S, k)
+    _record_routing_telemetry(module, k, weights.argmax(dim=-1))
+    W_all = _get_stacked_params(module, "step_projs", k, dt)
+    all_outs = torch.einsum("bsd,kod->bsko", x, W_all)
+    return (weights.unsqueeze(-1) * all_outs).sum(dim=2)
+
+
+def _op_padic_gated_mixer(module, inputs, config):
+    """Learned p-adic gated mixer (the LEARNED counterpart to the fixed padic_gate).
+
+    Highway/GLU mix between a learned projection and identity, gated by a LEARNED function of
+    both the token and its p-adic valuation (log-magnitude / ultrametric scale signal):
+        g = sigmoid(Wg x + Wv valuation(x) + b);  out = g * (Wp x) + (1 - g) * x
+    Why this and not the fixed padic_gate or the p-adic *router*: the fixed-valuation router kept
+    the gate alive but killed induction (0.477->0.006, 2026-06-29) because a rigid signal carries no
+    task information. Here the gate is LEARNED (recovers capability) while the valuation term gives
+    it scale/hierarchy structure a linear gate can't see; sigmoid per-channel (no softmax expert
+    competition) makes it structurally collapse-proof. Degenerates to a plain highway gate if the
+    model drives Wv->0, so it is never worse than a learned GLU.
+    """
+    from ..mathspaces.padic import padic_valuation
+
+    x = inputs[0]
+    if not hasattr(module, "gate_x"):
+        return x
+    dt = x.dtype
+    val = padic_valuation(x.float()).clamp(-10.0, 10.0).to(dt)
+    gate = torch.sigmoid(
+        _safe_linear(x, module.gate_x)
+        + _safe_linear(val, module.gate_v)
+        + module.gate_bias.to(dt)
+    )
+    proj = _safe_linear(x, module.proj_w)
+    return gate * proj + (1.0 - gate) * x
+
+
+def _op_sinkhorn_ot_mix(module, inputs, config):
+    """Novel non-QKV optimal-transport sequence mixer (entropic Sinkhorn / Wasserstein).
+
+    Each token's projected query is transported onto every key under an entropic
+    optimal-transport plan found by log-domain Sinkhorn iterations with UNIFORM BALANCED
+    marginals (row mass == column mass == 1/S). This is structurally distinct from softmax
+    attention: softmax yields row-stochastic weights with NO column constraint (mass piles onto
+    a few keys -> the multi-slot binding interference wall), whereas a balanced OT plan enforces
+    a doubly-stochastic transport budget that pushes distinct queries toward distinct keys.
+    Transport is the geometry of matching; the balanced marginal is what makes it bind.
+
+    Cost = squared Euclidean distance between L2-normalized query/key projections (content-driven,
+    scale-bounded in [0, 4]); the Gaussian-style kernel exp(-cost/eps) keeps similar content
+    cheaper to transport. eps is LEARNED (softplus-floored) so the model slides from soft-mean
+    transport (eps -> inf) to near-hard assignment (eps -> 0). The column-marginal constraint
+    forbids single-key collapse, so the plan stays non-degenerate. Python-only dispatch (no
+    native softmax bypass); out = Wo(plan @ V) + x.
+    """
+    x = inputs[0]
+    if not hasattr(module, "ot_q_proj"):
+        return x
+    dt = x.dtype
+    B, S, D = x.shape
+    q = torch.matmul(x, module.ot_q_proj.to(dt))
+    k = torch.matmul(x, module.ot_k_proj.to(dt))
+    v = torch.matmul(x, module.ot_v_proj.to(dt))
+    # L2-normalize so the transport cost is bounded in [0, 4].
+    q = q / (q.norm(dim=-1, keepdim=True) + 1e-6)
+    k = k / (k.norm(dim=-1, keepdim=True) + 1e-6)
+    cost = (q.unsqueeze(2) - k.unsqueeze(1)).pow(2).sum(dim=-1)  # (B, S, S)
+    eps = F.softplus(module.sinkhorn_log_eps.to(dt)) + 0.1
+    log_K = -cost / eps
+    n_iters = max(1, min(32, int(config.get("sinkhorn_iters", 8))))
+    log_uniform = torch.log(torch.tensor(1.0 / S, dtype=dt, device=x.device))
+    f = torch.zeros(B, S, dtype=dt, device=x.device)
+    g = torch.zeros(B, S, dtype=dt, device=x.device)
+    for _ in range(n_iters):
+        f = log_uniform - torch.logsumexp(log_K + g.unsqueeze(1), dim=2)
+        g = log_uniform - torch.logsumexp(log_K + f.unsqueeze(2), dim=1)
+    log_T = f.unsqueeze(2) + log_K + g.unsqueeze(1)
+    T = torch.exp(log_T)  # balanced doubly-stochastic within Sinkhorn tolerance
+    module._last_ot_plan = T.detach()  # for novelty-guard address-entropy + tests
+    o = torch.bmm(T, v)  # (B, S, D): transport-mass-weighted read of values
+    return torch.matmul(o, module.ot_o_proj.to(dt)) + x
+
+
+def _op_ultrametric_tree_mix(module, inputs, config):
+    """Novel non-QKV content-addressed ultrametric (p-adic / Bruhat-Tits-tree) sequence mixer.
+
+    Extends the validated padic direction from PER-TOKEN valuation (a scalar intrinsic signal,
+    padic_gated_mixer) to PAIRWISE ultrametric tree-distance between tokens — the content-addressed
+    retrieval pathway the single-pass padic gate lacks (rdr_padic 42.7M floor-result: reasoning at
+    floor because a single-pass gate has no associative retrieval). Query i reads from each earlier
+    key j weighted by an ultrametric kernel, NOT by softmax (exp of an additive bilinear):
+
+        K_ij = prod_{l=1..L} sigmoid((tau_l - |(q_i - k_j) . w_l|) / temp)
+
+    The PRODUCT over scales enforces nested agreement: a pair must agree at EVERY resolution to keep
+    mass, so a single hard scale-disagreement drives K_ij -> 0. That is the strong triangle inequality
+    d(x,z) <= max(d(x,y), d(y,z)), which gives the similarity graph a hierarchical-tree (Bruhat-Tits)
+    topology rather than softmax's flat Euclidean exp-geometry. Softmax-over-dot-product provably
+    cannot replicate this: when two keys have equal additive score against a query, softmax gives them
+    equal mass, but the ultrametric product still separates them by scale structure. Causal (look-back
+    only, j <= i), row-normalized; out = Wo(K_norm @ V) + x. Python-only dispatch (no native softmax
+    bypass).
+    """
+    x = inputs[0]
+    if not hasattr(module, "ut_q_proj"):
+        return x
+    dt = x.dtype
+    B, S, D = x.shape
+    q = torch.matmul(x, module.ut_q_proj.to(dt))  # (B, S, D)
+    k = torch.matmul(x, module.ut_k_proj.to(dt))
+    v = torch.matmul(x, module.ut_v_proj.to(dt))
+    dirs = module.ut_scale_dirs.to(dt)  # (L=8, D)
+    bias = module.ut_scale_bias.to(dt)  # (L=8,)
+    temp = F.softplus(module.ut_scale_log_temp.to(dt)) + 0.1
+    diff = q.unsqueeze(2) - k.unsqueeze(1)  # (B, S, S, D): query i vs key j
+    proj = torch.matmul(diff, dirs.t())  # (B, S, S, L): signed per-scale difference
+    # Per-scale soft agreement: ~1 when |diff.w_l| << tau_l, ~0 when >> tau_l.
+    agree = torch.sigmoid((bias - proj.abs()) / temp)  # (B, S, S, L)
+    # Ultrametric kernel = product across scales (nested agreement -> strong triangle inequality).
+    K = agree.prod(dim=-1)  # (B, S, S)
+    # Causal look-back: forbid future keys (j > i).
+    causal = torch.tril(torch.ones(S, S, device=x.device, dtype=dt), diagonal=0)
+    K = K * causal
+    denom = K.sum(dim=2, keepdim=True).clamp_min(1e-6)
+    W = K / denom  # row-normalized causal retrieval weights
+    module._last_ut_weights = W.detach()  # for novelty-guard address-entropy + tests
+    o = torch.bmm(W, v)  # (B, S, D): ultrametric-weighted read of values
+    return torch.matmul(o, module.ut_o_proj.to(dt)) + x
+
+
 # ── Exotic Ops (Phase 4) ─────────────────────────────────────────────
 
 
@@ -1263,6 +1419,10 @@ OP_IMPLS: Dict[str, Callable] = {
     "lane_conditioned_block": _op_lane_conditioned_block,
     "default_path": _op_default_path,
     "depth_weighted_proj": _op_depth_weighted_proj,
+    "padic_depth_route": _op_padic_depth_route,
+    "padic_gated_mixer": _op_padic_gated_mixer,
+    "sinkhorn_ot_mix": _op_sinkhorn_ot_mix,
+    "ultrametric_tree_mix": _op_ultrametric_tree_mix,
     "token_entropy": _op_token_entropy,
     "relu_gated_moe": _op_relu_gated_moe,
     "difficulty_blend_3way": _op_difficulty_blend_3way,
