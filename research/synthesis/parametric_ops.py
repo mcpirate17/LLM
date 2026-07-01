@@ -33,10 +33,16 @@ import torch.nn.functional as F
 from torch import nn
 
 ADDRESS_FAMILIES = ("dot", "reciprocal", "cosine")
-SCORE_NORM_FAMILIES = ("softmax", "sharpen")
+SCORE_NORM_FAMILIES = ("softmax", "sharpen", "tsallis_q", "renyi")
 AGGREGATE_FAMILIES = ("mean", "semiring")
 
 _NEG = -1e9
+# How far the learnable Tsallis/Rényi order q may move from 1 (softmax):
+# q = 1 + tanh(knob) * _Q_SPAN ∈ (1-span, 1+span). Kept clear of the q→0
+# singularity. In this normalized q-exponential ("q-softmax") convention q<1 is
+# the sparse hard-cutoff regime and q>1 is the heavy-tailed / flatter regime
+# (this is the Tsallis-q map, NOT the entmax-α map, whose sparsity sign flips).
+_Q_SPAN = 0.8
 
 
 @dataclass(frozen=True)
@@ -102,6 +108,11 @@ class ParametricMix(nn.Module):
         self.cosine_gate = nn.Parameter(torch.zeros(1))  # tanh(0)=0 -> dot
         self.log_tau = nn.Parameter(torch.zeros(1))  # exp(0)=1 -> softmax
         self.semiring_beta = nn.Parameter(torch.zeros(1))  # 0 -> weighted mean
+        self.tsallis_q_delta = nn.Parameter(
+            torch.zeros(1)
+        )  # tanh(0)=0 -> q=1 (softmax)
+        self.renyi_q_delta = nn.Parameter(torch.zeros(1))  # tanh(0)=0 -> q=1 (softmax)
+        self.renyi_log_beta = nn.Parameter(torch.zeros(1))  # exp(0)=1 -> softmax
 
     # ── stages ──────────────────────────────────────────────────────
     def _address(self, q: torch.Tensor, k: torch.Tensor) -> torch.Tensor:
@@ -122,11 +133,57 @@ class ParametricMix(nn.Module):
             scores = dot + torch.tanh(self.cosine_gate) * (cos - dot)
         return scores.masked_fill(mask, _NEG)
 
+    @staticmethod
+    def _q_exp(z: torch.Tensor, q: torch.Tensor) -> torch.Tensor:
+        """Tsallis q-exponential ``[1+(1-q)z]_+**(1/(1-q))``, smooth at ``q=1``.
+
+        ``exp_q -> exp`` as ``q -> 1``; the ``log(1+(1-q)z)/(1-q)`` limit is taken
+        via a short Taylor series near ``q=1`` so the op is not only equal to
+        softmax at init but also carries a *nonzero* gradient wrt ``q`` there
+        (the knob is learnable, not inert). ``[·]_+`` gives the sparse cutoff.
+        """
+        a = 1.0 - q
+        az = a * z
+        pos = (1.0 + az) > 0.0
+        az_safe = az.clamp(min=-1.0 + 1e-12)
+        small = a.abs() < 1e-3
+        a_den = torch.where(small, torch.ones_like(a), a)
+        exact = torch.log1p(az_safe) / a_den
+        series = z * (1.0 - 0.5 * az + (az * az) / 3.0)  # log(1+az)/a as a->0
+        t = torch.where(small, series, exact)
+        return torch.where(pos, torch.exp(t), torch.zeros_like(t))
+
+    def _q_softmax(
+        self, scores: torch.Tensor, q: torch.Tensor, beta: torch.Tensor | None = None
+    ) -> torch.Tensor:
+        """Normalized q-exponential over keys; equals softmax at ``q=1, beta=1``."""
+        masked = scores <= (_NEG / 2.0)
+        z = scores if beta is None else scores * beta
+        z_max = z.masked_fill(masked, _NEG).amax(dim=-1, keepdim=True)
+        z = (z - z_max).masked_fill(masked, -60.0)  # valid <= 0; masked -> exp ~ 0
+        expq = self._q_exp(z, q).masked_fill(masked, 0.0)
+        return expq / expq.sum(dim=-1, keepdim=True).clamp(min=1e-20)
+
     def _score_norm(self, scores: torch.Tensor) -> torch.Tensor:
-        """scores -> weights (B,S,S) over keys. Default: softmax."""
+        """scores -> weights (B,S,S) over keys. Default: softmax.
+
+        ``tsallis_q``: normalized Tsallis q-exponential with a learnable order
+        ``q = 1 + tanh(knob)*_Q_SPAN`` (q<1 sharpens toward a sparse hard-cutoff
+        read, q>1 gives heavier tails / flatter; q=1 is softmax). ``renyi``: the
+        full ``(q, beta)`` surface — the
+        q-exponential of a learnably sharpened score ``beta*scores``. Both equal
+        softmax at init and are *not* softmax twins away from it (the normalizer
+        is a q-deformed exponential, not the Gibbs exponential).
+        """
         if self.spec.score_norm == "softmax":
             return torch.softmax(scores, dim=-1)
-        return torch.softmax(scores * torch.exp(self.log_tau), dim=-1)  # sharpen
+        if self.spec.score_norm == "sharpen":
+            return torch.softmax(scores * torch.exp(self.log_tau), dim=-1)
+        if self.spec.score_norm == "tsallis_q":
+            q = 1.0 + torch.tanh(self.tsallis_q_delta) * _Q_SPAN
+            return self._q_softmax(scores, q)
+        q = 1.0 + torch.tanh(self.renyi_q_delta) * _Q_SPAN  # renyi
+        return self._q_softmax(scores, q, beta=torch.exp(self.renyi_log_beta))
 
     def _aggregate(self, weights: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
         """(weights,v) -> out (B,S,D). Default: weighted mean (weights @ v).

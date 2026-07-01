@@ -78,6 +78,8 @@ def test_forward_backward_finite_and_knob_grads() -> None:
         "cosine": "cosine_gate",
         "sharpen": "log_tau",
         "semiring": "semiring_beta",
+        "tsallis_q": "tsallis_q_delta",
+        "renyi": "renyi_q_delta",
     }
     for spec in all_stage_specs():
         mix = ParametricMix(_DIM, spec)
@@ -109,6 +111,56 @@ def test_knobs_move_the_mechanism_off_softmax() -> None:
         ref.semiring_beta.fill_(4.0)  # slide toward max-pool
     moved = ref(x)
     assert not torch.allclose(base, moved, atol=1e-4)
+
+
+def test_tsallis_equals_softmax_at_init_and_moves_off_it() -> None:
+    """tsallis_q is softmax at init (q=1) but a real knob: moving q changes it."""
+    torch.manual_seed(0)
+    ref = ParametricMix(_DIM, StageSpec())  # softmax
+    mix = ParametricMix(_DIM, StageSpec(score_norm="tsallis_q"))
+    _share_projections(ref, mix)
+    x = _x(5)
+    assert torch.allclose(mix(x), ref(x), atol=1e-5)  # q=1 -> softmax
+    with torch.no_grad():
+        mix.tsallis_q_delta.fill_(-2.0)  # q<1 -> sparse, off softmax
+    assert not torch.allclose(mix(x), ref(x), atol=1e-4)
+
+
+def test_tsallis_q_controls_read_sparsity() -> None:
+    """In the q-softmax convention q<1 concentrates weight (sparse hard cutoff)
+    and q>1 spreads it (heavy tails), relative to softmax (q=1). Measured by the
+    peak weight of the last query row (all keys causally valid there)."""
+    torch.manual_seed(1)
+    mix = ParametricMix(_DIM, StageSpec(score_norm="tsallis_q"))
+    x = _x(6)
+
+    def peak(delta: float) -> float:
+        with torch.no_grad():
+            mix.tsallis_q_delta.fill_(delta)
+            w = mix._score_norm(mix._address(mix.q(x), mix.k(x)))
+            return w[:, -1].max(dim=-1).values.mean().item()
+
+    softmax_peak = peak(0.0)  # q = 1
+    sparse_peak = peak(-3.0)  # q < 1
+    flat_peak = peak(3.0)  # q > 1
+    assert sparse_peak > softmax_peak > flat_peak
+
+
+def test_tsallis_weights_are_valid_causal_distributions() -> None:
+    """Rows sum to 1, are non-negative, and stay strictly causal off init."""
+    torch.manual_seed(2)
+    mix = ParametricMix(_DIM, StageSpec(score_norm="renyi"))
+    x = _x(7)
+    with torch.no_grad():
+        mix.renyi_q_delta.fill_(-2.5)  # sparse regime
+        mix.renyi_log_beta.fill_(0.7)  # sharpened
+        w = mix._score_norm(mix._address(mix.q(x), mix.k(x)))
+    assert torch.isfinite(w).all()
+    assert bool((w >= 0.0).all())
+    assert torch.allclose(w.sum(dim=-1), torch.ones(_B, _S), atol=1e-5)
+    # strictly causal: query t must place zero weight on keys > t
+    upper = torch.triu(torch.ones(_S, _S, dtype=torch.bool), diagonal=1)
+    assert float(w.masked_select(upper).abs().max()) == 0.0
 
 
 class _Stack(nn.Module):
