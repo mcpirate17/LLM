@@ -735,6 +735,83 @@ def _build_winner_lane(name: str, top_k_frac: float) -> Callable[[int], nn.Modul
     return _make_ensemble_lane_factory(specs)
 
 
+def _build_recursive_depth_router_lossmonster(
+    name: str, top_k_frac: float
+) -> Callable[[int], nn.Module]:
+    # 2026-06-29: the loss-monster GRAPH champion `recursive_depth_router`
+    # (depth_weighted_proj soft-mixture; layernorm -> adaptive_recursion(max_depth=4)
+    # -> conv1d_seq -> silu -> selective_scan -> residual add). DISTINCT from the
+    # hand-coded `recursive_depth_router` lane (TropicalAttention anchor) — this is the
+    # exact graph probed in the ACTION-1 step-ladder (induction ~0.41, AR-gate headline
+    # 1.0, binding survives the discriminating scale-ladder). Reconstructed from its
+    # program_results graph_json, wrapped as a 1-branch ensemble = the block itself;
+    # rescaled to any dim via _rescaled_graph_copy (only dim-coupled config = max_depth,
+    # which is a depth count not a width, so left untouched). Powers the 40M+ scale run.
+    from research.synthesis.serializer import graph_from_json
+    from research.tools.ensemble_screening import _make_ensemble_lane_factory
+    from research.tools.loss_monster_screen import _RUNS_DB, select_family_champions
+
+    champ = next(
+        (
+            c
+            for c in select_family_champions(_RUNS_DB)
+            if c.family == "recursive_depth_router"
+        ),
+        None,
+    )
+    if champ is None:
+        raise ValueError("no recursive_depth_router champion graph in runs.db")
+    specs = (
+        (
+            "rdr_lossmonster",
+            "recursive_depth_router loss-monster graph champion",
+            0.0,
+            graph_from_json(champ.graph_json),
+        ),
+    )
+    return _make_ensemble_lane_factory(specs)
+
+
+def _build_recursive_depth_router_padic(
+    name: str, top_k_frac: float
+) -> Callable[[int], nn.Module]:
+    # 2026-06-29: NOVEL variant of the loss-monster recursive_depth_router champion with the
+    # collapsing softmax depth-router (`adaptive_recursion`) swapped for `padic_gated_mixer` —
+    # a learned p-adic-valuation-gated highway mixer (sigmoid per-channel, collapse-proof; nano
+    # induction 0.409 ~= softmax orig 0.478, AR 1.0, gate driven 67-86% by the p-adic term).
+    # Fixes the softmax-router collapse that made the plain lossmonster run overfit (val ppl
+    # 209->700). Same SSM+conv backbone, novel non-softmax routing.
+    import json
+
+    from research.synthesis.serializer import graph_from_json
+    from research.tools.ensemble_screening import _make_ensemble_lane_factory
+    from research.tools.loss_monster_screen import _RUNS_DB, select_family_champions
+
+    champ = next(
+        (
+            c
+            for c in select_family_champions(_RUNS_DB)
+            if c.family == "recursive_depth_router"
+        ),
+        None,
+    )
+    if champ is None:
+        raise ValueError("no recursive_depth_router champion graph in runs.db")
+    g = json.loads(champ.graph_json)
+    for node in g["nodes"].values():
+        if node["op_name"] == "adaptive_recursion":
+            node["op_name"] = "padic_gated_mixer"
+    specs = (
+        (
+            "rdr_padic",
+            "recursive_depth_router + padic_gated_mixer (novel, collapse-proof)",
+            0.0,
+            graph_from_json(json.dumps(g)),
+        ),
+    )
+    return _make_ensemble_lane_factory(specs)
+
+
 # ---------------------------------------------------------------------------
 # Exact-match dispatch table
 # ---------------------------------------------------------------------------
@@ -775,6 +852,8 @@ LANE_BUILDERS: dict[str, Callable[..., Callable[[int], nn.Module]]] = {
     "top_ar_block_with_two_lane": _build_top_ar_block_with_two_lane,
     "block_gated_parallel": _build_block_gated_parallel,
     "recursive_depth_router": _build_recursive_depth_router,
+    "recursive_depth_router_lossmonster": _build_recursive_depth_router_lossmonster,
+    "recursive_depth_router_padic": _build_recursive_depth_router_padic,
     "hetero_moe_block": _build_hetero_moe_block,
     "local_ssm_diff": _build_local_ssm_diff,
     "routed_compress": _build_routed_compress,

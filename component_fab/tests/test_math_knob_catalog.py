@@ -11,10 +11,15 @@ from component_fab.generator.primitive_templates import (
     LambdaFunctionalAdapterLane,
     SparseBandedAdapterLane,
 )
-from component_fab.math_knobs import math_knobs_from_axes
-from component_fab.improver.axis_variants import DEFAULT_META_DB
+from component_fab.math_knobs import (
+    AUTO_DEEPENING_MATH_KNOBS,
+    MathKnob,
+    math_knobs_from_axes,
+)
+from component_fab.improver.axis_variants import DEFAULT_META_DB, AnchorAxes
 from component_fab.improver.math_knob_catalog import (
     DEFAULT_MATH_KNOBS,
+    auto_deepen_math_knobs,
     enumerate_adaptive_math_knob_compositions,
     enumerate_math_knob_compositions,
     score_knob_stack,
@@ -61,6 +66,39 @@ def test_math_knobs_from_axes_uses_family_fallbacks() -> None:
     )
     assert math_knobs_from_axes({"op_math_family": "hyperbolic"}) == (
         "hyperbolic_knob",
+    )
+
+
+def test_auto_deepen_math_knobs_adds_bounded_natural_siblings() -> None:
+    expanded = auto_deepen_math_knobs(DEFAULT_MATH_KNOBS, max_new=4)
+    ids = tuple(knob.knob_id for knob in expanded)
+
+    assert ids[: len(DEFAULT_MATH_KNOBS)] == tuple(
+        knob.knob_id for knob in DEFAULT_MATH_KNOBS
+    )
+    assert ids[len(DEFAULT_MATH_KNOBS) :] == tuple(
+        knob.knob_id for knob in AUTO_DEEPENING_MATH_KNOBS[:4]
+    )
+    assert len(set(ids)) == len(ids)
+
+
+def test_auto_deepen_math_knobs_skips_families_with_multiple_variants() -> None:
+    base = next(
+        knob for knob in DEFAULT_MATH_KNOBS if knob.knob_id == "calculus_finite_difference"
+    )
+    manual_sibling = MathKnob(
+        knob_id="calculus_manual_sibling",
+        family="calculus",
+        axes={"op_calculus_operator": "manual_sibling"},
+        cost_class="low",
+        rationale="manual calculus sibling",
+    )
+
+    expanded = auto_deepen_math_knobs((base, manual_sibling), max_new=12)
+
+    assert tuple(knob.knob_id for knob in expanded) == (
+        "calculus_finite_difference",
+        "calculus_manual_sibling",
     )
 
 
@@ -232,9 +270,53 @@ def test_adaptive_math_knob_compositions_prunes_rejected_stack(tmp_path) -> None
     ledger.record_promotion("p1", PROMOTION_REJECTED)
 
     specs = enumerate_adaptive_math_knob_compositions(
-        ["tropical_attention"], ledger, min_depth=2, max_depth=2, max_specs=100
+        ["tropical_attention"],
+        ledger,
+        min_depth=2,
+        max_depth=2,
+        max_specs=100,
+        include_auto_deepening=False,
     )
     stacks = {spec.math_axes["op_math_knobs"] for spec in specs}
 
     assert "linear_algebra_low_rank+kernel_random_features" not in stacks
     assert "calculus_finite_difference+linear_algebra_low_rank" in stacks
+
+
+def test_adaptive_math_knob_compositions_emits_auto_deepened_siblings(
+    monkeypatch, tmp_path
+) -> None:
+    def fake_anchor_axes_for_op(name, db_path=DEFAULT_META_DB):
+        return AnchorAxes(
+            op_name=name,
+            axes={
+                "op_algebraic_space": "tropical",
+                "op_dynamical_has_state": 0,
+            },
+            eval_count=3,
+            pass_rate=0.5,
+        )
+
+    monkeypatch.setattr(
+        "component_fab.improver.math_knob_catalog.anchor_axes_for_op",
+        fake_anchor_axes_for_op,
+    )
+    base = next(
+        knob for knob in DEFAULT_MATH_KNOBS if knob.knob_id == "calculus_finite_difference"
+    )
+
+    specs = enumerate_adaptive_math_knob_compositions(
+        ["anchor_op"],
+        Ledger(tmp_path / "ledger.jsonl"),
+        knobs=(base,),
+        min_depth=1,
+        max_depth=1,
+        max_specs=8,
+        axis_lift=None,
+    )
+    stacks = {spec.math_axes["op_math_knobs"] for spec in specs}
+
+    assert "calculus_finite_difference" in stacks
+    assert "calculus_causal_gradient" in stacks
+    assert "calculus_laplacian" in stacks
+    assert "calculus_lie_derivative" in stacks

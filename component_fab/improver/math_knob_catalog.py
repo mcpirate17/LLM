@@ -22,12 +22,13 @@ from ..state.ledger import (
     PROMOTION_REJECTED,
 )
 from .axis_variants import DEFAULT_META_DB, AnchorAxes, anchor_axes_for_op
-from .math_knobs import DEFAULT_MATH_KNOBS, MathKnob
+from .math_knobs import AUTO_DEEPENING_MATH_KNOBS, DEFAULT_MATH_KNOBS, MathKnob
 
 __all__ = [
     "DEFAULT_MATH_KNOBS",
     "KnobStackScore",
     "MathKnob",
+    "auto_deepen_math_knobs",
     "enumerate_adaptive_math_knob_compositions",
     "enumerate_math_knob_compositions",
     "score_knob_stack",
@@ -44,6 +45,46 @@ class KnobStackScore:
 
 
 _DEFAULT_KNOB_IDS = tuple(knob.knob_id for knob in DEFAULT_MATH_KNOBS)
+
+
+def auto_deepen_math_knobs(
+    knobs: Sequence[MathKnob],
+    *,
+    siblings: Sequence[MathKnob] = AUTO_DEEPENING_MATH_KNOBS,
+    max_new: int = 12,
+) -> tuple[MathKnob, ...]:
+    """Add natural sibling knobs for families represented by exactly one knob.
+
+    NM-12 is a proposer meta-rule: when a cycle would otherwise see a family as
+    a one-operator alias, emit bounded sibling axis values for that family. The
+    generator still owns buildability; these siblings are aliases over the
+    existing family lane classes, but they give the search distinct cells to try
+    and measure instead of relying on hand-curated variants.
+    """
+    if max_new <= 0:
+        return tuple(knobs)
+    by_family: dict[str, list[MathKnob]] = {}
+    seen_ids = {knob.knob_id for knob in knobs}
+    for knob in knobs:
+        by_family.setdefault(knob.family, []).append(knob)
+
+    out = list(knobs)
+    added = 0
+    for sibling in siblings:
+        if sibling.knob_id in seen_ids:
+            continue
+        family_members = by_family.get(sibling.family, [])
+        if len(family_members) != 1:
+            continue
+        source = sibling.axes.get("op_math_deepening_source")
+        if source and source != family_members[0].knob_id:
+            continue
+        out.append(sibling)
+        seen_ids.add(sibling.knob_id)
+        added += 1
+        if added >= max_new:
+            break
+    return tuple(out)
 
 
 def _knobs_from_name(
@@ -273,6 +314,8 @@ def enumerate_adaptive_math_knob_compositions(
     max_specs: int = 48,
     db_path: Path | str = DEFAULT_META_DB,
     axis_lift: AxisLiftReport | None = None,
+    include_auto_deepening: bool = True,
+    max_auto_deepened_knobs: int = 12,
 ) -> list[ProposalSpec]:
     """Generate knob specs with ledger-guided pruning and ranking.
 
@@ -283,6 +326,8 @@ def enumerate_adaptive_math_knob_compositions(
     """
     if axis_lift is None:
         axis_lift = load_axis_lift()
+    if include_auto_deepening:
+        knobs = auto_deepen_math_knobs(knobs, max_new=max_auto_deepened_knobs)
     specs = enumerate_math_knob_compositions(
         anchor_op_names,
         knobs=knobs,

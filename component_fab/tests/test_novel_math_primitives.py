@@ -16,9 +16,14 @@ from component_fab.generator.novel_math_primitives import (
     MeraRenormMixerLane,
     OctonionicMixerLane,
     SheafDiffusionMixerLane,
+    SignedExpanderMixerLane,
     octonion_mul,
 )
 from component_fab.generator.reversible_primitives import ReversibleCouplingMixerLane
+from component_fab.generator.routing_primitives import (
+    AuctionCapacityRoutedLane,
+    AuctionCapacityRouter,
+)
 from component_fab.inventor.mechanism_catalog import (
     enumerate_invention_specs,
     is_invention_spec,
@@ -226,6 +231,105 @@ def test_octonionic_mixes_but_is_not_a_softmax_twin() -> None:
 
 
 # --------------------------------------------------------------------------- #
+# MiniMax-M3-align M3X-M2 — signed expander mixer
+# --------------------------------------------------------------------------- #
+
+
+def test_signed_expander_shape_and_grad_finite() -> None:
+    """MiniMax-M3-align M3X-M2."""
+    torch.manual_seed(0)
+    lane = SignedExpanderMixerLane(32, degree=8)
+    _fwd_bwd_finite(lane, (2, 18, 32))
+
+
+def test_signed_expander_is_causal() -> None:
+    """MiniMax-M3-align M3X-M2."""
+    torch.manual_seed(1)
+    lane = SignedExpanderMixerLane(24, degree=8)
+    x_a = torch.randn(1, 14, 24)
+    x_b = x_a.clone()
+    x_b[:, 8:] += torch.randn(1, 6, 24)
+    with torch.no_grad():
+        assert torch.allclose(lane(x_a)[:, :8], lane(x_b)[:, :8], atol=1e-5)
+
+
+def test_signed_expander_has_regular_gap_and_compact_params() -> None:
+    """MiniMax-M3-align M3X-M2."""
+    lane = SignedExpanderMixerLane(32, degree=8)
+    adj = lane.channel_adjacency()
+    assert adj.shape == (32, 32)
+    assert torch.allclose(adj.sum(dim=-1), torch.ones(32), atol=1e-6)
+    assert bool((adj > 0).sum(dim=-1).eq(lane.degree).all())
+    assert float(lane.spectral_gap().detach()) > 0.2
+    param_count = sum(p.numel() for p in lane.parameters())
+    assert param_count < 32 * 32 // 4
+
+
+def test_signed_expander_mixes_but_is_not_a_softmax_twin() -> None:
+    """MiniMax-M3-align M3X-M2."""
+    torch.manual_seed(0)
+    lane = SignedExpanderMixerLane(32, degree=8)
+    props = measure_algebraic_properties(lane, dim=32, n_seeds=3)
+    assert props.cross_token_mixing > 0.1
+    assert props.softmax_twin_score < 0.4
+    assert not props.is_softmax_twin()
+
+
+# --------------------------------------------------------------------------- #
+# MiniMax-M3-align M3X-R1 — auction capacity router
+# --------------------------------------------------------------------------- #
+
+
+def test_auction_capacity_router_is_hard_and_balanced() -> None:
+    """MiniMax-M3-align M3X-R1."""
+    torch.manual_seed(0)
+    router = AuctionCapacityRouter(12, n_experts=4)
+    x = torch.randn(2, 16, 12)
+    weights = router.route_weights(x)
+    assert weights.shape == (2, 16, 4)
+    assert torch.allclose(weights.sum(dim=-1), torch.ones(2, 16), atol=1e-6)
+    hard = weights.detach()
+    assert torch.allclose(hard, hard.round(), atol=1e-6)
+    per_batch_load = weights.sum(dim=1)
+    assert bool((per_batch_load <= router.capacity(16)).all())
+    assert torch.allclose(per_batch_load, torch.full((2, 4), 4.0), atol=1e-6)
+
+
+def test_auction_capacity_lane_shape_grad_and_router_grad_finite() -> None:
+    """MiniMax-M3-align M3X-R1."""
+    torch.manual_seed(1)
+    lane = AuctionCapacityRoutedLane(16, n_experts=4)
+    x = torch.randn(2, 12, 16, requires_grad=True)
+    y = lane(x)
+    assert y.shape == x.shape and torch.isfinite(y).all()
+    y.pow(2).mean().backward()
+    assert x.grad is not None and torch.isfinite(x.grad).all()
+    assert lane.router.bid_proj.weight.grad is not None
+    assert torch.isfinite(lane.router.bid_proj.weight.grad).all()
+
+
+def test_auction_capacity_lane_is_causal() -> None:
+    """MiniMax-M3-align M3X-R1."""
+    torch.manual_seed(2)
+    lane = AuctionCapacityRoutedLane(16, n_experts=4)
+    x_a = torch.randn(1, 16, 16)
+    x_b = x_a.clone()
+    x_b[:, 9:] += torch.randn(1, 7, 16)
+    with torch.no_grad():
+        assert torch.allclose(lane(x_a)[:, :9], lane(x_b)[:, :9], atol=1e-5)
+
+
+def test_auction_capacity_mixes_but_is_not_a_softmax_twin() -> None:
+    """MiniMax-M3-align M3X-R1."""
+    torch.manual_seed(0)
+    lane = AuctionCapacityRoutedLane(16, n_experts=4)
+    props = measure_algebraic_properties(lane, dim=16, n_seeds=3)
+    assert props.cross_token_mixing > 0.05
+    assert props.softmax_twin_score < 0.4
+    assert not props.is_softmax_twin()
+
+
+# --------------------------------------------------------------------------- #
 # NM-9 verification — the symplectic residual mixer lane is real, not a stub
 # --------------------------------------------------------------------------- #
 
@@ -260,6 +364,8 @@ def test_blueprints_enumerated_and_gate_clean() -> None:
         "sheaf_consistent_slot_mixer",
         "mera_block",
         "octonionic_mixer",
+        "signed_expander_mixer",
+        "auction_capacity_router",
         "reversible_coupling_mixer",
     ):
         assert mech in mechanisms
@@ -276,6 +382,8 @@ def test_codegen_dispatches_novel_lanes() -> None:
         "sheaf_consistent_slot_mixer": SheafDiffusionMixerLane,
         "mera_block": MeraRenormMixerLane,
         "octonionic_mixer": OctonionicMixerLane,
+        "signed_expander_mixer": SignedExpanderMixerLane,
+        "auction_capacity_router": AuctionCapacityRoutedLane,
         "reversible_coupling_mixer": ReversibleCouplingMixerLane,
     }
     for mech, cls in expected.items():

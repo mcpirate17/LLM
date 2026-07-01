@@ -212,30 +212,55 @@ def _dispatch_math_knob(
     family = _axis(math_axes, "op_math_family")
     if family == "calculus":
         operator = _axis(math_axes, "op_calculus_operator")
-        if operator in ("causal_finite_difference_integral", "finite_difference"):
+        if operator in (
+            "causal_finite_difference_integral",
+            "finite_difference",
+            "causal_gradient",
+            "causal_laplacian",
+            "lie_derivative_along_flow",
+        ):
             return FiniteDifferenceCalculusLane(dim)
     if family == "linear_algebra":
         structure = _axis(math_axes, "op_linear_algebra_structure")
-        if structure in ("low_rank_factorized", "low_rank"):
+        if structure in (
+            "low_rank_factorized",
+            "low_rank",
+            "block_low_rank_factorized",
+        ):
             rank = max(1, int(round(dim * top_k_frac)))
             return LowRankFactorizedLane(dim, rank=rank)
     if family == "sparse_matrix":
         pattern = _axis(math_axes, "op_sparse_matrix_pattern")
-        if pattern in ("causal_banded", "banded"):
+        if pattern in ("causal_banded", "banded", "causal_dilated_banded"):
             bandwidth = max(1, min(dim, int(round(dim * top_k_frac))))
             return SparseBandedMatrixLane(dim, bandwidth=bandwidth)
     if family == "kernel_methods":
         kernel = _axis(math_axes, "op_kernel_feature_map")
-        if kernel in ("positive_random_features", "random_features"):
+        if kernel in (
+            "positive_random_features",
+            "random_features",
+            "nystrom_landmarks",
+            "orthogonal_fourier_features",
+        ):
             n_features = max(4, int(round(dim * 0.5)))
             return RandomFeatureKernelLane(dim, n_features=n_features)
     if family == "multiscale":
         transform = _axis(math_axes, "op_multiscale_transform")
-        if transform in ("causal_haar", "wavelet"):
+        if transform in (
+            "causal_haar",
+            "wavelet",
+            "dyadic_diff",
+            "laplacian_pyramid",
+        ):
             return MultiscaleWaveletLane(dim)
     if family == "graph_diffusion":
         topology = _axis(math_axes, "op_graph_topology")
-        if topology in ("causal_path_laplacian", "causal_path"):
+        if topology in (
+            "causal_path_laplacian",
+            "causal_path",
+            "causal_multihop_laplacian",
+            "learned_path_laplacian",
+        ):
             return GraphDiffusionLane(dim)
     if family == "tropical":
         adapter = _axis(math_axes, "op_tropical_adapter")
@@ -361,17 +386,34 @@ def _apply_math_knobs(
     bandwidth = max(1, min(dim, int(round(dim * top_k_frac))))
     n_features = max(4, int(round(dim * 0.5)))
     for knob in math_knobs_from_axes(math_axes):
-        if knob == "calculus_finite_difference":
+        if knob in (
+            "calculus_finite_difference",
+            "calculus_causal_gradient",
+            "calculus_laplacian",
+            "calculus_lie_derivative",
+        ):
             module = CalculusAugmentedLane(module, dim)
-        elif knob == "linear_algebra_low_rank":
+        elif knob in ("linear_algebra_low_rank", "linear_algebra_block_low_rank"):
             module = LowRankAdapterLane(module, dim, rank=rank)
-        elif knob == "sparse_matrix_banded":
+        elif knob in ("sparse_matrix_banded", "sparse_matrix_dilated_banded"):
             module = SparseBandedAdapterLane(module, dim, bandwidth=bandwidth)
-        elif knob == "kernel_random_features":
+        elif knob in (
+            "kernel_random_features",
+            "kernel_nystrom_features",
+            "kernel_fourier_features",
+        ):
             module = RandomFeatureKernelAdapterLane(module, dim, n_features=n_features)
-        elif knob == "multiscale_wavelet":
+        elif knob in (
+            "multiscale_wavelet",
+            "multiscale_dyadic_diff",
+            "multiscale_laplacian_pyramid",
+        ):
             module = MultiscaleWaveletAdapterLane(module, dim)
-        elif knob == "graph_laplacian_diffusion":
+        elif knob in (
+            "graph_laplacian_diffusion",
+            "graph_diffusion_multihop",
+            "graph_diffusion_learned_path",
+        ):
             module = GraphDiffusionAdapterLane(module, dim)
         elif knob == "tropical_knob":
             module = TropicalAdapterLane(module, dim)
@@ -381,7 +423,7 @@ def _apply_math_knobs(
             module = CliffordAdapterLane(module, dim)
         elif knob == "hyperbolic_knob":
             module = HyperbolicAdapterLane(module, dim)
-        elif knob == "lambda_functional_blend":
+        elif knob in ("lambda_functional_blend", "lambda_functional_token_basis"):
             module = LambdaFunctionalAdapterLane(
                 module,
                 dim,

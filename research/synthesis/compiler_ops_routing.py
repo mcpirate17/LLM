@@ -1227,6 +1227,257 @@ def _op_fno_spectral_mix(module, inputs, config):
     return torch.matmul(y, module.fno_out_proj.to(dt)) + x
 
 
+def _causal_lag(x: torch.Tensor, lag: int) -> torch.Tensor:
+    if lag <= 0:
+        return x
+    if lag >= x.shape[1]:
+        return torch.zeros_like(x)
+    return F.pad(x[:, :-lag], (0, 0, lag, 0))
+
+
+def _dct_basis(seq_len: int, n_modes: int, device, dtype) -> torch.Tensor:
+    pos = torch.arange(seq_len, device=device, dtype=dtype).unsqueeze(1)
+    mode = torch.arange(n_modes, device=device, dtype=dtype).unsqueeze(0)
+    basis = torch.cos(math.pi * (pos + 0.5) * mode / float(seq_len))
+    basis[:, 0] *= seq_len**-0.5
+    if n_modes > 1:
+        basis[:, 1:] *= (2.0 / float(seq_len)) ** 0.5
+    return basis
+
+
+def _legendre_basis(seq_len: int, n_modes: int, device, dtype) -> torch.Tensor:
+    z = torch.linspace(-1.0, 1.0, seq_len, device=device, dtype=dtype)
+    cols = [
+        torch.ones_like(z),
+        z,
+        0.5 * (3.0 * z.square() - 1.0),
+        0.5 * (5.0 * z.pow(3) - 3.0 * z),
+    ][:n_modes]
+    basis = torch.stack(cols, dim=1)
+    return basis / basis.norm(dim=0, keepdim=True).clamp_min(1e-6)
+
+
+def _basis_reconstruct(
+    x: torch.Tensor, basis: torch.Tensor, scale: torch.Tensor
+) -> torch.Tensor:
+    k = min(basis.shape[1], scale.shape[0])
+    b = basis[:, :k].float()
+    coeff = torch.einsum("bsd,sk->bkd", x.float(), b)
+    coeff = coeff * scale[:k].float().unsqueeze(0)
+    return torch.einsum("sk,bkd->bsd", b, coeff).to(x.dtype)
+
+
+def _op_causal_gradient_mix(module, inputs, _):
+    x = inputs[0]
+    if not hasattr(module, "grad_proj"):
+        return x
+    grad = x - _causal_lag(x, 1)
+    update = _safe_linear(grad, module.grad_proj)
+    gate = torch.sigmoid(module.grad_gate.to(dtype=x.dtype, device=x.device)).view(
+        1, 1, -1
+    )
+    return x + gate * update
+
+
+def _op_causal_laplacian_mix(module, inputs, _):
+    x = inputs[0]
+    if not hasattr(module, "lap_proj"):
+        return x
+    lap = x - 2.0 * _causal_lag(x, 1) + _causal_lag(x, 2)
+    update = _safe_linear(lap, module.lap_proj)
+    gate = torch.sigmoid(module.lap_gate.to(dtype=x.dtype, device=x.device)).view(
+        1, 1, -1
+    )
+    return x + gate * update
+
+
+def _op_lie_derivative_flow_mix(module, inputs, _):
+    x = inputs[0]
+    if not hasattr(module, "lie_flow_proj"):
+        return x
+    grad = x - _causal_lag(x, 1)
+    flow = torch.tanh(_safe_linear(x, module.lie_flow_proj))
+    update = _safe_linear(flow * grad, module.lie_value_proj)
+    gate = torch.sigmoid(module.lie_gate.to(dtype=x.dtype, device=x.device)).view(
+        1, 1, -1
+    )
+    return x + gate * update
+
+
+def _op_dct_spectral_mix(module, inputs, _):
+    x = inputs[0]
+    if not hasattr(module, "dct_scale"):
+        return x
+    basis = _dct_basis(
+        x.shape[1], module.dct_scale.shape[0], x.device, torch.float32
+    )
+    y = _basis_reconstruct(x, basis, module.dct_scale)
+    return x + _safe_linear(y, module.dct_out_proj)
+
+
+def _op_graph_eigbasis_mix(module, inputs, _):
+    x = inputs[0]
+    if not hasattr(module, "graph_eig_scale"):
+        return x
+    S = x.shape[1]
+    idx = torch.arange(S, device=x.device, dtype=torch.float32)
+    dist = (idx[:, None] - idx[None, :]).abs()
+    decay = F.softplus(module.graph_eig_log_decay.float()) + 0.5
+    adj = torch.exp(-dist / decay)
+    adj = adj - torch.diag_embed(torch.diagonal(adj))
+    lap = torch.diag(adj.sum(dim=-1)) - adj
+    jitter = torch.linspace(0.0, 1e-4, S, device=x.device, dtype=torch.float32)
+    lap = lap + torch.diag(jitter)
+    _, basis = torch.linalg.eigh(lap)
+    y = _basis_reconstruct(x, basis, module.graph_eig_scale)
+    return x + _safe_linear(y, module.graph_eig_out_proj)
+
+
+def _op_legendre_basis_mix(module, inputs, _):
+    x = inputs[0]
+    if not hasattr(module, "legendre_scale"):
+        return x
+    basis = _legendre_basis(
+        x.shape[1], module.legendre_scale.shape[0], x.device, torch.float32
+    )
+    y = _basis_reconstruct(x, basis, module.legendre_scale)
+    return x + _safe_linear(y, module.legendre_out_proj)
+
+
+def _op_cp_tensor_mix(module, inputs, _):
+    x = inputs[0]
+    if not hasattr(module, "cp_factor_a"):
+        return x
+    a = torch.einsum("bsd,rd->bsr", x, module.cp_factor_a.to(x.dtype))
+    b = torch.einsum("bsd,rd->bsr", x, module.cp_factor_b.to(x.dtype))
+    coeff = torch.tanh(a * b)
+    y = torch.einsum("bsr,rd->bsd", coeff, module.cp_factor_c.to(x.dtype))
+    return x + _safe_linear(y, module.cp_out_proj)
+
+
+def _op_tensor_train_mix(module, inputs, _):
+    x = inputs[0]
+    if not hasattr(module, "tt_down"):
+        return x
+    h = _safe_linear(x, module.tt_down)
+    h = _safe_linear(h, module.tt_core)
+    y = _safe_linear(torch.tanh(h), module.tt_up)
+    gate = torch.sigmoid(module.tt_gate.to(dtype=x.dtype, device=x.device)).view(
+        1, 1, -1
+    )
+    return x + gate * y
+
+
+def _op_tensor_ring_mix(module, inputs, _):
+    x = inputs[0]
+    if not hasattr(module, "tensor_ring_out_proj"):
+        return x
+    fwd = torch.roll(x, shifts=1, dims=-1) * module.tensor_ring_forward.to(x.dtype)
+    back = torch.roll(x, shifts=-1, dims=-1) * module.tensor_ring_backward.to(x.dtype)
+    return x + _safe_linear(fwd + back, module.tensor_ring_out_proj)
+
+
+def _op_block_term_tensor_mix(module, inputs, _):
+    x = inputs[0]
+    if not hasattr(module, "block_term_gates"):
+        return x
+    chunks = torch.chunk(x, chunks=4, dim=-1)
+    gates = module.block_term_gates.to(dtype=x.dtype, device=x.device)
+    mixed_chunks = []
+    start = 0
+    for idx, chunk in enumerate(chunks):
+        width = chunk.shape[-1]
+        gate = torch.sigmoid(gates[idx, start : start + width]).view(1, 1, -1)
+        mixed_chunks.append(chunk * gate)
+        start += width
+    y = torch.cat(mixed_chunks, dim=-1)
+    return x + _safe_linear(y, module.block_term_out_proj)
+
+
+def _op_alpha_divergence_mix(module, inputs, _):
+    x = inputs[0]
+    if not hasattr(module, "alpha_proj"):
+        return x
+    p = F.softplus(x.float()) + 1e-4
+    q = F.softplus(_causal_lag(x, 1).float()) + 1e-4
+    p = p / p.sum(dim=-1, keepdim=True).clamp_min(1e-6)
+    q = q / q.sum(dim=-1, keepdim=True).clamp_min(1e-6)
+    alpha = 0.5 + 1.5 * torch.sigmoid(module.alpha_divergence_logit.float())
+    moment = (p.pow(alpha) * q.pow(1.0 - alpha)).sum(dim=-1, keepdim=True)
+    div = (moment - 1.0) / (alpha * (alpha - 1.0)).clamp_min(1e-4)
+    signal = ((p - q) * torch.tanh(div)).to(x.dtype)
+    update = _safe_linear(signal, module.alpha_proj)
+    gate = torch.sigmoid(module.alpha_gate.to(dtype=x.dtype, device=x.device)).view(
+        1, 1, -1
+    )
+    return x + gate * update
+
+
+def _op_renyi_attention_mix(module, inputs, _):
+    x = inputs[0]
+    if not hasattr(module, "renyi_q_proj"):
+        return x
+    q = _safe_linear(x, module.renyi_q_proj)
+    k = _safe_linear(x, module.renyi_k_proj)
+    v = _safe_linear(x, module.renyi_v_proj)
+    scores = torch.matmul(q, k.transpose(-1, -2)) / math.sqrt(max(1, x.shape[-1]))
+    S = x.shape[1]
+    mask = torch.tril(torch.ones(S, S, device=x.device, dtype=torch.bool))
+    positive = F.softplus(scores.float()) + 1e-4
+    positive = positive.masked_fill(~mask, 0.0)
+    power = 1.0 + F.softplus(module.renyi_q_delta.float())
+    weights = positive.pow(power)
+    weights = weights / weights.sum(dim=-1, keepdim=True).clamp_min(1e-6)
+    y = torch.matmul(weights.to(x.dtype), v)
+    return x + _safe_linear(y, module.renyi_o_proj)
+
+
+def _op_natural_gradient_mixer(module, inputs, _):
+    x = inputs[0]
+    if not hasattr(module, "natural_grad_proj"):
+        return x
+    h = _safe_linear(x, module.natural_grad_proj).float()
+    centered = h - h.mean(dim=1, keepdim=True)
+    B, S, D = centered.shape
+    cov = torch.matmul(centered.transpose(1, 2), centered) / float(max(1, S))
+    eye = torch.eye(D, device=x.device, dtype=torch.float32).expand(B, D, D)
+    damping = F.softplus(module.natural_grad_log_damping.float()) + 1e-3
+    solved = torch.linalg.solve(cov + damping * eye, centered.transpose(1, 2))
+    y = solved.transpose(1, 2).to(x.dtype)
+    return x + _safe_linear(y, module.natural_grad_out_proj)
+
+
+def _op_dyadic_diff_mix(module, inputs, _):
+    x = inputs[0]
+    if not hasattr(module, "dyadic_scales"):
+        return x
+    acc = torch.zeros_like(x)
+    for idx, lag in enumerate((1, 2, 4)):
+        diff = x - _causal_lag(x, lag)
+        scale = module.dyadic_scales[idx].to(dtype=x.dtype, device=x.device).view(
+            1, 1, -1
+        )
+        acc = acc + diff * scale
+    return x + _safe_linear(acc, module.dyadic_out_proj)
+
+
+def _op_laplacian_pyramid_mix(module, inputs, _):
+    x = inputs[0]
+    if not hasattr(module, "pyramid_scales"):
+        return x
+    smooth = x
+    acc = torch.zeros_like(x)
+    for idx in range(3):
+        next_smooth = 0.5 * (smooth + _causal_lag(smooth, 1))
+        detail = smooth - next_smooth
+        scale = module.pyramid_scales[idx].to(dtype=x.dtype, device=x.device).view(
+            1, 1, -1
+        )
+        acc = acc + detail * scale
+        smooth = next_smooth
+    return x + _safe_linear(acc, module.pyramid_out_proj)
+
+
 # ── Exotic Ops (Phase 4) ─────────────────────────────────────────────
 
 
@@ -1477,6 +1728,21 @@ OP_IMPLS: Dict[str, Callable] = {
     "sinkhorn_ot_mix": _op_sinkhorn_ot_mix,
     "ultrametric_tree_mix": _op_ultrametric_tree_mix,
     "fno_spectral_mix": _op_fno_spectral_mix,
+    "causal_gradient_mix": _op_causal_gradient_mix,
+    "causal_laplacian_mix": _op_causal_laplacian_mix,
+    "lie_derivative_flow_mix": _op_lie_derivative_flow_mix,
+    "dct_spectral_mix": _op_dct_spectral_mix,
+    "graph_eigbasis_mix": _op_graph_eigbasis_mix,
+    "legendre_basis_mix": _op_legendre_basis_mix,
+    "cp_tensor_mix": _op_cp_tensor_mix,
+    "tensor_train_mix": _op_tensor_train_mix,
+    "tensor_ring_mix": _op_tensor_ring_mix,
+    "block_term_tensor_mix": _op_block_term_tensor_mix,
+    "alpha_divergence_mix": _op_alpha_divergence_mix,
+    "renyi_attention_mix": _op_renyi_attention_mix,
+    "natural_gradient_mixer": _op_natural_gradient_mixer,
+    "dyadic_diff_mix": _op_dyadic_diff_mix,
+    "laplacian_pyramid_mix": _op_laplacian_pyramid_mix,
     "token_entropy": _op_token_entropy,
     "relu_gated_moe": _op_relu_gated_moe,
     "difficulty_blend_3way": _op_difficulty_blend_3way,

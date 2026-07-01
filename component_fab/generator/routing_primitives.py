@@ -301,6 +301,113 @@ class DifficultyRoutedLane(nn.Module):
         return r * self.hard(x) + (1.0 - r) * self.easy(x)
 
 
+class AuctionCapacityRouter(nn.Module):
+    """Causal hard-capacity router with auction-style expert prices.
+
+    MiniMax-M3-align M3X-R1. This is a non-softmax router: tokens bid for
+    experts with raw linear scores, experts accumulate prices as they are used,
+    and hard capacity masks prevent overfilled experts from receiving more
+    tokens. The scan is left-to-right, so token ``t`` depends only on bids from
+    tokens ``<= t`` and never leaks future route demand into earlier positions.
+    """
+
+    def __init__(
+        self,
+        dim: int,
+        n_experts: int = 4,
+        capacity_factor: float = 1.0,
+        price_step: float = 1.0,
+    ) -> None:
+        super().__init__()
+        if dim <= 0:
+            raise ValueError("dim must be positive")
+        if n_experts < 2:
+            raise ValueError("n_experts must be >= 2")
+        if capacity_factor < 1.0:
+            raise ValueError("capacity_factor must be >= 1.0")
+        if price_step <= 0.0:
+            raise ValueError("price_step must be positive")
+        self.bid_proj = nn.Linear(dim, n_experts)
+        self.dim = dim
+        self.n_experts = n_experts
+        self.capacity_factor = float(capacity_factor)
+        self.price_step = float(price_step)
+
+    def capacity(self, seq_len: int) -> int:
+        """Per-batch per-expert token capacity for a sequence length."""
+        return max(1, math.ceil(self.capacity_factor * seq_len / self.n_experts))
+
+    @staticmethod
+    def _surrogate_weights(adjusted: torch.Tensor, available: torch.Tensor) -> torch.Tensor:
+        masked = adjusted.masked_fill(~available, -1e9)
+        shifted = masked - masked.min(dim=-1, keepdim=True).values
+        positive = torch.relu(shifted) * available.to(adjusted.dtype)
+        empty = positive.sum(dim=-1, keepdim=True) <= 1e-12
+        fallback = available.to(adjusted.dtype)
+        positive = torch.where(empty, fallback, positive)
+        return positive / positive.sum(dim=-1, keepdim=True).clamp_min(1e-12)
+
+    def route_weights(self, x: torch.Tensor) -> torch.Tensor:
+        """Hard one-hot route weights ``[B, L, n_experts]`` with STE gradients."""
+        if x.ndim != 3 or x.shape[-1] != self.dim:
+            raise ValueError(
+                f"AuctionCapacityRouter expects [B, L, {self.dim}], got {tuple(x.shape)}"
+            )
+        batch, seq_len, _ = x.shape
+        bids = self.bid_proj(x)
+        prices = bids.new_zeros(batch, self.n_experts)
+        loads = torch.zeros(
+            batch, self.n_experts, dtype=torch.long, device=bids.device
+        )
+        capacity = self.capacity(seq_len)
+        routes: list[torch.Tensor] = []
+        for pos in range(seq_len):
+            available = loads < capacity
+            adjusted = bids[:, pos, :] - prices
+            masked = adjusted.masked_fill(~available, -1e9)
+            chosen = masked.argmax(dim=-1)
+            hard = torch.zeros_like(adjusted).scatter_(1, chosen.unsqueeze(-1), 1.0)
+            surrogate = self._surrogate_weights(adjusted, available)
+            routes.append(hard + surrogate - surrogate.detach())
+            loads = loads + hard.to(torch.long)
+            prices = prices + hard * self.price_step
+        return torch.stack(routes, dim=1)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.route_weights(x)
+
+
+class AuctionCapacityRoutedLane(nn.Module):
+    """Capacity-balanced hard-routed expert lane.
+
+    The router is the mechanism under test: it performs a causal auction over a
+    small set of pointwise experts, giving every expert bounded load without a
+    softmax probability simplex or post-hoc load-balancing loss.
+    """
+
+    def __init__(self, dim: int, n_experts: int = 4) -> None:
+        super().__init__()
+        self.router = AuctionCapacityRouter(dim, n_experts=n_experts)
+        self.experts = nn.ModuleList(
+            [nn.Linear(dim, dim, bias=False) for _ in range(n_experts)]
+        )
+        self.output_scale = nn.Parameter(torch.full((dim,), 20.0))
+        self.dim = dim
+        self.n_experts = n_experts
+        self.aux_loss: torch.Tensor = torch.tensor(0.0)
+
+    def route_weights(self, x: torch.Tensor) -> torch.Tensor:
+        return self.router.route_weights(x)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        weights = self.router.route_weights(x)
+        expert_out = torch.stack([expert(x) for expert in self.experts], dim=-2)
+        loads = weights.detach().sum(dim=(0, 1))
+        target = loads.mean().clamp_min(1.0)
+        self.aux_loss = ((loads - target) / target).pow(2).mean() * 0.001
+        return self.output_scale * (weights.unsqueeze(-1) * expert_out).sum(dim=-2)
+
+
 class RoutedBottleneckLane(nn.Module):
     """Switch-style top-k MoE with auxiliary load-balancing loss."""
 
@@ -357,5 +464,6 @@ ROUTING_KINDS: tuple[str, ...] = (
     "low_info_skip",
     "hash",
     "difficulty",
+    "auction_capacity",
     "top_k_moe",
 )

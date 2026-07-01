@@ -11,14 +11,20 @@ from research.synthesis.archive_guided import (
     archive_guidance,
     exploration_config_from_archive,
 )
-from research.synthesis.quality_diversity import MapElitesArchive, default_behavior_axes
+from research.synthesis.quality_diversity import (
+    BehaviorAxis,
+    MapElitesArchive,
+    default_behavior_axes,
+)
 
 
-def _full_archive() -> MapElitesArchive:
+def _full_archive(
+    axes: tuple[BehaviorAxis, ...] | None = None,
+) -> MapElitesArchive:
     """An archive with EVERY niche filled (no empty niches to target)."""
 
-    archive = MapElitesArchive()
-    axes = default_behavior_axes()
+    axes = axes or default_behavior_axes()
+    archive = MapElitesArchive(axes=axes)
     # Place a candidate at the centre of each bin on each axis -> fills every cell.
     import itertools
 
@@ -83,6 +89,54 @@ def test_forced_empty_binder_niche_targets_binder_ops() -> None:
     assert config is not None
     assert config.exploration_targets == guidance.target_ops
     assert config.exploration_boost_factor > 1.0
+
+
+@pytest.mark.parametrize(
+    "novelty_axis",
+    (
+        BehaviorAxis("softmax_basin_distance", (0.15, 0.5)),
+        BehaviorAxis("geometric_novelty", (0.75, 1.75)),
+    ),
+)
+def test_far_from_softmax_niche_targets_novel_ops_not_basin_twins(
+    novelty_axis: BehaviorAxis,
+) -> None:
+    axes = (*default_behavior_axes(), novelty_axis)
+    archive = _full_archive(axes)
+    far_binder_niche = tuple(axis.n_bins - 1 for axis in axes)
+    low_novelty_binder_niche = (*far_binder_niche[:-1], 0)
+    archive._cells.pop(far_binder_niche, None)
+    archive._cells.pop(low_novelty_binder_niche, None)
+
+    guidance = archive_guidance(archive)
+
+    assert {"sinkhorn_ot_mix", "ultrametric_tree_mix"} <= guidance.target_ops
+    assert "fno_spectral_mix" not in guidance.target_ops  # wrong binder axes
+    assert not (
+        {
+            "softmax_attention",
+            "sparsemax_attention",
+            "tropical_attention",
+            "learnable_semiring_attention",
+            "reciprocal",
+            "phase_lock_attention",
+        }
+        & guidance.target_ops
+    )
+
+
+def test_exploration_config_from_novelty_archive_boosts_far_novel_ops() -> None:
+    axes = (*default_behavior_axes(), BehaviorAxis("softmax_basin_distance", (0.15, 0.5)))
+    archive = _full_archive(axes)
+    far_binder_niche = tuple(axis.n_bins - 1 for axis in axes)
+    archive._cells.pop(far_binder_niche, None)
+
+    config, guidance = exploration_config_from_archive(archive, model_dim=32)
+
+    assert config is not None
+    assert {"sinkhorn_ot_mix", "ultrametric_tree_mix"} <= config.exploration_targets
+    assert config.exploration_targets == guidance.target_ops
+    assert "softmax_attention" not in config.exploration_targets
 
 
 def test_underfilled_niche_targeted_when_threshold_set() -> None:

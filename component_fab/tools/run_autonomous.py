@@ -70,6 +70,15 @@ def _add_loop_args(parser: argparse.ArgumentParser) -> None:
         help="max ledger-feedback proposals synthesized per cycle",
     )
     parser.add_argument(
+        "--max-cross-product-specs",
+        default=12,
+        type=int,
+        help=(
+            "max bounded physics cross-product cells per cycle "
+            "(address x score_norm x aggregate x algebra x basis)"
+        ),
+    )
+    parser.add_argument(
         "--max-name-free-specs",
         default=12,
         type=int,
@@ -274,6 +283,7 @@ def _drive_loop(
             max_cross_pairs=args.max_cross_pairs,
             max_knob_specs=args.max_knob_specs,
             max_dynamic_specs=args.max_dynamic_specs,
+            max_cross_product_specs=args.max_cross_product_specs,
             max_nas_specs=args.max_nas_specs,
             max_name_free_specs=args.max_name_free_specs,
             include_name_free_physics=not args.disable_name_free_physics,

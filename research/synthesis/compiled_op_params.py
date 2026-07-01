@@ -243,6 +243,23 @@ class CompiledOpParamInitMixin:
             "sinkhorn_ot_mix": lambda: self._init_sinkhorn_ot_mix(d_in),
             "ultrametric_tree_mix": lambda: self._init_ultrametric_tree_mix(d_in),
             "fno_spectral_mix": lambda: self._init_fno_spectral_mix(d_in),
+            "causal_gradient_mix": lambda: self._init_causal_gradient_mix(d_in),
+            "causal_laplacian_mix": lambda: self._init_causal_laplacian_mix(d_in),
+            "lie_derivative_flow_mix": lambda: self._init_lie_derivative_flow_mix(
+                d_in
+            ),
+            "dct_spectral_mix": lambda: self._init_dct_spectral_mix(d_in),
+            "graph_eigbasis_mix": lambda: self._init_graph_eigbasis_mix(d_in),
+            "legendre_basis_mix": lambda: self._init_legendre_basis_mix(d_in),
+            "cp_tensor_mix": lambda: self._init_cp_tensor_mix(d_in),
+            "tensor_train_mix": lambda: self._init_tensor_train_mix(d_in),
+            "tensor_ring_mix": lambda: self._init_tensor_ring_mix(d_in),
+            "block_term_tensor_mix": lambda: self._init_block_term_tensor_mix(d_in),
+            "alpha_divergence_mix": lambda: self._init_alpha_divergence_mix(d_in),
+            "renyi_attention_mix": lambda: self._init_renyi_attention_mix(d_in),
+            "natural_gradient_mixer": lambda: self._init_natural_gradient_mixer(d_in),
+            "dyadic_diff_mix": lambda: self._init_dyadic_diff_mix(d_in),
+            "laplacian_pyramid_mix": lambda: self._init_laplacian_pyramid_mix(d_in),
             "token_class_proj": lambda: self._init_token_class_proj(config, d_in),
             "adaptive_rank_gate": lambda: self._init_adaptive_rank_gate(d_in, d_out),
             "dual_compression_blend": lambda: self._init_dual_compression_blend(
@@ -890,6 +907,81 @@ class CompiledOpParamInitMixin:
         self.fno_modes_real = self._make_param((4, d_in, d_in), std=0.02)
         self.fno_modes_imag = self._make_param((4, d_in, d_in), std=0.02)
         self.fno_bias = nn.Parameter(torch.zeros(d_in))
+
+    def _init_causal_gradient_mix(self, d_in: int) -> None:
+        self.grad_proj = self._make_param((d_in, d_in), std=0.02)
+        self.grad_gate = nn.Parameter(torch.full((d_in,), -2.0))
+
+    def _init_causal_laplacian_mix(self, d_in: int) -> None:
+        self.lap_proj = self._make_param((d_in, d_in), std=0.02)
+        self.lap_gate = nn.Parameter(torch.full((d_in,), -2.0))
+
+    def _init_lie_derivative_flow_mix(self, d_in: int) -> None:
+        self.lie_flow_proj = self._make_param((d_in, d_in), std=0.02)
+        self.lie_value_proj = self._make_param((d_in, d_in), std=0.02)
+        self.lie_gate = nn.Parameter(torch.full((d_in,), -2.0))
+
+    def _init_dct_spectral_mix(self, d_in: int) -> None:
+        self.dct_scale = nn.Parameter(torch.zeros(4, d_in))
+        self.dct_scale.data[0].fill_(1.0)
+        self.dct_out_proj = self._make_param((d_in, d_in), std=0.02)
+
+    def _init_graph_eigbasis_mix(self, d_in: int) -> None:
+        self.graph_eig_scale = nn.Parameter(torch.zeros(4, d_in))
+        self.graph_eig_scale.data[0].fill_(1.0)
+        self.graph_eig_out_proj = self._make_param((d_in, d_in), std=0.02)
+        self.graph_eig_log_decay = nn.Parameter(torch.zeros(()))
+
+    def _init_legendre_basis_mix(self, d_in: int) -> None:
+        self.legendre_scale = nn.Parameter(torch.zeros(4, d_in))
+        self.legendre_scale.data[0].fill_(1.0)
+        self.legendre_out_proj = self._make_param((d_in, d_in), std=0.02)
+
+    def _init_cp_tensor_mix(self, d_in: int) -> None:
+        self.cp_factor_a = self._make_param((4, d_in), std=0.02)
+        self.cp_factor_b = self._make_param((4, d_in), std=0.02)
+        self.cp_factor_c = self._make_param((4, d_in), std=0.02)
+        self.cp_out_proj = self._make_param((d_in, d_in), std=0.02)
+
+    def _init_tensor_train_mix(self, d_in: int) -> None:
+        self.tt_down = self._make_param((4, d_in), std=0.02)
+        self.tt_core = self._make_param((4, 4), std=0.02)
+        self.tt_up = self._make_param((d_in, 4), std=0.02)
+        self.tt_gate = nn.Parameter(torch.full((d_in,), -2.0))
+
+    def _init_tensor_ring_mix(self, d_in: int) -> None:
+        self.tensor_ring_forward = nn.Parameter(torch.zeros(d_in))
+        self.tensor_ring_backward = nn.Parameter(torch.zeros(d_in))
+        self.tensor_ring_out_proj = self._make_param((d_in, d_in), std=0.02)
+
+    def _init_block_term_tensor_mix(self, d_in: int) -> None:
+        self.block_term_gates = self._make_param((4, d_in), std=0.02)
+        self.block_term_out_proj = self._make_param((d_in, d_in), std=0.02)
+
+    def _init_alpha_divergence_mix(self, d_in: int) -> None:
+        self.alpha_proj = self._make_param((d_in, d_in), std=0.02)
+        self.alpha_gate = nn.Parameter(torch.full((d_in,), -2.0))
+        self.alpha_divergence_logit = nn.Parameter(torch.zeros(()))
+
+    def _init_renyi_attention_mix(self, d_in: int) -> None:
+        self.renyi_q_proj = self._make_param((d_in, d_in), std=0.02)
+        self.renyi_k_proj = self._make_param((d_in, d_in), std=0.02)
+        self.renyi_v_proj = self._make_param((d_in, d_in), std=0.02)
+        self.renyi_o_proj = self._make_param((d_in, d_in), std=0.02)
+        self.renyi_q_delta = nn.Parameter(torch.zeros(()))
+
+    def _init_natural_gradient_mixer(self, d_in: int) -> None:
+        self.natural_grad_proj = self._make_param((d_in, d_in), std=0.02)
+        self.natural_grad_out_proj = self._make_param((d_in, d_in), std=0.02)
+        self.natural_grad_log_damping = nn.Parameter(torch.zeros(()))
+
+    def _init_dyadic_diff_mix(self, d_in: int) -> None:
+        self.dyadic_scales = nn.Parameter(torch.zeros(3, d_in))
+        self.dyadic_out_proj = self._make_param((d_in, d_in), std=0.02)
+
+    def _init_laplacian_pyramid_mix(self, d_in: int) -> None:
+        self.pyramid_scales = nn.Parameter(torch.zeros(3, d_in))
+        self.pyramid_out_proj = self._make_param((d_in, d_in), std=0.02)
 
     def _init_relu_gated_moe(self, config: Dict, d_in: int) -> None:
         n_experts = int(config.get("n_experts", 8))

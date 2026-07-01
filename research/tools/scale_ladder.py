@@ -81,33 +81,24 @@ def _lm_params(lane_factory, dim: int, vocab_size: int) -> int:
     return sum(p.numel() for p in m.parameters())
 
 
-def _train_and_score(
-    lane_factory,
-    dim: int,
+def score_model_on_corpus(
+    model: nn.Module,
+    corpus: dict,
     *,
+    params: int,
+    dim: int,
     device: str,
-    seed: int,
-    tokens_per_param: int,
     lr: float = 3e-3,
     batch_size: int = 128,
 ) -> dict:
-    vocab_probe = len(_make_binding_corpus(n_sentences=1, seed=0)["vocab"])
-    params = _lm_params(lane_factory, dim, vocab_probe)
-    # ~tokens_per_param tokens; 4 tokens/sentence. Floor keeps tiny rungs trainable.
-    n_sentences = max(400, (tokens_per_param * params) // 4)
-    corpus = _make_binding_corpus(n_sentences=n_sentences, seed=seed)
+    """Train an already-built model on the binding corpus and grade recall.
+
+    Shared by the baseline-lane ladder (``_train_and_score``) and the graph-champion
+    ladder (``binding_scale_ladder_graph``) so both use the identical discriminating
+    metric — in-dist bound recall, held-out rule generalization, memorization guard.
+    """
     stoi, vocab_size = corpus["stoi"], len(corpus["vocab"])
-    torch.manual_seed(seed)
-    model = build_tiny_lm(
-        lane_factory,
-        vocab_size=vocab_size,
-        dim=dim,
-        n_blocks=_N_BLOCKS,
-        max_seq_len=8,
-        use_position_embedding=True,
-        use_ffn=True,
-        ffn_mult=4,
-    ).to(device)
+    n_sentences = len(corpus["sentences"])
     data = torch.tensor(
         [[stoi[w] for w in s] for s in corpus["sentences"]], device=device
     )
@@ -160,6 +151,43 @@ def _train_and_score(
         "final_loss": round(final_loss, 3),
         "memorized": memorized,
     }
+
+
+def _train_and_score(
+    lane_factory,
+    dim: int,
+    *,
+    device: str,
+    seed: int,
+    tokens_per_param: int,
+    lr: float = 3e-3,
+    batch_size: int = 128,
+) -> dict:
+    vocab_probe = len(_make_binding_corpus(n_sentences=1, seed=0)["vocab"])
+    params = _lm_params(lane_factory, dim, vocab_probe)
+    # ~tokens_per_param tokens; 4 tokens/sentence. Floor keeps tiny rungs trainable.
+    n_sentences = max(400, (tokens_per_param * params) // 4)
+    corpus = _make_binding_corpus(n_sentences=n_sentences, seed=seed)
+    torch.manual_seed(seed)
+    model = build_tiny_lm(
+        lane_factory,
+        vocab_size=len(corpus["vocab"]),
+        dim=dim,
+        n_blocks=_N_BLOCKS,
+        max_seq_len=8,
+        use_position_embedding=True,
+        use_ffn=True,
+        ffn_mult=4,
+    ).to(device)
+    return score_model_on_corpus(
+        model,
+        corpus,
+        params=params,
+        dim=dim,
+        device=device,
+        lr=lr,
+        batch_size=batch_size,
+    )
 
 
 def run_ladder(lane_name: str, *, device: str, seeds, tokens_per_param: int) -> dict:

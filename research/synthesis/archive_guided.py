@@ -35,6 +35,15 @@ from .quality_diversity import BehaviorAxis, MapElitesArchive
 # Coarse behavior levels, axis-name keyed so the table is robust to axis order /
 # custom archives. Mapped onto a concrete axis by ``_level_to_bin``.
 LOW, MID, HIGH = 0, 1, 2
+GEOMETRIC_NOVELTY_AXIS = "geometric_novelty"
+SOFTMAX_BASIN_DISTANCE_AXIS = "softmax_basin_distance"
+_NOVELTY_AXIS_NAMES = frozenset(
+    {GEOMETRIC_NOVELTY_AXIS, SOFTMAX_BASIN_DISTANCE_AXIS}
+)
+
+
+def _is_novelty_axis(axis_name: str) -> bool:
+    return axis_name in _NOVELTY_AXIS_NAMES
 
 # Op -> {axis_name: level}. Ops are the fab-invention vocabulary
 # (``_motifs_fab.fab_invention_ops``) plus the core fixed-routing / local family
@@ -150,7 +159,168 @@ _OP_BEHAVIOR_SIGNATURE: dict[str, dict[str, int]] = {
         "content_dependence": LOW,
         "content_match_gating": LOW,
     },
+    # ── far-from-softmax novel mechanisms: target the high-novelty niches ──
+    "sinkhorn_ot_mix": {
+        "long_range_reach": HIGH,
+        "content_dependence": HIGH,
+        "content_match_gating": HIGH,
+    },
+    "ultrametric_tree_mix": {
+        "long_range_reach": HIGH,
+        "content_dependence": HIGH,
+        "content_match_gating": HIGH,
+    },
+    "fno_spectral_mix": {
+        "long_range_reach": HIGH,
+        "content_dependence": LOW,
+        "content_match_gating": LOW,
+    },
+    "causal_gradient_mix": {
+        "long_range_reach": LOW,
+        "content_dependence": LOW,
+        "content_match_gating": LOW,
+    },
+    "causal_laplacian_mix": {
+        "long_range_reach": LOW,
+        "content_dependence": LOW,
+        "content_match_gating": LOW,
+    },
+    "lie_derivative_flow_mix": {
+        "long_range_reach": LOW,
+        "content_dependence": MID,
+        "content_match_gating": LOW,
+    },
+    "dct_spectral_mix": {
+        "long_range_reach": HIGH,
+        "content_dependence": LOW,
+        "content_match_gating": LOW,
+    },
+    "graph_eigbasis_mix": {
+        "long_range_reach": HIGH,
+        "content_dependence": LOW,
+        "content_match_gating": LOW,
+    },
+    "legendre_basis_mix": {
+        "long_range_reach": HIGH,
+        "content_dependence": LOW,
+        "content_match_gating": LOW,
+    },
+    "cp_tensor_mix": {
+        "long_range_reach": MID,
+        "content_dependence": LOW,
+        "content_match_gating": LOW,
+    },
+    "tensor_train_mix": {
+        "long_range_reach": MID,
+        "content_dependence": LOW,
+        "content_match_gating": LOW,
+    },
+    "tensor_ring_mix": {
+        "long_range_reach": MID,
+        "content_dependence": LOW,
+        "content_match_gating": LOW,
+    },
+    "block_term_tensor_mix": {
+        "long_range_reach": MID,
+        "content_dependence": LOW,
+        "content_match_gating": LOW,
+    },
+    "alpha_divergence_mix": {
+        "long_range_reach": LOW,
+        "content_dependence": MID,
+        "content_match_gating": LOW,
+    },
+    "renyi_attention_mix": {
+        "long_range_reach": HIGH,
+        "content_dependence": HIGH,
+        "content_match_gating": MID,
+    },
+    "natural_gradient_mixer": {
+        "long_range_reach": HIGH,
+        "content_dependence": MID,
+        "content_match_gating": LOW,
+    },
+    "dyadic_diff_mix": {
+        "long_range_reach": MID,
+        "content_dependence": LOW,
+        "content_match_gating": LOW,
+    },
+    "laplacian_pyramid_mix": {
+        "long_range_reach": MID,
+        "content_dependence": LOW,
+        "content_match_gating": LOW,
+    },
+    # Explicit softmax-twin aliases kept low-novelty so high-novelty holes do not
+    # boost them at the novel mechanism's expense.
+    "reciprocal_rank_attention": {
+        "long_range_reach": HIGH,
+        "content_dependence": HIGH,
+        "content_match_gating": HIGH,
+    },
+    "reciprocal_semiring_attention": {
+        "long_range_reach": HIGH,
+        "content_dependence": HIGH,
+        "content_match_gating": HIGH,
+    },
+    "phase_lock_attention": {
+        "long_range_reach": HIGH,
+        "content_dependence": HIGH,
+        "content_match_gating": MID,
+    },
 }
+
+_SOFTMAX_BASIN_OPS = frozenset(
+    {
+        "softmax_attention",
+        "sparsemax_attention",
+        "tropical_attention",
+        "reciprocal",
+        "reciprocal_rank_attention",
+        "reciprocal_semiring_attention",
+        "learnable_semiring_attention",
+        "phase_lock_attention",
+        "local_window_attn",
+    }
+)
+_HIGH_NOVELTY_OPS = frozenset(
+    {
+        "sinkhorn_ot_mix",
+        "ultrametric_tree_mix",
+        "fno_spectral_mix",
+        "causal_gradient_mix",
+        "causal_laplacian_mix",
+        "lie_derivative_flow_mix",
+        "dct_spectral_mix",
+        "graph_eigbasis_mix",
+        "legendre_basis_mix",
+        "cp_tensor_mix",
+        "tensor_train_mix",
+        "tensor_ring_mix",
+        "block_term_tensor_mix",
+        "alpha_divergence_mix",
+        "natural_gradient_mixer",
+        "dyadic_diff_mix",
+        "laplacian_pyramid_mix",
+        "wavelet_packet_mix",
+    }
+)
+
+
+def _install_novelty_levels() -> None:
+    """Stamp both research and fab novelty axes onto the curated signatures."""
+
+    for op, signature in _OP_BEHAVIOR_SIGNATURE.items():
+        if op in _SOFTMAX_BASIN_OPS:
+            level = LOW
+        elif op in _HIGH_NOVELTY_OPS:
+            level = HIGH
+        else:
+            level = MID
+        for axis_name in _NOVELTY_AXIS_NAMES:
+            signature.setdefault(axis_name, level)
+
+
+_install_novelty_levels()
 
 
 @dataclass(frozen=True, slots=True)
@@ -183,11 +353,29 @@ def _op_distance(
     """L1 distance from a niche to an op's signature (axes absent from the
     signature do not constrain it)."""
 
-    return sum(
-        abs(int(niche[i]) - _level_to_bin(signature[axis.name], axis.n_bins))
+    distance = 0
+    for i, axis in enumerate(axes):
+        level = signature.get(axis.name)
+        if level is None and _is_novelty_axis(axis.name):
+            level = LOW
+        if level is None:
+            continue
+        distance += abs(int(niche[i]) - _level_to_bin(level, axis.n_bins))
+    return distance
+
+
+def _niche_has_high_novelty(
+    niche: Sequence[int], axes: Sequence[BehaviorAxis]
+) -> bool:
+    return any(
+        _is_novelty_axis(axis.name) and int(niche[i]) >= axis.n_bins - 1
         for i, axis in enumerate(axes)
-        if axis.name in signature
     )
+
+
+def _signature_novelty_level(signature: Mapping[str, int]) -> int:
+    levels = [signature[name] for name in _NOVELTY_AXIS_NAMES if name in signature]
+    return max(levels) if levels else LOW
 
 
 def _registered_ops() -> set[str]:
@@ -228,12 +416,22 @@ def archive_guidance(
 
     per_op_demand: dict[str, int] = {op: 0 for op in ops}
     reachable = 0
+    has_high_novelty_hole = False
     for niche in targets:
         matched = [
             op
             for op in ops
             if _op_distance(niche, axes, _OP_BEHAVIOR_SIGNATURE[op]) <= radius
         ]
+        if _niche_has_high_novelty(niche, axes):
+            high_matches = [
+                op
+                for op in matched
+                if _signature_novelty_level(_OP_BEHAVIOR_SIGNATURE[op]) >= HIGH
+            ]
+            if high_matches:
+                matched = high_matches
+                has_high_novelty_hole = True
         if not matched:
             continue
         reachable += 1
@@ -241,6 +439,12 @@ def archive_guidance(
             per_op_demand[op] += 1
 
     demanded = {op: c for op, c in per_op_demand.items() if c > 0}
+    if has_high_novelty_hole:
+        demanded = {
+            op: c
+            for op, c in demanded.items()
+            if _signature_novelty_level(_OP_BEHAVIOR_SIGNATURE[op]) >= HIGH
+        }
     ranked = sorted(demanded, key=lambda op: (-demanded[op], op))
     if max_target_ops is not None:
         ranked = ranked[:max_target_ops]

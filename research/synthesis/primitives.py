@@ -1436,6 +1436,227 @@ _register(
 )
 _register(
     PrimitiveOp(
+        "causal_gradient_mix",
+        OpCategory.PARAMETERIZED,
+        1,
+        "identity",
+        has_params=True,
+        param_formula="D*D+D",
+        binding_range_class="local",
+        description=(
+            "NM-1 calculus sibling: causal first-difference gradient features with a learned "
+            "channel projection and residual gate; local, non-QKV, no softmax normalization."
+        ),
+    )
+)
+_register(
+    PrimitiveOp(
+        "causal_laplacian_mix",
+        OpCategory.PARAMETERIZED,
+        1,
+        "identity",
+        has_params=True,
+        param_formula="D*D+D",
+        binding_range_class="local",
+        description=(
+            "NM-1 calculus sibling: causal second-difference/Laplacian features over the sequence "
+            "with a learned projection and residual gate."
+        ),
+    )
+)
+_register(
+    PrimitiveOp(
+        "lie_derivative_flow_mix",
+        OpCategory.PARAMETERIZED,
+        1,
+        "identity",
+        has_params=True,
+        param_formula="D*D*2+D",
+        binding_range_class="local",
+        description=(
+            "NM-1 calculus sibling: learned sequence flow multiplies the causal derivative, "
+            "approximating a Lie derivative along token-state flow."
+        ),
+    )
+)
+_register(
+    PrimitiveOp(
+        "dct_spectral_mix",
+        OpCategory.PARAMETERIZED,
+        1,
+        "identity",
+        has_params=True,
+        param_formula="D*D+4*D",
+        binding_range_class="full",
+        description=(
+            "NM-1 spectral-graph sibling: DCT basis transform over positions with learned "
+            "low-mode channel gains; global orthogonal-basis mixing, not score aggregation."
+        ),
+    )
+)
+_register(
+    PrimitiveOp(
+        "graph_eigbasis_mix",
+        OpCategory.PARAMETERIZED,
+        1,
+        "identity",
+        has_params=True,
+        param_formula="D*D+4*D+1",
+        binding_range_class="full",
+        description=(
+            "NM-1 spectral-graph sibling: learned-decay graph Laplacian eigbasis mixer over token "
+            "positions with learned low-mode gains."
+        ),
+    )
+)
+_register(
+    PrimitiveOp(
+        "legendre_basis_mix",
+        OpCategory.PARAMETERIZED,
+        1,
+        "identity",
+        has_params=True,
+        param_formula="D*D+4*D",
+        binding_range_class="full",
+        description=(
+            "NM-1 spectral-graph sibling: Legendre polynomial basis projection over sequence "
+            "positions with learned low-order gains."
+        ),
+    )
+)
+_register(
+    PrimitiveOp(
+        "cp_tensor_mix",
+        OpCategory.PARAMETERIZED,
+        1,
+        "identity",
+        has_params=True,
+        param_formula="D*D+12*D",
+        description=(
+            "NM-1 tensor-decomposition sibling: CP-rank channel-factor mixer using three rank-4 "
+            "factor banks and a learned output projection."
+        ),
+    )
+)
+_register(
+    PrimitiveOp(
+        "tensor_train_mix",
+        OpCategory.PARAMETERIZED,
+        1,
+        "identity",
+        has_params=True,
+        param_formula="9*D+16",
+        description=(
+            "NM-1 tensor-decomposition sibling: rank-4 tensor-train bottleneck over channels with "
+            "a gated residual readout."
+        ),
+    )
+)
+_register(
+    PrimitiveOp(
+        "tensor_ring_mix",
+        OpCategory.PARAMETERIZED,
+        1,
+        "identity",
+        has_params=True,
+        param_formula="D*D+2*D",
+        description=(
+            "NM-1 tensor-decomposition sibling: circular channel-ring factor mixer with learned "
+            "forward/backward ring scales."
+        ),
+    )
+)
+_register(
+    PrimitiveOp(
+        "block_term_tensor_mix",
+        OpCategory.PARAMETERIZED,
+        1,
+        "identity",
+        has_params=True,
+        param_formula="D*D+4*D",
+        description=(
+            "NM-1 tensor-decomposition sibling: block-term channel mixer with four learned block "
+            "gates and shared output projection."
+        ),
+    )
+)
+_register(
+    PrimitiveOp(
+        "alpha_divergence_mix",
+        OpCategory.PARAMETERIZED,
+        1,
+        "identity",
+        has_params=True,
+        param_formula="D*D+D+1",
+        binding_range_class="local",
+        description=(
+            "NM-1 information-geometry sibling: alpha-divergence between adjacent positive "
+            "channel measures drives a learned residual update."
+        ),
+    )
+)
+_register(
+    PrimitiveOp(
+        "renyi_attention_mix",
+        OpCategory.PARAMETERIZED,
+        1,
+        "identity",
+        has_params=True,
+        param_formula="D*D*4+1",
+        binding_range_class="full",
+        description=(
+            "NM-1 information-geometry sibling: Renyi/Tsallis power-normalized causal retrieval; "
+            "uses positive q-power normalization rather than softmax."
+        ),
+    )
+)
+_register(
+    PrimitiveOp(
+        "natural_gradient_mixer",
+        OpCategory.PARAMETERIZED,
+        1,
+        "identity",
+        has_params=True,
+        param_formula="D*D*2+1",
+        binding_range_class="full",
+        description=(
+            "NM-1 information-geometry sibling: covariance-preconditioned natural-gradient style "
+            "token update with learned projections."
+        ),
+    )
+)
+_register(
+    PrimitiveOp(
+        "dyadic_diff_mix",
+        OpCategory.PARAMETERIZED,
+        1,
+        "identity",
+        has_params=True,
+        param_formula="D*D+3*D",
+        binding_range_class="medium",
+        description=(
+            "NM-1 multiscale sibling: dyadic causal differences at lags 1/2/4 mixed through "
+            "learned channel scales."
+        ),
+    )
+)
+_register(
+    PrimitiveOp(
+        "laplacian_pyramid_mix",
+        OpCategory.PARAMETERIZED,
+        1,
+        "identity",
+        has_params=True,
+        param_formula="D*D+3*D",
+        binding_range_class="medium",
+        description=(
+            "NM-1 multiscale sibling: causal Laplacian pyramid details from repeated smoothing "
+            "with learned per-level scales."
+        ),
+    )
+)
+_register(
+    PrimitiveOp(
         "learned_token_gate",  # was: cascade
         OpCategory.PARAMETERIZED,
         1,

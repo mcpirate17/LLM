@@ -2739,10 +2739,14 @@ class TestAPI(unittest.TestCase):
         self.assertEqual(r.status_code, 200)
         data = r.get_json()
         self.assertFalse(data.get("ai_powered"))
-        self.assertNotEqual(data.get("action"), "investigate")
         cfg = data.get("suggested_config", {})
-        self.assertNotEqual(cfg.get("mode"), "investigation")
-        if cfg.get("mode") == "investigation":
+        suggested_ids = set(cfg.get("result_ids") or [])
+        self.assertNotIn(result_id, suggested_ids)
+        if data.get("action") == "investigate":
+            self.assertEqual(cfg.get("mode"), "investigation")
+            self.assertTrue(suggested_ids)
+        else:
+            self.assertNotEqual(cfg.get("mode"), "investigation")
             self.assertNotIn("result_ids", cfg)
 
     def test_api_llm_config(self):

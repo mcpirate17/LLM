@@ -33,6 +33,7 @@ from component_fab.proposer.dynamic import (
     enumerate_dynamic_proposals,
     specs_from_ledger_entries,
 )
+from component_fab.proposer.cross_product import enumerate_cross_product_specs
 from component_fab.proposer.name_free import enumerate_name_free_physics_experiments
 from component_fab.proposer.nas_bridge import nas_graph_specs
 from component_fab.proposer.spec_generator import (
@@ -126,6 +127,7 @@ def enumerate_cycle_specs(
     max_cross_pairs: int = 30,
     max_knob_specs: int = 48,
     max_dynamic_specs: int = 32,
+    max_cross_product_specs: int = 0,
     max_nas_specs: int = 6,
     max_name_free_specs: int = 12,
     max_training_specs: int = 24,
@@ -154,6 +156,11 @@ def enumerate_cycle_specs(
         ledger,
         max_specs=max_dynamic_specs,
         tier2_feedback_by_id=tier2_feedback_by_id,
+    )
+    cross_product_specs = enumerate_cross_product_specs(
+        ledger,
+        cycle=cycle,
+        max_specs=max_cross_product_specs,
     )
     name_free_specs: list[ProposalSpec] = []
     if include_name_free_physics:
@@ -221,6 +228,7 @@ def enumerate_cycle_specs(
         + adaptive_cross_specs
         + knob_specs
         + dynamic_specs
+        + cross_product_specs
         + name_free_specs
         + frontier_specs
         + nas_specs

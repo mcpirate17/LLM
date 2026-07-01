@@ -12,6 +12,8 @@ from research.scientist.analytics.model_strength import (
 from research.scientist.api import create_app
 from research.scientist.notebook import LabNotebook
 
+_REPRESENTATIVE_PARAM_COUNT = 1_200_000
+
 
 def _graph(template: str, ops: list[str], *, slot_motif: str | None = None) -> str:
     nodes = {
@@ -77,7 +79,7 @@ def _seed_strength_db(db_path: str) -> None:
             "stability_score": 0.91,
             "validation_robustness_score": 0.88,
             "efficiency_multiple": 1.7,
-            "param_count": 120000,
+            "param_count": _REPRESENTATIVE_PARAM_COUNT,
             "graph_depth": 5,
             "graph_n_ops": 4,
             "graph_n_unique_ops": 4,
@@ -111,7 +113,7 @@ def _seed_strength_db(db_path: str) -> None:
             "stability_score": 0.86,
             "validation_robustness_score": 0.82,
             "efficiency_multiple": 1.4,
-            "param_count": 118000,
+            "param_count": _REPRESENTATIVE_PARAM_COUNT,
             "graph_depth": 5,
             "graph_n_ops": 4,
             "graph_n_unique_ops": 4,
@@ -126,7 +128,7 @@ def _seed_strength_db(db_path: str) -> None:
             "graph_fingerprint": "fp-bad-1",
             "graph_json": _graph(
                 "tpl_bad",
-                ["linear_proj", "add", "layernorm"],
+                ["linear_proj", "add", "residual_scale", "layernorm"],
                 slot_motif="weak_core",
             ),
             "stage0_passed": True,
@@ -142,10 +144,10 @@ def _seed_strength_db(db_path: str) -> None:
             "stability_score": 0.49,
             "validation_robustness_score": 0.31,
             "efficiency_multiple": 0.5,
-            "param_count": 120000,
-            "graph_depth": 3,
-            "graph_n_ops": 3,
-            "graph_n_unique_ops": 3,
+            "param_count": _REPRESENTATIVE_PARAM_COUNT,
+            "graph_depth": 5,
+            "graph_n_ops": 4,
+            "graph_n_unique_ops": 4,
             "train_budget_steps": 400,
             "result_cohort": "search",
             "trust_label": "candidate_grade",
@@ -157,7 +159,7 @@ def _seed_strength_db(db_path: str) -> None:
             "graph_fingerprint": "fp-bad-2",
             "graph_json": _graph(
                 "tpl_bad",
-                ["linear_proj", "add", "layernorm"],
+                ["linear_proj", "add", "residual_scale", "layernorm"],
                 slot_motif="weak_core",
             ),
             "stage0_passed": True,
@@ -173,10 +175,10 @@ def _seed_strength_db(db_path: str) -> None:
             "stability_score": 0.52,
             "validation_robustness_score": 0.34,
             "efficiency_multiple": 0.6,
-            "param_count": 121000,
-            "graph_depth": 3,
-            "graph_n_ops": 3,
-            "graph_n_unique_ops": 3,
+            "param_count": _REPRESENTATIVE_PARAM_COUNT,
+            "graph_depth": 5,
+            "graph_n_ops": 4,
+            "graph_n_unique_ops": 4,
             "train_budget_steps": 400,
             "result_cohort": "search",
             "trust_label": "candidate_grade",

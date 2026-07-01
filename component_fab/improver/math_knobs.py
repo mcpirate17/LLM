@@ -7,6 +7,7 @@ validator imports do not load the full improver package during initialization.
 from __future__ import annotations
 
 from component_fab.math_knobs import (
+    AUTO_DEEPENING_MATH_KNOBS,
     DEFAULT_MATH_KNOBS,
     KNOB_ID_BY_FAMILY,
     MathKnob,
@@ -14,6 +15,7 @@ from component_fab.math_knobs import (
 )
 
 __all__ = [
+    "AUTO_DEEPENING_MATH_KNOBS",
     "DEFAULT_MATH_KNOBS",
     "KNOB_ID_BY_FAMILY",
     "MathKnob",

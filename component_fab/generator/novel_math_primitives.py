@@ -22,16 +22,148 @@ Genuinely new, non-QKV sequence mixers, all anti-softmax-twin by structure:
   keeping ``R`` non-degenerate; a training-time restriction-consistency penalty
   can be added on top).
 
+- ``SignedExpanderMixerLane`` (MiniMax-M3-align M3X-M2) — a compact signed
+  channel-expander mixer. It uses a deterministic regular circulant expander over
+  channels, learned signed edge weights, and a causal decayed token context. The
+  mechanism spreads information globally with ``O(D * degree)`` work/footprint
+  rather than a dense ``O(D**2)`` matrix, while staying far from convex
+  softmax-style token averaging.
+
 Both preserve ``[B, L, D]`` shape and produce finite gradients at init.
 """
 
 from __future__ import annotations
+
+import math
 
 import torch
 from torch import nn
 from torch.nn import functional as F
 
 from component_fab.generator._causal_scan import causal_decay_context
+
+
+def _canonical_offset(raw: int, dim: int) -> int:
+    offset = int(raw) % dim
+    if offset == 0:
+        return 0
+    return min(offset, dim - offset)
+
+
+def _expander_offsets(dim: int, n_offsets: int) -> tuple[int, ...]:
+    """Deterministic coprime circulant offsets for a sparse channel expander."""
+    max_offset = max(1, (dim - 1) // 2)
+    offsets: list[int] = []
+
+    def try_add(raw: int, *, require_coprime: bool = False) -> None:
+        offset = _canonical_offset(raw, dim)
+        if offset <= 0 or offset > max_offset or offset in offsets:
+            return
+        if not require_coprime or math.gcd(offset, dim) == 1:
+            offsets.append(offset)
+
+    try_add(1, require_coprime=True)
+    for frac in (0.17, 0.25, 0.31, 0.43, 0.37, 0.23, 0.41):
+        try_add(round(dim * frac))
+        if len(offsets) >= n_offsets:
+            break
+    candidate = 2
+    while len(offsets) < n_offsets and candidate <= max_offset:
+        try_add(candidate)
+        candidate += 1
+    candidate = 2
+    while len(offsets) < n_offsets and candidate <= max_offset:
+        offset = _canonical_offset(candidate, dim)
+        if offset and offset not in offsets:
+            offsets.append(offset)
+        candidate += 1
+    return tuple(offsets)
+
+
+class SignedExpanderMixerLane(nn.Module):
+    """Signed regular-expander causal mixer (MiniMax-M3-align M3X-M2).
+
+    The channel mixer is a sparse circulant expander: every channel reads the
+    same small set of positive and negative offset neighbours, with learned
+    signed edge weights shared across channels. A causal decayed token context
+    supplies the sequence dimension, so token ``t`` reads only tokens ``<= t``.
+
+    This is not attention: there are no query/key scores, no exp/normalization,
+    and no convex aggregation over tokens. The compactness comes from storing
+    ``O(D)`` per-channel scales/decays plus ``O(degree)`` edge weights rather
+    than a dense ``D x D`` matrix.
+    """
+
+    def __init__(self, dim: int, degree: int = 8, decay_init: float = 0.75) -> None:
+        super().__init__()
+        if dim < 4:
+            raise ValueError("SignedExpanderMixerLane requires dim >= 4")
+        if degree < 2:
+            raise ValueError("degree must be >= 2")
+        if not 0.0 < decay_init < 1.0:
+            raise ValueError("decay_init must be in (0, 1)")
+        n_offsets = min(max(1, degree // 2), max(1, (dim - 1) // 2))
+        offsets = _expander_offsets(dim, n_offsets)
+        if not offsets:
+            raise ValueError("could not build non-empty expander offsets")
+        self.dim = dim
+        self.degree = 2 * len(offsets)
+        self.register_buffer(
+            "_offsets", torch.tensor(offsets, dtype=torch.long), persistent=False
+        )
+        init_weights = torch.empty(len(offsets))
+        init_weights[0::2] = 0.8
+        init_weights[1::2] = -0.8
+        self.edge_logits = nn.Parameter(torch.atanh(init_weights))
+        self.input_scale = nn.Parameter(torch.ones(dim))
+        self.output_scale = nn.Parameter(torch.full((dim,), 12.0))
+        self.mix_gate = nn.Parameter(torch.full((dim,), 0.5))
+        logit = torch.logit(torch.tensor(decay_init))
+        self.log_decay = nn.Parameter(torch.full((dim,), float(logit)))
+
+    def edge_weights(self) -> torch.Tensor:
+        """Learned signed edge weights, one per undirected offset."""
+        return torch.tanh(self.edge_logits)
+
+    def channel_adjacency(self) -> torch.Tensor:
+        """Absolute normalized channel adjacency used by tests/diagnostics."""
+        weights = self.edge_weights().abs()
+        rows = torch.arange(self.dim, device=weights.device)
+        adj = weights.new_zeros(self.dim, self.dim)
+        for idx, raw_offset in enumerate(self._offsets.tolist()):
+            offset = int(raw_offset)
+            adj[rows, (rows + offset) % self.dim] = weights[idx]
+            adj[rows, (rows - offset) % self.dim] = weights[idx]
+        denom = adj.sum(dim=-1, keepdim=True).clamp_min(1e-8)
+        return adj / denom
+
+    def spectral_gap(self) -> torch.Tensor:
+        """Gap ``1 - |lambda_2|`` of the normalized unsigned expander graph."""
+        eigvals = torch.linalg.eigvals(self.channel_adjacency()).abs()
+        ordered = torch.sort(eigvals, descending=True).values
+        if ordered.numel() < 2:
+            return ordered.new_tensor(0.0)
+        return 1.0 - ordered[1].real
+
+    def _mix_channels(self, context: torch.Tensor) -> torch.Tensor:
+        weights = self.edge_weights().to(context.dtype)
+        mixed = torch.zeros_like(context)
+        for idx, raw_offset in enumerate(self._offsets.tolist()):
+            offset = int(raw_offset)
+            neighbours = torch.roll(context, offset, dims=-1) + torch.roll(
+                context, -offset, dims=-1
+            )
+            mixed = mixed + weights[idx] * neighbours
+        return mixed / math.sqrt(float(self.degree))
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        decay = torch.sigmoid(self.log_decay).clamp(1e-4, 1 - 1e-4)
+        context = causal_decay_context(x * self.input_scale, decay)
+        mixed = self._mix_channels(context)
+        # Signed expander high-pass: subtracting the causal context
+        # prevents the lane from becoming a non-negative averaging operator.
+        update = (mixed - context) * self.output_scale
+        return x + torch.tanh(self.mix_gate) * update
 
 
 class FractionalIntegralMemoryLane(nn.Module):

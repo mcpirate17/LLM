@@ -208,6 +208,60 @@ def test_dispatch_graph_diffusion_math_knob() -> None:
     assert isinstance(m, GraphDiffusionLane)
 
 
+@pytest.mark.parametrize(
+    ("axes", "expected_type"),
+    (
+        (
+            {
+                "op_math_family": "calculus",
+                "op_calculus_operator": "causal_laplacian",
+            },
+            FiniteDifferenceCalculusLane,
+        ),
+        (
+            {
+                "op_math_family": "linear_algebra",
+                "op_linear_algebra_structure": "block_low_rank_factorized",
+            },
+            LowRankFactorizedLane,
+        ),
+        (
+            {
+                "op_math_family": "sparse_matrix",
+                "op_sparse_matrix_pattern": "causal_dilated_banded",
+            },
+            SparseBandedMatrixLane,
+        ),
+        (
+            {
+                "op_math_family": "kernel_methods",
+                "op_kernel_feature_map": "nystrom_landmarks",
+            },
+            RandomFeatureKernelLane,
+        ),
+        (
+            {
+                "op_math_family": "multiscale",
+                "op_multiscale_transform": "laplacian_pyramid",
+            },
+            MultiscaleWaveletLane,
+        ),
+        (
+            {
+                "op_math_family": "graph_diffusion",
+                "op_graph_topology": "learned_path_laplacian",
+            },
+            GraphDiffusionLane,
+        ),
+    ),
+)
+def test_dispatch_auto_deepened_math_knob_axis_aliases(
+    axes: dict[str, str], expected_type: type[torch.nn.Module]
+) -> None:
+    module = generate_module(axes, dim=16)
+    assert isinstance(module, expected_type)
+
+
 def test_dispatch_lambda_functional_math_knob() -> None:
     m = generate_module(
         {
@@ -308,6 +362,35 @@ def test_dispatch_composes_new_math_knobs_over_base_lane() -> None:
     assert isinstance(m.base.base.base, TropicalAttention)
     x = torch.randn(2, 8, 16)
     assert m(x).shape == x.shape
+
+
+def test_dispatch_composes_auto_deepened_math_knobs_over_base_lane() -> None:
+    module = generate_module(
+        {
+            "op_algebraic_space": "tropical",
+            "op_math_knobs": (
+                "calculus_laplacian",
+                "linear_algebra_block_low_rank",
+                "sparse_matrix_dilated_banded",
+                "kernel_fourier_features",
+                "multiscale_laplacian_pyramid",
+                "graph_diffusion_learned_path",
+                "lambda_functional_token_basis",
+            ),
+        },
+        dim=16,
+    )
+
+    assert isinstance(module, LambdaFunctionalAdapterLane)
+    assert isinstance(module.base, GraphDiffusionAdapterLane)
+    assert isinstance(module.base.base, MultiscaleWaveletAdapterLane)
+    assert isinstance(module.base.base.base, RandomFeatureKernelAdapterLane)
+    assert isinstance(module.base.base.base.base, SparseBandedAdapterLane)
+    assert isinstance(module.base.base.base.base.base, LowRankAdapterLane)
+    assert isinstance(module.base.base.base.base.base.base, CalculusAugmentedLane)
+    assert isinstance(module.base.base.base.base.base.base.base, TropicalAttention)
+    x = torch.randn(2, 8, 16)
+    assert module(x).shape == x.shape
 
 
 def test_dispatch_composes_lambda_math_knob_over_base_lane() -> None:

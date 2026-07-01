@@ -21,6 +21,10 @@ from typing import Callable
 import torch
 from torch import nn
 
+from ..generator.ecc_codeword_embedding import (
+    ECCCodewordEmbedding,
+    ECCCodewordOutputHead,
+)
 from ..generator.primitive_templates._core import get_causal_mask
 from .primitives import CausalDepthwiseConv1d, swiglu
 from .rope import RotaryEmbedding, apply_rope
@@ -44,6 +48,11 @@ class TinyLMConfig:
     use_ffn: bool = False
     ffn_mult: int = 4
     ffn_kind: str = "swiglu"
+    # MiniMax-M3-align M3X-C1: opt-in compact token embedding/head. The default
+    # dense path is unchanged and keeps the legacy tied nn.Embedding/Linear.
+    embedding_kind: str = "dense"
+    ecc_code_length: int = 8
+    ecc_field_size: int = 257
 
 
 class _MLP(nn.Module):
@@ -132,7 +141,17 @@ class TinyLM(nn.Module):
     ) -> None:
         super().__init__()
         self.config = config
-        self.embed = nn.Embedding(config.vocab_size, config.dim)
+        if config.embedding_kind == "dense":
+            self.embed = nn.Embedding(config.vocab_size, config.dim)
+        elif config.embedding_kind == "ecc_codeword":
+            self.embed = ECCCodewordEmbedding(
+                config.vocab_size,
+                config.dim,
+                code_length=config.ecc_code_length,
+                field_size=config.ecc_field_size,
+            )
+        else:
+            raise ValueError(f"unknown TinyLM embedding kind: {config.embedding_kind!r}")
         self.pos_embed: nn.Embedding | None
         if config.use_position_embedding:
             self.pos_embed = nn.Embedding(config.max_seq_len, config.dim)
@@ -151,9 +170,12 @@ class TinyLM(nn.Module):
             ]
         )
         self.final_norm = nn.LayerNorm(config.dim)
-        self.lm_head = nn.Linear(config.dim, config.vocab_size, bias=False)
-        # Tie embedding and head weights to keep param count low.
-        self.lm_head.weight = self.embed.weight
+        if isinstance(self.embed, ECCCodewordEmbedding):
+            self.lm_head = ECCCodewordOutputHead(self.embed)
+        else:
+            self.lm_head = nn.Linear(config.dim, config.vocab_size, bias=False)
+            # Tie embedding and head weights to keep param count low.
+            self.lm_head.weight = self.embed.weight
 
     def forward(self, ids: torch.Tensor) -> torch.Tensor:
         b, l = ids.shape

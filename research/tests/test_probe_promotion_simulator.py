@@ -90,6 +90,9 @@ def _stub_leaderboard_scoring(monkeypatch, *, score_map: dict[str, dict[str, flo
     fake_lb.build_score_kwargs_from_prefetch = build_score_kwargs_from_prefetch
     fake_lb.compute_composite = compute_composite
     monkeypatch.setitem(sys.modules, "research.scientist.leaderboard_scoring", fake_lb)
+    scientist_pkg = sys.modules.get("research.scientist")
+    if scientist_pkg is not None:
+        monkeypatch.setattr(scientist_pkg, "leaderboard_scoring", fake_lb, raising=False)
 
 
 def _stub_scoring_config(monkeypatch, *, tmp_yaml: Path):
@@ -110,6 +113,9 @@ def _stub_scoring_config(monkeypatch, *, tmp_yaml: Path):
 
     fake_scfg.reload_scoring_config = reload_scoring_config
     monkeypatch.setitem(sys.modules, "research.scientist.scoring_config", fake_scfg)
+    scientist_pkg = sys.modules.get("research.scientist")
+    if scientist_pkg is not None:
+        monkeypatch.setattr(scientist_pkg, "scoring_config", fake_scfg, raising=False)
 
 
 def test_promotion_simulator_dry_run(tmp_path: Path, monkeypatch):

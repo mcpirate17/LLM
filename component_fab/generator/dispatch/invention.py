@@ -20,11 +20,13 @@ from component_fab.generator.memory_primitives import (
     SemiringSurpriseMemoryLane,
     TropicalSurpriseMemoryLane,
 )
+from component_fab.generator.holographic_primitives import HolographicBindingLane
 from component_fab.generator.novel_math_primitives import (
     FractionalIntegralMemoryLane,
     MeraRenormMixerLane,
     OctonionicMixerLane,
     SheafDiffusionMixerLane,
+    SignedExpanderMixerLane,
 )
 from component_fab.generator.native_surprise_memory import (
     NativeAdaptiveSemiringBiLaneSurpriseMemoryLane,
@@ -44,6 +46,7 @@ from component_fab.generator.native_surprise_memory import (
 )
 from component_fab.generator.primitive_templates import SymplecticResidualMixerLane
 from component_fab.generator.reversible_primitives import ReversibleCouplingMixerLane
+from component_fab.generator.routing_primitives import AuctionCapacityRoutedLane
 
 LaneFactory = Callable[[int], nn.Module]
 
@@ -103,7 +106,10 @@ _INVENTION_MECHANISMS: dict[str, LaneFactory] = {
     "sheaf_consistent_slot_mixer": SheafDiffusionMixerLane,
     "mera_block": MeraRenormMixerLane,
     "octonionic_mixer": _octonionic_mixer_lane,
+    "signed_expander_mixer": SignedExpanderMixerLane,
+    "auction_capacity_router": AuctionCapacityRoutedLane,
     "reversible_coupling_mixer": _reversible_coupling_mixer_lane,
+    "holographic_binding": HolographicBindingLane,
     "native_read_before_write_surprise_memory": NativeReadBeforeWriteSurpriseMemoryLane,
     "native_context_gated_surprise_memory": NativeContextGatedSurpriseMemoryLane,
     "native_atlas_poly_surprise_memory": NativeAtlasPolySurpriseMemoryLane,
