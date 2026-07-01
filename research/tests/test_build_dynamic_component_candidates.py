@@ -1,6 +1,7 @@
 import json
 from pathlib import Path
 
+import research.tools.build_dynamic_component_candidates as builder_mod
 from research.tools.build_dynamic_component_candidates import (
     build_dynamic_component_candidates,
 )
@@ -43,6 +44,24 @@ def _write_report(path: Path) -> Path:
         encoding="utf-8",
     )
     return path
+
+
+def _assert_math_physics_review_passed(validation: dict) -> None:
+    assert validation["math_physics_review_passed"] is True
+    assert validation["math_physics_review_requires_gpu"] is False
+    assert validation["math_physics_review_reason"] in {
+        "selected_variant",
+        "parent_retained_after_sweep",
+    }
+    assert validation["math_sweep_passed"] is True
+    assert validation["math_sweep_required_for_ready"] is True
+    assert validation["math_sweep_variant_count"] >= 1
+    assert validation["math_sweep_records"]
+    assert validation["math_sweep_selected_variant_id"]
+    assert "physics_descriptors" in validation
+    assert "spectral_radius" in validation["physics_descriptors"]
+    assert "measured_descriptors" in validation
+    assert "long_range_reach" in validation["measured_descriptors"]
 
 
 def test_build_dynamic_component_candidates_keeps_only_structural_windows(
@@ -317,6 +336,7 @@ def test_branch_candidates_validate_lowered_topology(tmp_path: Path) -> None:
     assert validation["compile_passed"] is True
     assert validation["forward_passed"] is True
     assert validation["backward_passed"] is True
+    _assert_math_physics_review_passed(validation)
 
 
 def test_router_lane_blend_candidates_validate_lowered_topology(
@@ -357,6 +377,8 @@ def test_router_lane_blend_candidates_validate_lowered_topology(
     assert validation["compile_passed"] is True
     assert validation["forward_passed"] is True
     assert validation["backward_passed"] is True
+    _assert_math_physics_review_passed(validation)
+    assert validation["static_route_count"] > 0
 
 
 def test_restore_sidecar_candidates_validate_lowered_topology(tmp_path: Path) -> None:
@@ -395,26 +417,44 @@ def test_restore_sidecar_candidates_validate_lowered_topology(tmp_path: Path) ->
     assert validation["compile_passed"] is True
     assert validation["forward_passed"] is True
     assert validation["backward_passed"] is True
+    _assert_math_physics_review_passed(validation)
 
 
-def test_build_dynamic_component_candidates_ready_requires_backward_validation(
+def test_candidate_validation_stops_positionwise_chain_before_smoke() -> None:
+    validation = builder_mod._validate_candidate_chain(
+        ("linear_proj", "relu", "add"),
+        model_dim=16,
+        run_smoke=True,
+    )
+
+    assert validation["compile_passed"] is True
+    assert validation["math_physics_review_passed"] is False
+    assert validation["math_physics_review_reason"] == "no_sequence_mixer_or_router_on_path"
+    assert validation["failure_mode"] == "math_physics_review"
+    assert validation["forward_passed"] is False
+    assert validation["backward_passed"] is False
+
+
+def test_build_dynamic_component_candidates_ready_requires_math_and_backward_validation(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
     report = _write_report(tmp_path / "mining.json")
 
-    def fake_validate_chain(chain, **kwargs):
+    def fake_candidate_validation(candidate, **kwargs):
         return {
             "compile_passed": True,
             "validate_passed": True,
             "forward_passed": True,
             "backward_passed": True,
-            "n_ops": len(chain) + 1,
+            "math_physics_review_passed": True,
+            "math_sweep_passed": True,
+            "n_ops": len(candidate["chain"]) + 1,
         }
 
     monkeypatch.setattr(
-        "research.tools.build_dynamic_component_candidates.validate_chain",
-        fake_validate_chain,
+        "research.tools.build_dynamic_component_candidates._candidate_validation",
+        fake_candidate_validation,
     )
     payload = build_dynamic_component_candidates(
         mining_report_path=report,
@@ -424,3 +464,21 @@ def test_build_dynamic_component_candidates_ready_requires_backward_validation(
 
     assert len(payload["ready_for_registration"]) == 1
     assert payload["ready_for_registration"][0]["validation"]["backward_passed"] is True
+    assert (
+        payload["ready_for_registration"][0]["validation"]["math_physics_review_passed"]
+        is True
+    )
+
+    not_reviewed = {
+        "validate_passed": True,
+        "compile_passed": True,
+        "forward_passed": True,
+        "backward_passed": True,
+    }
+    reviewed = dict(
+        not_reviewed, math_physics_review_passed=True, math_sweep_passed=True
+    )
+    only_reviewed = dict(not_reviewed, math_physics_review_passed=True)
+    assert builder_mod._is_ready(not_reviewed) is False
+    assert builder_mod._is_ready(only_reviewed) is False
+    assert builder_mod._is_ready(reviewed) is True

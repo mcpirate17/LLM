@@ -20,8 +20,8 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from research.meta_analysis.template_validator import (
-    _finalize_compile_and_smoke,
-    validate_chain,
+    _build_chain_graph,
+    _run_smoke_test,
 )
 from research.synthesis.component_rules import (
     ComponentRuleConfig,
@@ -41,6 +41,13 @@ from research.synthesis.dynamic_template_registry import (
 from research.synthesis.graph import ComputationGraph
 from research.synthesis.op_roles import OpRole, get_role
 from research.synthesis.validator import validate_graph
+from research.tools.dynamic_math_sweep import (
+    SCHEMA_VERSION as DYNAMIC_MATH_SWEEP_SCHEMA_VERSION,
+    measure_operator_descriptors,
+    run_dynamic_math_sweep,
+    selected_summary,
+)
+from research.tools.static_capability_gate import mixer_chain_depth, mixer_reach
 
 
 DEFAULT_INPUT = Path("research/reports/component_rule_mining_20260511_222730.json")
@@ -298,6 +305,7 @@ def _candidate_artifact_payload(
             "model_dim": int(model_dim),
             "run_smoke": bool(run_smoke),
             "validation_required_for_ready": True,
+            "math_physics_review_required_for_ready": True,
             "component_rule_schema_versions": list(schema_versions),
         },
         "candidates": candidates,
@@ -678,11 +686,49 @@ def _validate_candidate_chain(
     # These bounds only keep the existing validator from rejecting larger
     # mined components because it was originally tuned for 3-4 op chains.
     lowered_ops = estimated_chain_lowered_op_count(chain)
-    return validate_chain(
-        chain,
-        model_dim=model_dim,
+    result: dict[str, Any] = {
+        "compile_passed": False,
+        "validate_passed": False,
+        "forward_passed": False,
+        "backward_passed": False,
+        "n_ops": 0,
+        "failure_mode": None,
+        "error": None,
+    }
+    try:
+        graph = _build_chain_graph(chain, model_dim=model_dim)
+    except ValueError as exc:
+        result["failure_mode"] = "build"
+        result["error"] = str(exc)
+        return result
+    except KeyError as exc:
+        result["failure_mode"] = "build_missing_op"
+        result["error"] = str(exc)
+        return result
+    except Exception as exc:
+        result["failure_mode"] = "build_exception"
+        result["error"] = f"{type(exc).__name__}: {exc}"
+        return result
+
+    result["n_ops"] = len(graph.nodes) - 1
+    validation = validate_graph(
+        graph,
         max_ops=max(32, lowered_ops + 8),
         max_depth=max(32, lowered_ops + 8),
+    )
+    if validation.errors:
+        result["failure_mode"] = "validate"
+        result["error"] = "; ".join(validation.errors[:3])
+        return result
+    result["validate_passed"] = True
+    return _finalize_compile_review_and_smoke(
+        graph,
+        result,
+        _compile_layer_module,
+        candidate_id=_component_id(chain, 0),
+        candidate_name=_candidate_name(chain),
+        target=_sweep_target_for_chain(chain),
+        model_dim=model_dim,
         run_smoke=run_smoke,
     )
 
@@ -726,8 +772,17 @@ def _validate_lowered_dynamic_candidate(
         return result
     result["validate_passed"] = True
 
-    return _finalize_compile_and_smoke(
-        graph, result, _compile_layer_module, model_dim=model_dim, run_smoke=run_smoke
+    return _finalize_compile_review_and_smoke(
+        graph,
+        result,
+        _compile_layer_module,
+        candidate_id=str(candidate.get("component_id") or _component_id(chain, 0)),
+        candidate_name=str(
+            candidate.get("proposed_template_name") or _candidate_name(chain)
+        ),
+        target=_sweep_target_for_chain(chain),
+        model_dim=model_dim,
+        run_smoke=run_smoke,
     )
 
 
@@ -770,9 +825,186 @@ def _is_ready(validation: Mapping[str, Any]) -> bool:
     return bool(
         validation.get("validate_passed")
         and validation.get("compile_passed")
+        and validation.get("math_physics_review_passed")
+        and validation.get("math_sweep_passed")
         and validation.get("forward_passed")
         and validation.get("backward_passed")
     )
+
+
+def _finalize_compile_review_and_smoke(
+    graph: ComputationGraph,
+    result: dict[str, Any],
+    compile_fn,
+    *,
+    candidate_id: str,
+    candidate_name: str,
+    target: str,
+    model_dim: int,
+    run_smoke: bool,
+) -> dict[str, Any]:
+    """Compile, run CPU math/physics review, then optionally smoke-test."""
+    try:
+        compiled = compile_fn(graph)
+    except Exception as exc:
+        result["failure_mode"] = "compile"
+        result["error"] = f"{type(exc).__name__}: {exc}"
+        return result
+    result["compile_passed"] = True
+
+    review = _math_physics_review(
+        graph,
+        compiled,
+        candidate_id=candidate_id,
+        candidate_name=candidate_name,
+        target=target,
+        model_dim=model_dim,
+    )
+    result.update(review)
+    if not review["math_physics_review_passed"]:
+        result["failure_mode"] = "math_physics_review"
+        result["error"] = review["math_physics_review_reason"]
+        return result
+
+    if not run_smoke:
+        return result
+    smoke = _run_smoke_test(compiled, model_dim=model_dim)
+    result.update(smoke)
+    if not smoke["backward_passed"] and result["failure_mode"] is None:
+        result["failure_mode"] = "smoke"
+        result["error"] = smoke.get("smoke_error")
+    return result
+
+
+def _math_physics_review(
+    graph: ComputationGraph,
+    compiled_layer: Any,
+    *,
+    candidate_id: str,
+    candidate_name: str,
+    target: str,
+    model_dim: int,
+) -> dict[str, Any]:
+    """CPU-only static + dynamic math sweep review before smoke/training work."""
+    graph_nodes = graph.to_dict()["nodes"]
+    static_has_mixer, n_mixers = mixer_reach(graph_nodes)
+    route_count = sum(
+        1 for node in graph.nodes.values() if get_role(node.op_name) is OpRole.ROUTE
+    )
+    review: dict[str, Any] = {
+        "math_physics_review_version": "dynamic_component_math_physics_v1",
+        "math_physics_review_passed": False,
+        "math_physics_review_reason": "",
+        "math_physics_review_requires_gpu": False,
+        "math_sweep_version": DYNAMIC_MATH_SWEEP_SCHEMA_VERSION,
+        "math_sweep_passed": False,
+        "math_sweep_required_for_ready": True,
+        "static_has_mixer_path": bool(static_has_mixer),
+        "static_mixer_count_on_path": int(n_mixers),
+        "static_mixer_chain_depth": int(mixer_chain_depth(graph_nodes)),
+        "static_route_count": int(route_count),
+    }
+    has_sequence_route = bool(static_has_mixer or route_count > 0)
+    if not has_sequence_route:
+        review["math_physics_review_reason"] = "no_sequence_mixer_or_router_on_path"
+        return review
+
+    try:
+        compiled_layer = compiled_layer.to("cpu").eval()
+        sweep_records = run_dynamic_math_sweep(
+            compiled_layer,
+            candidate_id=candidate_id,
+            candidate_name=candidate_name,
+            dim=int(model_dim),
+            run_id=f"{candidate_id}:dynamic_math_sweep",
+            target=target,
+            measure_fn=lambda _variant, operator: measure_operator_descriptors(
+                operator,
+                dim=int(model_dim),
+                physics_batch=1,
+                physics_seq_len=8,
+                physics_n_seeds=1,
+                measured_batch=2,
+                measured_gap=3,
+                measured_n_seeds=1,
+            ),
+        )
+    except Exception as exc:
+        review["math_physics_review_reason"] = (
+            f"dynamic_math_sweep_error:{type(exc).__name__}: {exc}"
+        )
+        return review
+
+    parent_record = sweep_records[0]
+    parent_descriptors = parent_record.combined_descriptors()
+    review["physics_descriptors"] = dict(parent_record.physics_descriptors)
+    review["measured_descriptors"] = dict(parent_record.measured_descriptors)
+    review["math_sweep_records"] = [record.to_json() for record in sweep_records]
+    review.update(_summary_for_builder(selected_summary(sweep_records), sweep_records))
+
+    finite = all(math.isfinite(float(value)) for value in parent_descriptors.values())
+    if parent_record.failure_reason is not None:
+        review["math_physics_review_reason"] = parent_record.failure_reason
+        return review
+    if not finite:
+        review["math_physics_review_reason"] = "nonfinite_descriptor"
+        return review
+
+    spectral_radius = float(parent_record.physics_descriptors.get("spectral_radius", 0.0))
+    if spectral_radius < 0.9:
+        stability_band = "contractive"
+    elif spectral_radius <= 1.1:
+        stability_band = "marginal"
+    else:
+        stability_band = "expansive"
+    review["physics_stability_band"] = stability_band
+    review["math_sweep_passed"] = True
+    review["math_physics_review_passed"] = True
+    review["math_physics_review_reason"] = (
+        "selected_variant"
+        if review.get("math_variant_selected")
+        else "parent_retained_after_sweep"
+    )
+    return review
+
+
+def _summary_for_builder(
+    summary: Mapping[str, Any], sweep_records: Sequence[Any]
+) -> dict[str, Any]:
+    selected = next(
+        (record for record in sweep_records if record.decision == "selected"),
+        sweep_records[0],
+    )
+    return {
+        **dict(summary),
+        "math_sweep_run_id": (
+            sweep_records[0].run_id if sweep_records else "dynamic_math_sweep"
+        ),
+        "math_sweep_selected_variant_id": selected.variant_id,
+        "math_sweep_selected_family": selected.variant.family,
+        "math_sweep_selected_transform": selected.variant.transform,
+        "math_sweep_selected_axes": dict(selected.variant.axes),
+        "math_sweep_score": round(float(selected.math_variant_score), 6),
+        "math_sweep_selection_reason": (
+            "selected_variant"
+            if selected.decision == "selected"
+            else "parent_retained_after_sweep"
+        ),
+        "math_sweep_parent_descriptors": sweep_records[0].combined_descriptors(),
+        "math_sweep_selected_descriptors": selected.combined_descriptors(),
+        "math_sweep_descriptor_delta": dict(selected.descriptor_delta_vs_parent),
+    }
+
+
+def _sweep_target_for_chain(chain: Sequence[str]) -> str:
+    ops = {str(op) for op in chain}
+    if any("compress" in op or "bottleneck" in op for op in ops):
+        return "compression"
+    if any(_is_recursion_op(op) or op in {"selective_scan", "conv1d_seq"} for op in ops):
+        return "long_memory"
+    if any(get_role(op) is OpRole.ROUTE for op in ops):
+        return "binding"
+    return "binding"
 
 
 def _is_recursion_op(op_name: str) -> bool:
