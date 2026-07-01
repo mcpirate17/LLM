@@ -23,6 +23,11 @@ zstd = "0.13"
 default = []
 python = ["pyo3", "numpy"]
 
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+
 [package.metadata.maturin]
 bindings = "pyo3"
 features = ["python"]

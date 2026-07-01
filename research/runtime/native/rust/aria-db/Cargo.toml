@@ -19,3 +19,8 @@ fs2 = "0.4"
 
 [package.metadata.maturin]
 bindings = "pyo3"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
