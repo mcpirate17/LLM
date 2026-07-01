@@ -33,7 +33,7 @@ import torch.nn.functional as F
 from torch import nn
 
 ADDRESS_FAMILIES = ("dot", "reciprocal", "cosine")
-SCORE_NORM_FAMILIES = ("softmax", "sharpen", "tsallis_q", "renyi")
+SCORE_NORM_FAMILIES = ("softmax", "sharpen", "tsallis_q", "renyi", "entmax_alpha")
 AGGREGATE_FAMILIES = ("mean", "semiring")
 
 _NEG = -1e9
@@ -43,6 +43,17 @@ _NEG = -1e9
 # the sparse hard-cutoff regime and q>1 is the heavy-tailed / flatter regime
 # (this is the Tsallis-q map, NOT the entmax-α map, whose sparsity sign flips).
 _Q_SPAN = 0.8
+# entmax-α order range: α = 1 + _ENTMAX_ALPHA_SPAN*tanh(knob) ∈ (1-span, 1+span).
+# α=1 is softmax, α=2 is sparsemax. Span 1.0 lets the knob reach the sparsemax
+# endpoint. Distinct from tsallis_q: entmax is the convex projection, so α>1
+# produces *exact* zero weights (hard sparsity) the q-exponential normalizer
+# never achieves.
+_ENTMAX_ALPHA_SPAN = 1.0
+# α-window over which the identity-blend gate ramps from pure softmax (α=1) to
+# pure entmax. Saturates at α = 1 + width so the deep-sparse regime is PURE
+# entmax (exact zeros), not a blend — a softmax blend would leak strictly-positive
+# weight onto every position and erase the exact-sparsity property.
+_ENTMAX_BLEND_WIDTH = 0.5
 
 
 @dataclass(frozen=True)
@@ -113,6 +124,9 @@ class ParametricMix(nn.Module):
         )  # tanh(0)=0 -> q=1 (softmax)
         self.renyi_q_delta = nn.Parameter(torch.zeros(1))  # tanh(0)=0 -> q=1 (softmax)
         self.renyi_log_beta = nn.Parameter(torch.zeros(1))  # exp(0)=1 -> softmax
+        self.entmax_alpha_delta = nn.Parameter(
+            torch.zeros(1)
+        )  # tanh(0)=0 -> α=1 (softmax)
 
     # ── stages ──────────────────────────────────────────────────────
     def _address(self, q: torch.Tensor, k: torch.Tensor) -> torch.Tensor:
@@ -164,6 +178,35 @@ class ParametricMix(nn.Module):
         expq = self._q_exp(z, q).masked_fill(masked, 0.0)
         return expq / expq.sum(dim=-1, keepdim=True).clamp(min=1e-20)
 
+    def _entmax_alpha(self, scores: torch.Tensor, alpha: torch.Tensor) -> torch.Tensor:
+        """α-entmax via convex-projection bisection; softmax at α=1, sparsemax at α=2.
+
+        Tensor-α bisection (differentiable through α), distinct from the float-α
+        ``compiler_ops_attention._entmax_bisect`` which serves fixed-config op
+        dispatch and clamps α≥1.01 (so it can never equal softmax). Masked score
+        positions (``<= _NEG/2``) collapse to exactly zero weight — the hard
+        sparsity that makes entmax a different family from tsallis_q. ``alpha`` is
+        expected pre-clamped to ``[1+ε, 2]`` by the caller; the α=1 softmax point
+        is reached by the blend gate in ``_score_norm``, not by this method.
+        """
+        masked = scores <= (_NEG / 2.0)
+        z = (
+            scores - scores.masked_fill(masked, _NEG).amax(dim=-1, keepdim=True)
+        ).clamp(min=-20.0)
+        scaled = z * (alpha - 1.0)
+        power = 1.0 / (alpha - 1.0)
+        tau_lo = scaled.amin(dim=-1, keepdim=True) - 1.0
+        tau_hi = scaled.amax(dim=-1, keepdim=True)
+        for _ in range(20):
+            tau = 0.5 * (tau_lo + tau_hi)
+            probs = torch.clamp(scaled - tau, min=0.0).pow(power)
+            too_large = probs.sum(dim=-1, keepdim=True) > 1.0
+            tau_lo = torch.where(too_large, tau, tau_lo)
+            tau_hi = torch.where(too_large, tau_hi, tau)
+        probs = torch.clamp(scaled - tau_hi, min=0.0).pow(power)
+        probs = probs / probs.sum(dim=-1, keepdim=True).clamp(min=1e-8)
+        return probs.masked_fill(masked, 0.0)
+
     def _score_norm(self, scores: torch.Tensor) -> torch.Tensor:
         """scores -> weights (B,S,S) over keys. Default: softmax.
 
@@ -182,6 +225,17 @@ class ParametricMix(nn.Module):
         if self.spec.score_norm == "tsallis_q":
             q = 1.0 + torch.tanh(self.tsallis_q_delta) * _Q_SPAN
             return self._q_softmax(scores, q)
+        if self.spec.score_norm == "entmax_alpha":
+            alpha = 1.0 + _ENTMAX_ALPHA_SPAN * torch.tanh(self.entmax_alpha_delta)
+            alpha_safe = torch.clamp(alpha, min=1.0 + 1e-2, max=2.0)
+            # Blend gate is 0 at α=1 (init) so the output is *exactly* softmax
+            # there, and saturates at 1 by α = 1 + _ENTMAX_BLEND_WIDTH so the
+            # deep-sparse regime is pure entmax (exact zeros). The near-softmax
+            # band blends; past it the projection's hard sparsity is unblended.
+            gate = torch.clamp((alpha - 1.0) / _ENTMAX_BLEND_WIDTH, min=0.0, max=1.0)
+            return (1.0 - gate) * torch.softmax(
+                scores, dim=-1
+            ) + gate * self._entmax_alpha(scores, alpha_safe)
         q = 1.0 + torch.tanh(self.renyi_q_delta) * _Q_SPAN  # renyi
         return self._q_softmax(scores, q, beta=torch.exp(self.renyi_log_beta))
 

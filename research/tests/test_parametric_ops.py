@@ -80,6 +80,7 @@ def test_forward_backward_finite_and_knob_grads() -> None:
         "semiring": "semiring_beta",
         "tsallis_q": "tsallis_q_delta",
         "renyi": "renyi_q_delta",
+        "entmax_alpha": "entmax_alpha_delta",
     }
     for spec in all_stage_specs():
         mix = ParametricMix(_DIM, spec)
@@ -159,6 +160,56 @@ def test_tsallis_weights_are_valid_causal_distributions() -> None:
     assert bool((w >= 0.0).all())
     assert torch.allclose(w.sum(dim=-1), torch.ones(_B, _S), atol=1e-5)
     # strictly causal: query t must place zero weight on keys > t
+    upper = torch.triu(torch.ones(_S, _S, dtype=torch.bool), diagonal=1)
+    assert float(w.masked_select(upper).abs().max()) == 0.0
+
+
+def test_entmax_equals_softmax_at_init_and_moves_off_it() -> None:
+    """entmax_alpha is softmax at init (α=1) but a real knob: raising α changes it."""
+    torch.manual_seed(5)
+    ref = ParametricMix(_DIM, StageSpec())  # softmax
+    mix = ParametricMix(_DIM, StageSpec(score_norm="entmax_alpha"))
+    _share_projections(ref, mix)
+    x = _x(10)
+    assert torch.allclose(mix(x), ref(x), atol=1e-5)  # α=1 -> softmax
+    with torch.no_grad():
+        mix.entmax_alpha_delta.fill_(5.0)  # α -> ~2 (sparsemax), off softmax
+    assert not torch.allclose(mix(x), ref(x), atol=1e-4)
+
+
+def test_entmax_produces_exact_sparsity() -> None:
+    """α>1 entmax is the convex projection -> hard zero weights.
+
+    This is the feature that separates it from tsallis_q: the q-exponential
+    normalizer is always dense, while entmax places *exact* zeros. Measured on
+    the last query row (every key causally valid) so zeros come from sparsity,
+    not masking.
+    """
+    torch.manual_seed(3)
+    mix = ParametricMix(_DIM, StageSpec(score_norm="entmax_alpha"))
+    x = _x(8)
+
+    def n_zeros(delta: float) -> int:
+        with torch.no_grad():
+            mix.entmax_alpha_delta.fill_(delta)
+            w = mix._score_norm(mix._address(mix.q(x), mix.k(x)))
+            return int((w[:, -1] == 0.0).sum().item())
+
+    assert n_zeros(0.0) == 0  # softmax: no exact zeros
+    assert n_zeros(6.0) > 0  # α≈2 (sparsemax): exact zeros present
+
+
+def test_entmax_weights_are_valid_causal_distributions() -> None:
+    """Rows sum to 1, are non-negative, and stay strictly causal off init."""
+    torch.manual_seed(4)
+    mix = ParametricMix(_DIM, StageSpec(score_norm="entmax_alpha"))
+    x = _x(9)
+    with torch.no_grad():
+        mix.entmax_alpha_delta.fill_(4.0)  # α -> ~2, sparse regime
+        w = mix._score_norm(mix._address(mix.q(x), mix.k(x)))
+    assert torch.isfinite(w).all()
+    assert bool((w >= 0.0).all())
+    assert torch.allclose(w.sum(dim=-1), torch.ones(_B, _S), atol=1e-5)
     upper = torch.triu(torch.ones(_S, _S, dtype=torch.bool), diagonal=1)
     assert float(w.masked_select(upper).abs().max()) == 0.0
 
