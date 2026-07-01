@@ -123,34 +123,46 @@ def make_gmqar_batch(
     target_ids = torch.full((B, seq_len), -100, dtype=torch.long, device=device)
     answer_mask = torch.zeros((B, seq_len), dtype=torch.bool, device=device)
 
-    for b in range(B):
-        keys = _sample_unique(key_lo, key_hi, P, g, device)
-        values = torch.randint(val_lo, val_hi, (P,), generator=g, device=device)
-
-        pos = 0
-        for i in range(P):
-            input_ids[b, pos] = keys[i]
-            input_ids[b, pos + 1] = values[i]
-            pos += 2
-        input_ids[b, pos] = SEP_ID
-        pos += 1
+    # Sampling stays per-row and in this exact call order: the draw sequence must
+    # stay bit-identical to the original per-row loop (gMQAR is the AR metric of
+    # record; changing generator call shapes/order would shift every score).
+    keys_rows, values_rows, distract_rows, qidx_rows = [], [], [], []
+    for _ in range(B):
+        keys_rows.append(_sample_unique(key_lo, key_hi, P, g, device))
+        values_rows.append(
+            torch.randint(val_lo, val_hi, (P,), generator=g, device=device)
+        )
         if cfg.distractor_tokens:
-            distract = torch.randint(
-                key_lo, val_hi, (cfg.distractor_tokens,), generator=g, device=device
+            distract_rows.append(
+                torch.randint(
+                    key_lo, val_hi, (cfg.distractor_tokens,), generator=g, device=device
+                )
             )
-            input_ids[b, pos : pos + cfg.distractor_tokens] = distract
-            pos += cfg.distractor_tokens
+        qidx_rows.append(_sample_unique(0, P, Q, g, device))
+    keys = torch.stack(keys_rows)  # (B, P)
+    values = torch.stack(values_rows)  # (B, P)
+    qidx = torch.stack(qidx_rows)  # (B, Q)
 
-        qidx = _sample_unique(0, P, Q, g, device)
-        for j in range(Q):
-            ki = int(qidx[j].item())
-            input_ids[b, pos] = QRY_ID
-            input_ids[b, pos + 1] = keys[ki]
-            ans_pos = pos + 1  # logits at this position predict the NEXT token
-            answer_mask[b, ans_pos] = True
-            target_ids[b, ans_pos] = values[ki]
-            input_ids[b, pos + 2] = values[ki]  # teacher-force answer into context
-            pos += 3
+    # Assembly is fully vectorized: strided slice writes, no scalar kernel
+    # launches, no .item() host syncs.
+    kv_end = 2 * P
+    input_ids[:, 0:kv_end:2] = keys
+    input_ids[:, 1:kv_end:2] = values
+    input_ids[:, kv_end] = SEP_ID
+    if cfg.distractor_tokens:
+        input_ids[:, kv_end + 1 : kv_end + 1 + cfg.distractor_tokens] = torch.stack(
+            distract_rows
+        )
+
+    q0 = kv_end + 1 + cfg.distractor_tokens
+    qkeys = keys.gather(1, qidx)
+    qvals = values.gather(1, qidx)
+    input_ids[:, q0::3] = QRY_ID
+    input_ids[:, q0 + 1 :: 3] = qkeys
+    # logits at the key position predict the NEXT token; teacher-force the answer.
+    input_ids[:, q0 + 2 :: 3] = qvals
+    answer_mask[:, q0 + 1 :: 3] = True
+    target_ids[:, q0 + 1 :: 3] = qvals
 
     return input_ids, target_ids, answer_mask
 
