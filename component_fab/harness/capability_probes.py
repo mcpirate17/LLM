@@ -124,6 +124,12 @@ class CapabilityResult:
     relative_recall: float
     passes: bool
     trained_successfully: bool
+    # Learning dynamics (the trajectory ``train_lane_head`` already computes but
+    # used to discard). ``learning_curve`` is masked-MSE per checkpoint with the
+    # initial (0-update) value prepended; ``steps_to_threshold`` is the first
+    # checkpoint step reaching the probe's recall pass-bar, or ``None`` if never.
+    learning_curve: tuple[float, ...] = ()
+    steps_to_threshold: int | None = None
     notes: tuple[str, ...] = field(default_factory=tuple)
 
 
@@ -210,6 +216,51 @@ def _baseline_mse(
     return _eval_loss(lane_block, x, target, mask)
 
 
+def _masked_mse_tensor(
+    predictions: torch.Tensor, target_mask: tuple[torch.Tensor, torch.Tensor]
+) -> torch.Tensor:
+    """Masked MSE over query positions — tensor form for autograd (the loss)."""
+    target, mask = target_mask
+    diff = (predictions - target).pow(2).sum(dim=-1)
+    return (diff * mask).sum() / mask.sum().clamp_min(1.0)
+
+
+def _masked_mse_metric(
+    predictions: torch.Tensor, target_mask: tuple[torch.Tensor, torch.Tensor]
+) -> float:
+    """Same quantity as ``_masked_mse_tensor`` but a float, for checkpoint logging."""
+    return float(_masked_mse_tensor(predictions, target_mask).item())
+
+
+def _checkpoint_schedule(n_train_steps: int, n_points: int = 10) -> tuple[int, ...]:
+    """Roughly ``n_points`` evenly-spaced checkpoint steps, always incl. the last.
+
+    The metric runs on predictions the training loop already computes, so
+    checkpoints are nearly free; bounded to ~10 points to keep ledger rows compact.
+    """
+    if n_train_steps <= n_points:
+        return tuple(range(1, n_train_steps + 1))
+    stride = max(1, n_train_steps // n_points)
+    steps = list(range(1, n_train_steps + 1, stride))
+    if steps[-1] != n_train_steps:
+        steps.append(n_train_steps)
+    return tuple(dict.fromkeys(steps))
+
+
+def _first_step_above(
+    steps: tuple[int, ...],
+    mses: tuple[float, ...],
+    initial: float,
+    threshold: float,
+) -> int | None:
+    """First checkpoint step whose relative recall (``1 - mse/initial``) >= threshold."""
+    denom = max(initial, 1e-12)
+    for step, mse in zip(steps, mses):
+        if 1.0 - (mse / denom) >= threshold:
+            return int(step)
+    return None
+
+
 def train_and_score(
     lane_block: nn.Module,
     probe: CapabilityProbe,
@@ -218,7 +269,13 @@ def train_and_score(
     dim: int,
     seed: int = 0,
 ) -> CapabilityResult:
-    """Train ``lane_block`` briefly on ``probe`` and report retrieval quality."""
+    """Train ``lane_block`` briefly on ``probe`` and report retrieval quality.
+
+    Captures the learning trajectory (masked-MSE per checkpoint + first step to
+    reach the probe's recall pass-bar) so downstream ranking can score *rapidity*
+    and *minimum steps* — the dynamics ``train_lane_head`` already computes but
+    previously discarded after reading only ``final_loss``.
+    """
     initial = _baseline_mse(
         lane_block, probe, seq_len=seq_len, dim=dim, seed=seed + 999
     )
@@ -228,26 +285,28 @@ def train_and_score(
         x, target, mask = probe.sample_fn(probe.batch_size, seq_len, dim, gen)
         return x, (target, mask)
 
-    def masked_mse(
-        y: torch.Tensor, target_mask: tuple[torch.Tensor, torch.Tensor]
-    ) -> torch.Tensor:
-        target, mask = target_mask
-        diff = (y - target).pow(2).sum(dim=-1)
-        return (diff * mask).sum() / mask.sum().clamp_min(1.0)
-
     final = initial
     trained = True
+    curve: tuple[float, ...] = ()
+    steps_to_threshold: int | None = None
+    checkpoint_steps = _checkpoint_schedule(probe.n_train_steps)
     try:
         lane_block.train()
         trace = train_lane_head(
             lane_block,
             lane_block.parameters(),
             sample,
-            masked_mse,
+            _masked_mse_tensor,
             n_train_steps=probe.n_train_steps,
             learning_rate=probe.learning_rate,
+            checkpoint_at_steps=checkpoint_steps,
+            checkpoint_metric=_masked_mse_metric,
         )
         final = trace.final_loss
+        curve = (initial,) + trace.checkpoint_values
+        steps_to_threshold = _first_step_above(
+            checkpoint_steps, trace.checkpoint_values, initial, probe.pass_threshold
+        )
     except Exception:  # noqa: BLE001 - one bad lane must not abort the cohort
         logger.warning(
             "capability probe %r failed; scoring 0.0", probe.name, exc_info=True
@@ -265,4 +324,6 @@ def train_and_score(
         relative_recall=relative,
         passes=passes,
         trained_successfully=trained,
+        learning_curve=curve,
+        steps_to_threshold=steps_to_threshold,
     )

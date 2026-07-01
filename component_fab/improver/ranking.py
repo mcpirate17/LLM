@@ -17,6 +17,14 @@ The binding subscore replaces the ad-hoc ``+0.2 if can_bind`` bonus that
 ``_grade_active_specs`` applied on top of the old 3-component composite.
 Passing ``capability_scorecard=None`` reproduces the legacy 0/0.3/0.3/0.4
 weighting so older callers still work.
+
+Two additional stability-gated bonuses reward the user's "maximum mixing" and
+"minimum steps" objectives: ``_MIXING_BONUS`` (intrinsic reach+breadth) and
+``_LEARN_SPEED_BONUS`` (fewer steps to cross the AR recall bar). Both are zero
+unless the candidate clears ``STABILITY_FLOOR`` on some capability axis, so a
+broad mixer that cannot bind/induce never wins on mixing alone. They are also
+first-class Pareto objectives (``mixing``, ``learning_speed`` in
+``OBJECTIVE_KEYS``).
 """
 
 from __future__ import annotations
@@ -45,6 +53,13 @@ _SSM_FAVOURED_TASKS: tuple[str, ...] = (
 # Additive composite bonus for SSM-favoured state-tracking (modest: the cohort
 # separation is real but ~9% at the axis top — nudge promotion, don't dominate).
 _STATE_TRACK_BONUS = 0.15
+# "Maximum mixing" + "minimum steps" bonuses (2026-07-01). Stability-gated like
+# the orthogonality lift: a broad/fast lane that binds nothing earns no credit.
+_MIXING_BONUS = 0.12
+_LEARN_SPEED_BONUS = 0.10
+# Reference budget for the speed map: the largest DEFAULT AR probe trains for 60
+# steps, so reaching the recall bar at step s scores 1 - s/60.
+_LEARN_SPEED_REF_STEPS = 60.0
 
 _SMOKE_KEYS_REQUIRED = (
     "forward_passed",
@@ -135,6 +150,36 @@ def binding_subscore(capability_scorecard: dict[str, Any] | None) -> float:
     return 0.5 * bind_mean + 0.5 * recall_mean
 
 
+def mixing_subscore(capability_scorecard: dict[str, Any] | None) -> float:
+    """Intrinsic reach+breadth mixing signal off the capability scorecard.
+
+    Already measured at init-time (no training) by ``validate_capabilities``
+    via :func:`measure_mixing_quality`. Returns 0.0 for eliminated/missing
+    cards. A pure-mixer earns this only behind ``STABILITY_FLOOR`` (composite)
+    or the stability gate (objective vector).
+    """
+    if not capability_scorecard:
+        return 0.0
+    return max(0.0, min(1.0, float(capability_scorecard.get("mixing_subscore") or 0.0)))
+
+
+def learning_speed_subscore(capability_scorecard: dict[str, Any] | None) -> float:
+    """How few steps a lane needs to cross the AR recall bar (higher = faster).
+
+    Reads ``mean_steps_to_threshold`` (mean first-to-threshold checkpoint step
+    across AR probes; ``None`` when no probe reaches the bar) and maps it through
+    ``1 - mean/REF`` so a lane that binds in a handful of steps scores near 1 and
+    one that needs the full budget scores near 0. Scores the user's "minimum
+    steps" objective directly. 0.0 for eliminated/missing cards or non-learners.
+    """
+    if not capability_scorecard:
+        return 0.0
+    mean_steps = capability_scorecard.get("mean_steps_to_threshold")
+    if mean_steps is None:
+        return 0.0
+    return max(0.0, 1.0 - float(mean_steps) / _LEARN_SPEED_REF_STEPS)
+
+
 def orthogonality_subscore(solo_scorecard: dict[str, Any]) -> float:
     """Orthogonality signal (distance from state degeneracy with clones + baselines).
 
@@ -191,6 +236,8 @@ def composite_score(
     bind = binding_subscore(capability_scorecard)
     state_track = state_tracking_subscore(probe_scorecard)
     orthogonality = orthogonality_subscore(solo_scorecard)
+    mixing = mixing_subscore(capability_scorecard)
+    learn_speed = learning_speed_subscore(capability_scorecard)
 
     components = {
         "smoke": smoke,
@@ -199,19 +246,24 @@ def composite_score(
         "binding": bind,
         "state_tracking": state_track,
         "orthogonality": orthogonality,
+        "mixing": mixing,
+        "learning_speed": learn_speed,
     }
     score = smoke_w * smoke + cross_w * cross + learn_w * learn + bind_w * bind
 
     # Additive bonuses
     score += _STATE_TRACK_BONUS * state_track
 
-    # Degeneracy penalty: reward mechanistic distinctness (orthogonality), but
-    # only for a candidate that clears the stability floor on some axis.
+    # Degeneracy penalty: reward mechanistic distinctness (orthogonality), plus
+    # the mixing/learning-speed bonuses — all gated by the stability floor so a
+    # broad or fast lane that binds/induces nothing earns no credit.
     induction = float((capability_scorecard or {}).get("ind_max_accuracy") or 0.0)
     if meets_stability_floor(
         binding=bind, induction=induction, learning=learn, state_tracking=state_track
     ):
         score += _ORTHOGONALITY_LIFT * orthogonality
+        score += _MIXING_BONUS * mixing
+        score += _LEARN_SPEED_BONUS * learn_speed
 
     return score, components
 
@@ -270,6 +322,8 @@ OBJECTIVE_KEYS: tuple[str, ...] = (
     "learning",
     "state_tracking",
     "orthogonality",
+    "mixing",
+    "learning_speed",
     "efficiency",
 )
 
@@ -295,6 +349,8 @@ def objective_vector(
     induction = float(cap.get("ind_max_accuracy") or 0.0)
     learning = learning_subscore(probe_scorecard)
     state_tracking = state_tracking_subscore(probe_scorecard)
+    mixing = mixing_subscore(capability_scorecard)
+    learn_speed = learning_speed_subscore(capability_scorecard)
     stable = meets_stability_floor(
         binding=binding,
         induction=induction,
@@ -307,6 +363,8 @@ def objective_vector(
         "learning": learning,
         "state_tracking": state_tracking,
         "orthogonality": float(orthogonality) if stable else 0.0,
+        "mixing": mixing if stable else 0.0,
+        "learning_speed": learn_speed if stable else 0.0,
         "efficiency": -float(param_count),
     }
 

@@ -178,3 +178,63 @@ def measure_mix_speed(
         is_pure_local=is_pure_local,
         n_trials=n_trials,
     )
+
+
+def influence_matrix(
+    forward_fn: Callable[[torch.Tensor], torch.Tensor],
+    *,
+    seq_len: int = 24,
+    feature_dim: int = 32,
+    batch_size: int = 1,
+    delta_scale: float = 1e-2,
+    n_trials: int = 4,
+    device: str | torch.device = "cpu",
+    dtype: torch.dtype = torch.float32,
+    seed: int = 0,
+) -> torch.Tensor:
+    """L×L cross-position influence map via finite differences.
+
+    Perturb input position ``i`` by a small delta, measure the response at every
+    output position ``j``, average over ``n_trials`` random inputs/deltas. Row i =
+    injection position, col j = response position. For a causal lane the matrix
+    is lower-triangular (injecting at ``i`` can only move outputs at ``j >= i``):
+    the main diagonal is self-response, the strictly-below-diagonal entries
+    (``j > i``) are genuine cross-token mixing, and the above-diagonal entries
+    should be ~0 (an acausal leak — caught separately by the S0.5 causality gate).
+
+    Intrinsic op metric — random inputs, no training, no DB, no registry coupling.
+    Shared by ``viz/introspect.py`` (the UI plot) and ``metrics/mixing_quality.py``
+    (the breadth score) so both come from ONE measurement instead of two copies
+    of the same finite-diff loop.
+    """
+    generator = torch.Generator(device=device).manual_seed(seed)
+    accum = torch.zeros(seq_len, seq_len, dtype=dtype, device=device)
+    with torch.no_grad():
+        for _ in range(n_trials):
+            x = torch.randn(
+                batch_size,
+                seq_len,
+                feature_dim,
+                generator=generator,
+                dtype=dtype,
+                device=device,
+            )
+            delta = (
+                torch.randn(
+                    batch_size,
+                    feature_dim,
+                    generator=generator,
+                    dtype=dtype,
+                    device=device,
+                )
+                * delta_scale
+            )
+            y = forward_fn(x)
+            for i in range(seq_len):
+                xp = x.clone()
+                xp[:, i, :] = xp[:, i, :] + delta
+                yp = forward_fn(xp)
+                # mean L2 response over batch at each output position -> [L]
+                resp = (yp - y).pow(2).sum(dim=-1).sqrt().mean(dim=0)
+                accum[i] += resp
+    return accum / n_trials

@@ -38,6 +38,7 @@ from ..harness.nano_bind_probe import nano_bind_gate
 from ..harness.nano_induction_probe import nano_induction_gate
 from ..harness.range_binding_probe import DEFAULT_DISTANCES, range_binding_gate
 from ..harness.standard_block import LaneTestBlock
+from ..metrics.mixing_quality import MixingQualityScorecard, measure_mixing_quality
 from ..proposer.spec_generator import ProposalSpec
 from ..state.gates import (
     GATE_ERF_DENSITY,
@@ -69,6 +70,16 @@ class CapabilityScorecard:
     binds_per_probe: dict[str, bool]
     relative_recall_per_probe: dict[str, float]
     eliminated_by: str | None
+    learning_curves_per_probe: dict[str, tuple[float, ...]] = field(
+        default_factory=dict
+    )
+    steps_to_threshold_per_probe: dict[str, int | None] = field(default_factory=dict)
+    mean_steps_to_threshold: float | None = None
+    mixing_subscore: float = 0.0
+    mixing_reach_subscore: float = 0.0
+    mixing_breadth_subscore: float = 0.0
+    mixing_offdiag_mass_fraction: float = 0.0
+    mixing_effective_rank: float = 0.0
     range_ran: bool = False
     range_aggregate_acc: float = 0.0
     range_effective_distance: int = 0
@@ -93,6 +104,11 @@ _DEFAULT_SIGNALS: dict[str, Any] = {
     "ind_max_accuracy": 0.0,
     "ind_final_accuracy": 0.0,
     "ind_above_baseline": False,
+    "mixing_subscore": 0.0,
+    "mixing_reach_subscore": 0.0,
+    "mixing_breadth_subscore": 0.0,
+    "mixing_offdiag_mass_fraction": 0.0,
+    "mixing_effective_rank": 0.0,
 }
 
 
@@ -104,16 +120,25 @@ def _scorecard(
     notes: tuple[str, ...] = (),
     binds: dict[str, bool] | None = None,
     recall: dict[str, float] | None = None,
+    curves: dict[str, tuple[float, ...]] | None = None,
+    steps: dict[str, int | None] | None = None,
 ) -> CapabilityScorecard:
     """Materialize a scorecard from the running signals dict."""
     merged = {**_DEFAULT_SIGNALS, **signals}
     binds_map = binds or {}
+    curves_map = curves or {}
+    steps_map = steps or {}
+    finite_steps = [v for v in steps_map.values() if v is not None]
+    mean_steps = float(sum(finite_steps) / len(finite_steps)) if finite_steps else None
     return CapabilityScorecard(
         proposal_id=spec.proposal_id,
         name=spec.name,
         can_bind=any(binds_map.values()),
         binds_per_probe=binds_map,
         relative_recall_per_probe={k: round(v, 3) for k, v in (recall or {}).items()},
+        learning_curves_per_probe=curves_map,
+        steps_to_threshold_per_probe=steps_map,
+        mean_steps_to_threshold=mean_steps,
         eliminated_by=eliminated_by,
         notes=notes,
         **merged,
@@ -155,6 +180,16 @@ def _ind_signals(ind: Any) -> dict[str, Any]:
     }
 
 
+def _mixing_signals(card: MixingQualityScorecard) -> dict[str, Any]:
+    return {
+        "mixing_subscore": float(card.mixing_subscore),
+        "mixing_reach_subscore": float(card.reach_subscore),
+        "mixing_breadth_subscore": float(card.breadth_subscore),
+        "mixing_offdiag_mass_fraction": float(card.offdiag_mass_fraction),
+        "mixing_effective_rank": float(card.effective_rank),
+    }
+
+
 def _stacked_induction_block(lane: nn.Module, dim: int) -> nn.Module:
     """Two ``LaneTestBlock`` wrappers sharing ``lane`` params (RNN-style).
 
@@ -173,9 +208,16 @@ def _run_ar_probes(
     seq_len: int,
     probes: Sequence[CapabilityProbe],
     binding_threshold: float,
-) -> tuple[dict[str, bool], dict[str, float]]:
+) -> tuple[
+    dict[str, bool],
+    dict[str, float],
+    dict[str, tuple[float, ...]],
+    dict[str, int | None],
+]:
     binds: dict[str, bool] = {}
     recall: dict[str, float] = {}
+    curves: dict[str, tuple[float, ...]] = {}
+    steps: dict[str, int | None] = {}
     for index, probe in enumerate(probes):
         fresh_block = LaneTestBlock(lane, dim).train()
         result = train_and_score(
@@ -189,7 +231,9 @@ def _run_ar_probes(
             result.trained_successfully and result.relative_recall >= binding_threshold
         )
         recall[probe.name] = round(result.relative_recall, 3)
-    return binds, recall
+        curves[probe.name] = result.learning_curve
+        steps[probe.name] = result.steps_to_threshold
+    return binds, recall, curves, steps
 
 
 def _range_signals(
@@ -211,6 +255,70 @@ def _range_signals(
             str(k): round(float(v), 3) for k, v in rng.per_distance_accuracy.items()
         },
     }
+
+
+def _run_post_nb_signals(
+    lane: nn.Module,
+    *,
+    dim: int,
+    seq_len: int,
+    ind_n_classes: int,
+    probes: Sequence[CapabilityProbe],
+    binding_threshold: float,
+    run_range_probe: bool,
+    range_distances: tuple[int, ...],
+    range_train_steps: int,
+) -> tuple[
+    dict[str, Any],
+    dict[str, bool],
+    dict[str, float],
+    dict[str, tuple[float, ...]],
+    dict[str, int | None],
+    tuple[str, ...],
+]:
+    """Soft signals for lanes that cleared every hard gate.
+
+    Runs nano-induction (soft), the intrinsic mixing score, the AR retrieval
+    trajectories, and the opt-in distance-resolved range probe. Returns the
+    signals to merge plus the AR bind/recall/curve/step maps and the induction
+    notes for the scorecard. Kept separate so ``validate_capabilities`` stays a
+    linear read of the hard-gate stack.
+    """
+    extra: dict[str, Any] = {}
+    ind = nano_induction_gate(
+        _stacked_induction_block(lane, dim),
+        dim=dim,
+        seq_len=max(seq_len, 24),
+        n_classes=ind_n_classes,
+    )
+    extra.update(_ind_signals(ind))
+
+    # Intrinsic "maximum mixing" signal (reach + breadth). Computed only on
+    # lanes that passed every hard gate, so the finite-diff cost never lands on
+    # an already-eliminated primitive.
+    mixing = measure_mixing_quality(
+        LaneTestBlock(lane, dim).eval(),
+        feature_dim=dim,
+        seq_len=max(seq_len, 16),
+    )
+    extra.update(_mixing_signals(mixing))
+
+    binds, recall, curves, steps = _run_ar_probes(
+        lane,
+        dim=dim,
+        seq_len=seq_len,
+        probes=probes,
+        binding_threshold=binding_threshold,
+    )
+
+    # Soft signal: distance-resolved binding (sparse/long-range mixing). Opt-in
+    # because it trains one model per call (cheap for parallel lanes, slow for
+    # sequential-scan lanes). effective_distance is training-budget-limited —
+    # the full per-distance curve is the honest signal.
+    if run_range_probe:
+        extra.update(_range_signals(lane, dim, range_distances, range_train_steps))
+
+    return extra, binds, recall, curves, steps, ind.notes
 
 
 def validate_capabilities(
@@ -273,36 +381,28 @@ def validate_capabilities(
             )
         return _scorecard(spec, signals, eliminated_by=GATE_NANO_BIND, notes=nb.notes)
 
-    ind = nano_induction_gate(
-        _stacked_induction_block(lane, dim),
-        dim=dim,
-        seq_len=max(seq_len, 24),
-        n_classes=ind_n_classes,
-    )
-    signals.update(_ind_signals(ind))
-
-    binds, recall = _run_ar_probes(
+    extra, binds, recall, curves, steps, ind_notes = _run_post_nb_signals(
         lane,
         dim=dim,
         seq_len=seq_len,
+        ind_n_classes=ind_n_classes,
         probes=probes,
         binding_threshold=binding_threshold,
+        run_range_probe=run_range_probe,
+        range_distances=range_distances,
+        range_train_steps=range_train_steps,
     )
-
-    # Soft signal: distance-resolved binding (sparse/long-range mixing). Opt-in
-    # because it trains one model per call (cheap for parallel lanes, slow for
-    # sequential-scan lanes). effective_distance is training-budget-limited —
-    # the full per-distance curve is the honest signal.
-    if run_range_probe:
-        signals.update(_range_signals(lane, dim, range_distances, range_train_steps))
+    signals.update(extra)
 
     return _scorecard(
         spec,
         signals,
         eliminated_by=None,
-        notes=ind.notes,
+        notes=ind_notes,
         binds=binds,
         recall=recall,
+        curves=curves,
+        steps=steps,
     )
 
 
@@ -333,6 +433,16 @@ def capability_scorecard_to_dict(card: CapabilityScorecard) -> dict[str, Any]:
         "range_effective_distance": card.range_effective_distance,
         "range_max_accuracy": card.range_max_accuracy,
         "range_per_distance": dict(card.range_per_distance),
+        "learning_curves_per_probe": {
+            k: list(v) for k, v in card.learning_curves_per_probe.items()
+        },
+        "steps_to_threshold_per_probe": dict(card.steps_to_threshold_per_probe),
+        "mean_steps_to_threshold": card.mean_steps_to_threshold,
+        "mixing_subscore": card.mixing_subscore,
+        "mixing_reach_subscore": card.mixing_reach_subscore,
+        "mixing_breadth_subscore": card.mixing_breadth_subscore,
+        "mixing_offdiag_mass_fraction": card.mixing_offdiag_mass_fraction,
+        "mixing_effective_rank": card.mixing_effective_rank,
         "eliminated_by": card.eliminated_by,
         "notes": list(card.notes),
     }

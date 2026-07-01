@@ -17,6 +17,7 @@ from ..generator.memory_primitives import (
     SemiringSurpriseMemoryLane,
     _SurpriseMemoryBase,
 )
+from ..metrics.mix_speed import influence_matrix as _measure_influence_matrix
 from ..metrics.mix_speed import measure_mix_speed
 from ..validator.solo import smoke_test
 
@@ -63,23 +64,21 @@ def influence_matrix(
     position). For a causal lane the matrix is lower-triangular: a perturbation
     can only affect current/future outputs. The headline half-life / global-mix
     numbers come from the shared ``mix_speed`` metric so they match the grader.
+    The matrix itself is the shared ``influence_matrix`` metric so the UI plot
+    and the mixing breadth score come from one measurement.
     """
-    gen = torch.Generator().manual_seed(seed)
     L = seq_len
-    accum = torch.zeros(L, L)
     module.eval()
-    with torch.no_grad():
-        for _ in range(n_trials):
-            x = torch.randn(1, L, dim, generator=gen)
-            delta = torch.randn(1, dim, generator=gen) * delta_scale
-            y = module(x)
-            for i in range(L):
-                xp = x.clone()
-                xp[:, i, :] = xp[:, i, :] + delta
-                yp = module(xp)
-                resp = (yp - y).pow(2).sum(dim=-1).sqrt()[0]  # [L]
-                accum[i] += resp
-    matrix = (accum / n_trials).tolist()
+    accum = _measure_influence_matrix(
+        module,
+        seq_len=L,
+        feature_dim=dim,
+        batch_size=1,
+        delta_scale=delta_scale,
+        n_trials=n_trials,
+        seed=seed,
+    )
+    matrix = accum.tolist()
 
     card = measure_mix_speed(module, seq_len=64, feature_dim=dim, n_trials=6)
     return {
