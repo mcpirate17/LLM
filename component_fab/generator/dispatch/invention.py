@@ -20,6 +20,10 @@ from component_fab.generator.memory_primitives import (
     SemiringSurpriseMemoryLane,
     TropicalSurpriseMemoryLane,
 )
+from component_fab.generator.novel_math_primitives import (
+    FractionalIntegralMemoryLane,
+    SheafDiffusionMixerLane,
+)
 from component_fab.generator.native_surprise_memory import (
     NativeAdaptiveSemiringBiLaneSurpriseMemoryLane,
     NativeAdaptiveSemiringRopeTitansMACSurpriseMemoryLane,
@@ -80,6 +84,8 @@ _INVENTION_MECHANISMS: dict[str, LaneFactory] = {
     "semiring_surprise_memory": SemiringSurpriseMemoryLane,
     "semiring_surprise_memory_rope": partial(SemiringSurpriseMemoryLane, use_rope=True),
     "padic_surprise_memory": PadicSurpriseMemoryLane,
+    "fractional_integral_memory": FractionalIntegralMemoryLane,
+    "sheaf_consistent_slot_mixer": SheafDiffusionMixerLane,
     "native_read_before_write_surprise_memory": NativeReadBeforeWriteSurpriseMemoryLane,
     "native_context_gated_surprise_memory": NativeContextGatedSurpriseMemoryLane,
     "native_atlas_poly_surprise_memory": NativeAtlasPolySurpriseMemoryLane,
