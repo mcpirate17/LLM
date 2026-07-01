@@ -41,6 +41,46 @@ def _candidate(
     return out
 
 
+def _mark_math_sweep_validation(
+    validation: dict,
+    *,
+    passed: bool,
+    variant_selected: bool = False,
+) -> None:
+    validation.update(
+        {
+            "math_physics_review_passed": True,
+            "math_sweep_version": "dynamic_math_sweep_v1",
+            "math_sweep_required_for_ready": True,
+            "math_sweep_passed": passed,
+            "math_sweep_run_id": "unit:sweep",
+            "math_sweep_variant_count": 3,
+            "math_sweep_selected_variant_id": "unit:parent",
+            "math_sweep_selected_family": "parent",
+            "math_sweep_selected_transform": "identity",
+            "math_sweep_selected_axes": {"op_math_family": "parent"},
+            "math_sweep_score": 0.0,
+            "math_sweep_selection_reason": (
+                "selected_variant"
+                if variant_selected
+                else "parent_retained_after_sweep"
+            ),
+            "math_sweep_descriptor_delta": {
+                "long_range_reach": 0.0,
+                "content_dependence": 0.0,
+            },
+            "math_variant_selected": variant_selected,
+            "math_variant_family": "parent",
+            "math_variant_transform": "identity",
+            "math_variant_axes": {"op_math_family": "parent"},
+            "math_variant_score": 0.0,
+            "math_variant_failure_reason": None,
+            "math_variant_delta_long_range_reach": 0.0,
+            "math_variant_delta_content_dependence": 0.0,
+        }
+    )
+
+
 def _write_candidates(path: Path, candidates: list[dict]) -> Path:
     path.write_text(
         json.dumps({"ready_for_registration": candidates}),
@@ -85,6 +125,80 @@ def test_dynamic_template_loader_filters_and_unique_ids(tmp_path: Path) -> None:
     assert candidates[0].chain == ("linear_proj", "relu", "add")
     assert candidates[0].lowered_op_count == 4
     assert candidates[1].component_descriptor == {"has_multi_mixer": False}
+
+
+def test_dynamic_template_loader_rejects_failed_math_physics_review(
+    tmp_path: Path,
+) -> None:
+    passed = _candidate(
+        "reviewed_good",
+        ["linear_proj", "selective_scan", "add"],
+        promotion_score=4,
+    )
+    passed["validation"]["math_physics_review_passed"] = True
+    failed = _candidate(
+        "reviewed_bad",
+        ["linear_proj", "selective_scan", "add"],
+        promotion_score=9,
+    )
+    failed["validation"]["math_physics_review_passed"] = False
+    artifact = _write_candidates(tmp_path / "reviewed.json", [failed, passed])
+
+    candidates = load_dynamic_template_candidates(
+        artifact, max_candidates=8, min_lowered_ops=1
+    )
+
+    assert len(candidates) == 1
+    assert candidates[0].display_name == "reviewed_good"
+
+
+def test_dynamic_template_loader_rejects_failed_math_sweep(
+    tmp_path: Path,
+) -> None:
+    passed = _candidate(
+        "sweep_parent_retained",
+        ["linear_proj", "selective_scan", "add"],
+        promotion_score=4,
+    )
+    _mark_math_sweep_validation(passed["validation"], passed=True)
+    failed = _candidate(
+        "sweep_failed",
+        ["linear_proj", "selective_scan", "add"],
+        promotion_score=9,
+    )
+    _mark_math_sweep_validation(failed["validation"], passed=False)
+    artifact = _write_candidates(tmp_path / "sweep.json", [failed, passed])
+
+    candidates = load_dynamic_template_candidates(
+        artifact, max_candidates=8, min_lowered_ops=1
+    )
+
+    assert len(candidates) == 1
+    assert candidates[0].display_name == "sweep_parent_retained"
+    assert candidates[0].validation["math_variant_selected"] is False
+
+
+def test_dynamic_template_loader_accepts_legacy_without_math_sweep(
+    tmp_path: Path,
+) -> None:
+    artifact = _write_candidates(
+        tmp_path / "legacy.json",
+        [
+            _candidate(
+                "legacy_good",
+                ["linear_proj", "selective_scan", "add"],
+                promotion_score=4,
+            )
+        ],
+    )
+
+    candidates = load_dynamic_template_candidates(
+        artifact, max_candidates=8, min_lowered_ops=1
+    )
+
+    assert len(candidates) == 1
+    assert candidates[0].display_name == "legacy_good"
+    assert "math_sweep_passed" not in candidates[0].validation
 
 
 def test_dynamic_template_loader_rejects_micro_chains_by_default(
@@ -192,6 +306,32 @@ def test_dynamic_template_lowering_records_metadata(tmp_path: Path) -> None:
     ]
     assert slots[0]["slot_classes"] == ["dynamic_role:project", "dynamic_step"]
     assert slots[2]["selected_motif_class"] == "dynamic_op_arity2"
+
+
+def test_dynamic_template_usage_records_math_sweep_summary(tmp_path: Path) -> None:
+    raw = _candidate(
+        "sweep_chain_block",
+        ["linear_proj", "relu", "add", "layernorm"],
+        component_descriptor={"has_multi_mixer": False},
+    )
+    _mark_math_sweep_validation(raw["validation"], passed=True)
+    artifact = _write_candidates(tmp_path / "sweep_validated.json", [raw])
+    candidate = load_dynamic_template_candidates(artifact, min_lowered_ops=1)[0]
+    graph = ComputationGraph(model_dim=64)
+    input_id = graph.add_input()
+
+    apply_dynamic_template_candidate(graph, input_id, random.Random(1), candidate)
+
+    template_sweep = graph.metadata["dynamic_templates_used"][0]["math_sweep"]
+    component_sweep = graph.metadata["dynamic_components_used"][0]["math_sweep"]
+    assert template_sweep == component_sweep
+    assert template_sweep["version"] == "dynamic_math_sweep_v1"
+    assert template_sweep["passed"] is True
+    assert template_sweep["variant_selected"] is False
+    assert template_sweep["selected_family"] == "parent"
+    assert template_sweep["selected_axes"] == {"op_math_family": "parent"}
+    assert template_sweep["descriptor_delta"]["long_range_reach"] == 0.0
+    assert "component_descriptor" not in graph.metadata["dynamic_templates_used"][0]
 
 
 def test_dynamic_template_can_lower_trunk_sidecar_component(tmp_path: Path) -> None:

@@ -82,6 +82,11 @@ def test_build_dynamic_component_candidates_keeps_only_structural_windows(
     assert output.exists()
     assert payload["metadata"]["n_candidates"] == 1
     assert payload["metadata"]["component_rule_schema_versions"]
+    assert payload["metadata"]["math_variant_sweep_required_for_ready"] is True
+    assert (
+        payload["metadata"]["math_variant_sweep_schema_version"]
+        == builder_mod.DYNAMIC_MATH_SWEEP_SCHEMA_VERSION
+    )
     assert payload["ready_for_registration"] == []
     candidate = payload["candidates"][0]
     assert candidate["lowered_op_count"] == 9
@@ -429,7 +434,10 @@ def test_candidate_validation_stops_positionwise_chain_before_smoke() -> None:
 
     assert validation["compile_passed"] is True
     assert validation["math_physics_review_passed"] is False
-    assert validation["math_physics_review_reason"] == "no_sequence_mixer_or_router_on_path"
+    assert (
+        validation["math_physics_review_reason"]
+        == "no_sequence_mixer_or_router_on_path"
+    )
     assert validation["failure_mode"] == "math_physics_review"
     assert validation["forward_passed"] is False
     assert validation["backward_passed"] is False

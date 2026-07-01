@@ -48,6 +48,32 @@ _LOWERING_SELECTION_MULTIPLIERS = {
     "router_lane_blend_v1": 0.75,
     "rmsnorm_chain_with_binary_skip": 1.10,
 }
+_MATH_SWEEP_CONTRACT_PREFIXES = ("math_sweep_", "math_variant_")
+_MATH_SWEEP_USAGE_FIELDS = {
+    "math_sweep_version": "version",
+    "math_sweep_passed": "passed",
+    "math_sweep_required_for_ready": "required_for_ready",
+    "math_sweep_run_id": "run_id",
+    "math_sweep_variant_count": "variant_count",
+    "math_sweep_selected_variant_id": "selected_variant_id",
+    "math_sweep_selected_family": "selected_family",
+    "math_sweep_selected_transform": "selected_transform",
+    "math_sweep_selection_reason": "selection_reason",
+    "math_sweep_score": "score",
+    "math_variant_selected": "variant_selected",
+    "math_variant_family": "variant_family",
+    "math_variant_transform": "variant_transform",
+    "math_variant_score": "variant_score",
+    "math_variant_failure_reason": "variant_failure_reason",
+}
+_MATH_SWEEP_DELTA_FIELDS = {
+    "math_variant_delta_long_range_reach": "long_range_reach",
+    "math_variant_delta_content_dependence": "content_dependence",
+    "math_variant_delta_content_match_gating": "content_match_gating",
+    "math_variant_delta_effective_rank": "effective_rank",
+    "math_variant_delta_causality_violation": "causality_violation",
+    "math_variant_delta_spectral_radius": "spectral_radius",
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -215,7 +241,7 @@ def apply_dynamic_template_candidate(
 
 def _dynamic_usage_record(candidate: DynamicTemplateCandidate) -> dict[str, Any]:
     descriptor = dict(candidate.component_descriptor)
-    return {
+    usage = {
         "template_id": candidate.template_id,
         "component_id": str(descriptor.get("component_id") or candidate.template_id),
         "display_name": candidate.display_name,
@@ -227,10 +253,14 @@ def _dynamic_usage_record(candidate: DynamicTemplateCandidate) -> dict[str, Any]
         "lowering": str(descriptor.get("lowering") or "rmsnorm_chain_with_binary_skip"),
         "component_descriptor": descriptor,
     }
+    math_sweep = _math_sweep_usage_record(candidate.validation)
+    if math_sweep:
+        usage["math_sweep"] = math_sweep
+    return usage
 
 
 def _dynamic_template_usage_record(usage: Mapping[str, Any]) -> dict[str, Any]:
-    return {
+    record = {
         "template_id": str(usage.get("template_id") or ""),
         "display_name": str(usage.get("display_name") or ""),
         "chain": list(usage.get("chain") or ()),
@@ -241,6 +271,36 @@ def _dynamic_template_usage_record(usage: Mapping[str, Any]) -> dict[str, Any]:
         "component_id": str(usage.get("component_id") or ""),
         "lowering": str(usage.get("lowering") or ""),
     }
+    math_sweep = usage.get("math_sweep")
+    if isinstance(math_sweep, Mapping):
+        record["math_sweep"] = copy_jsonlike(math_sweep)
+    return record
+
+
+def _math_sweep_usage_record(validation: Mapping[str, Any]) -> dict[str, Any]:
+    summary: dict[str, Any] = {}
+    for source_key, usage_key in _MATH_SWEEP_USAGE_FIELDS.items():
+        if source_key in validation:
+            summary[usage_key] = copy_jsonlike(validation[source_key])
+
+    axes = validation.get("math_sweep_selected_axes")
+    if axes is None:
+        axes = validation.get("math_variant_axes")
+    if isinstance(axes, Mapping):
+        summary["selected_axes"] = copy_jsonlike(axes)
+
+    descriptor_delta = validation.get("math_sweep_descriptor_delta")
+    if isinstance(descriptor_delta, Mapping):
+        summary["descriptor_delta"] = copy_jsonlike(descriptor_delta)
+
+    delta_summary = {
+        usage_key: validation[source_key]
+        for source_key, usage_key in _MATH_SWEEP_DELTA_FIELDS.items()
+        if source_key in validation
+    }
+    if delta_summary:
+        summary.setdefault("descriptor_delta", {}).update(copy_jsonlike(delta_summary))
+    return summary
 
 
 def _apply_linear_dynamic_candidate(
@@ -656,10 +716,29 @@ def _coerce_candidate(
 
 
 def _candidate_is_validated(validation: Mapping[str, Any]) -> bool:
-    return bool(
+    if not (
         validation.get("validate_passed")
         and validation.get("compile_passed")
         and validation.get("backward_passed")
+    ):
+        return False
+    if "math_physics_review_passed" in validation and not bool(
+        validation.get("math_physics_review_passed")
+    ):
+        return False
+    if _candidate_has_math_sweep_contract(validation) and not bool(
+        validation.get("math_sweep_passed")
+    ):
+        return False
+    return True
+
+
+def _candidate_has_math_sweep_contract(validation: Mapping[str, Any]) -> bool:
+    if bool(validation.get("math_sweep_required_for_ready")):
+        return True
+    return any(
+        isinstance(key, str) and key.startswith(_MATH_SWEEP_CONTRACT_PREFIXES)
+        for key in validation
     )
 
 

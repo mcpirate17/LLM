@@ -306,6 +306,8 @@ def _candidate_artifact_payload(
             "run_smoke": bool(run_smoke),
             "validation_required_for_ready": True,
             "math_physics_review_required_for_ready": True,
+            "math_variant_sweep_required_for_ready": True,
+            "math_variant_sweep_schema_version": DYNAMIC_MATH_SWEEP_SCHEMA_VERSION,
             "component_rule_schema_versions": list(schema_versions),
         },
         "candidates": candidates,
@@ -950,7 +952,9 @@ def _math_physics_review(
         review["math_physics_review_reason"] = "nonfinite_descriptor"
         return review
 
-    spectral_radius = float(parent_record.physics_descriptors.get("spectral_radius", 0.0))
+    spectral_radius = float(
+        parent_record.physics_descriptors.get("spectral_radius", 0.0)
+    )
     if spectral_radius < 0.9:
         stability_band = "contractive"
     elif spectral_radius <= 1.1:
@@ -1000,7 +1004,9 @@ def _sweep_target_for_chain(chain: Sequence[str]) -> str:
     ops = {str(op) for op in chain}
     if any("compress" in op or "bottleneck" in op for op in ops):
         return "compression"
-    if any(_is_recursion_op(op) or op in {"selective_scan", "conv1d_seq"} for op in ops):
+    if any(
+        _is_recursion_op(op) or op in {"selective_scan", "conv1d_seq"} for op in ops
+    ):
         return "long_memory"
     if any(get_role(op) is OpRole.ROUTE for op in ops):
         return "binding"
