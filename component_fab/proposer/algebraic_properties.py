@@ -211,30 +211,77 @@ class AlgebraicProperties:
 class AlgebraicPropertyProbe:
     """Measure the algebraic-property signature of an operator on random stimuli.
 
-    Descriptors are averaged over ``n_seeds`` fresh stimuli. The operator must
-    map ``[B, L, D] -> [B, L, D]``; anything else fails loud in the individual
-    probes rather than being silently scored zero.
+    Descriptors are averaged over ``n_seeds`` fresh stimuli. Use :meth:`measure`
+    for a bare ``[B, L, D] -> [B, L, D]`` callable, or :meth:`measure_model` for a
+    model exposing the ``embed(ids)`` + ``_fingerprint_forward_from_embed(emb)``
+    contract (the ``SynthesizedModel`` / probe-adapter contract shared with
+    ``measured_descriptors``), which probes at the model's own embedding width.
+    A bare callable that changes tensor shape fails loud in the probes rather than
+    being silently scored zero.
     """
 
     batch: int = 4
     seq_len: int = 16
     dim: int = 32
+    vocab: int = 64
     n_seeds: int = 3
     device: str = "cpu"
 
     def measure(self, f: Operator) -> AlgebraicProperties:
-        rows = [self._measure_once(f, seed) for seed in range(self.n_seeds)]
+        """Signature for a bare ``[B, L, D] -> [B, L, D]`` callable."""
+        rows: list[dict[str, float]] = []
+        for seed in range(self.n_seeds):
+            gen = torch.Generator(device=self.device).manual_seed(seed)
+            shape = (self.batch, self.seq_len, self.dim)
+            x = torch.randn(*shape, device=self.device, generator=gen)
+            y = torch.randn(*shape, device=self.device, generator=gen)
+            rows.append(self._measure_from_stimuli(f, x, y, gen))
+        return self._aggregate(rows)
+
+    def measure_model(
+        self, factory: Callable[[int], object]
+    ) -> AlgebraicProperties | None:
+        """Signature for a model built by ``factory(seed)``.
+
+        ``factory(seed)`` must return a model exposing ``embed`` and
+        ``_fingerprint_forward_from_embed``. Stimuli are real embeddings, so the
+        probe runs at the model's own width regardless of ``dim``. Seeds that
+        raise are skipped (mirrors ``measured_descriptors.descriptors_from_factory``);
+        returns ``None`` if no seed could be probed.
+        """
+        rows: list[dict[str, float]] = []
+        for seed in range(self.n_seeds):
+            try:
+                model = factory(seed)
+                gen = torch.Generator(device=self.device).manual_seed(seed)
+                shape = (self.batch, self.seq_len)
+                ids = torch.randint(
+                    0, self.vocab, shape, device=self.device, generator=gen
+                )
+                ids2 = torch.randint(
+                    0, self.vocab, shape, device=self.device, generator=gen
+                )
+                x = model.embed(ids).detach()
+                y = model.embed(ids2).detach()
+                f = model._fingerprint_forward_from_embed
+                rows.append(self._measure_from_stimuli(f, x, y, gen))
+            except Exception:
+                continue
+        if not rows:
+            return None
+        return self._aggregate(rows)
+
+    def _aggregate(self, rows: list[dict[str, float]]) -> AlgebraicProperties:
         agg = {
             name: sum(row[name] for row in rows) / len(rows)
             for name in ALGEBRAIC_PROPERTY_NAMES
         }
-        return AlgebraicProperties(n_seeds=self.n_seeds, **agg)
+        return AlgebraicProperties(n_seeds=len(rows), **agg)
 
-    def _measure_once(self, f: Operator, seed: int) -> dict[str, float]:
-        gen = torch.Generator(device=self.device).manual_seed(seed)
-        shape = (self.batch, self.seq_len, self.dim)
-        x = torch.randn(*shape, device=self.device, generator=gen)
-        y = torch.randn(*shape, device=self.device, generator=gen)
+    @staticmethod
+    def _measure_from_stimuli(
+        f: Operator, x: Tensor, y: Tensor, gen: torch.Generator
+    ) -> dict[str, float]:
         const = constant_token_preservation(f, x)
         convex = convex_range_fraction(f, x)
         mixing = cross_token_mixing(f, x, generator=gen)

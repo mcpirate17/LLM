@@ -191,10 +191,19 @@ def build_nas_archive(dim: int, *, max_graphs: int = 64) -> Any:
     measurable is cached yet (e.g. the first cycle) so the caller falls back to
     plain random sampling.
     """
-    from research.synthesis.quality_diversity import MapElitesArchive
+    from research.synthesis.quality_diversity import (
+        MapElitesArchive,
+        default_behavior_axes,
+    )
     from research.tools.measured_descriptors import (
         MeasuredDescriptorExtractor,
         capability_score_from_descriptors,
+    )
+
+    from component_fab.proposer.novelty_archive import (
+        SOFTMAX_BASIN_DISTANCE,
+        measure_model_softmax_basin_distance,
+        with_novelty_axis,
     )
 
     if not _CACHE_DIR.exists():
@@ -205,16 +214,27 @@ def build_nas_archive(dim: int, *, max_graphs: int = 64) -> Any:
     if not paths:
         return None
     extractor = MeasuredDescriptorExtractor(device="cpu")
-    archive = MapElitesArchive()
+    # Add the geometric-novelty (softmax-basin distance, NM-10) axis so far-from-
+    # softmax regions the cached population has not covered surface as empty niches
+    # and steer archive-guided exploration toward novel geometry, not the basin.
+    archive = MapElitesArchive(axes=with_novelty_axis(default_behavior_axes()))
     n_added = 0
     for path in paths:
+        graph_json = path.read_text(encoding="utf-8")
         try:
-            descriptors = extractor.descriptors(path.read_text(encoding="utf-8"))
+            descriptors = extractor.descriptors(graph_json)
         except Exception as exc:  # noqa: BLE001 — measurement must not break the cycle
             _LOG.debug("descriptor measure failed for %s: %s", path.name, exc)
             continue
         if not descriptors:
             continue
+        distance = measure_model_softmax_basin_distance(
+            lambda seed, gj=graph_json: extractor._build_from_graph(gj, seed)
+        )
+        if distance is None:
+            _LOG.debug("novelty measure failed for %s — skipping", path.name)
+            continue
+        descriptors = {**descriptors, SOFTMAX_BASIN_DISTANCE: distance}
         archive.add(
             path.stem, descriptors, capability_score_from_descriptors(descriptors)
         )
