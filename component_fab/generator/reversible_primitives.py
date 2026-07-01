@@ -38,7 +38,12 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
-from component_fab.generator._causal_scan import causal_decay_context
+from component_fab.generator._causal_scan import (
+    DecayScanState,
+    causal_decay_context,
+    decay_scan_step,
+    init_decay_scan_state,
+)
 
 
 class _CausalDecayMLP(nn.Module):
@@ -61,10 +66,23 @@ class _CausalDecayMLP(nn.Module):
         self.w_in = nn.Linear(dim, expansion * dim)
         self.w_out = nn.Linear(expansion * dim, dim)
 
+    def _decay(self) -> torch.Tensor:
+        return torch.sigmoid(self.log_decay).clamp(1e-4, 1 - 1e-4)  # [D]
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        decay = torch.sigmoid(self.log_decay).clamp(1e-4, 1 - 1e-4)  # [D]
-        context = causal_decay_context(x, decay)
+        context = causal_decay_context(x, self._decay())
         return self.w_out(F.gelu(self.w_in(context)))
+
+    def stream_init(self, batch: int, *, device=None, dtype=None) -> DecayScanState:
+        """A fresh O(1) streaming state for autoregressive (KV-free) decode."""
+        return init_decay_scan_state(batch, self.dim, device=device, dtype=dtype)
+
+    def stream_step(
+        self, x_t: torch.Tensor, state: DecayScanState
+    ) -> tuple[torch.Tensor, DecayScanState]:
+        """One decode step: ``[B, D]`` in, ``[B, D]`` out, state is O(1) in length."""
+        context, new_state = decay_scan_step(state, x_t, self._decay())
+        return self.w_out(F.gelu(self.w_in(context))), new_state
 
 
 class ReversibleCouplingMixerLane(nn.Module):
@@ -95,6 +113,34 @@ class ReversibleCouplingMixerLane(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.coupling_forward(x)
+
+    def stream_init(
+        self, batch: int, *, device=None, dtype=None
+    ) -> tuple[DecayScanState, DecayScanState]:
+        """Fresh O(1) decode state ``(f_state, g_state)`` — no growing KV cache."""
+        return (
+            self.f.stream_init(batch, device=device, dtype=dtype),
+            self.g.stream_init(batch, device=device, dtype=dtype),
+        )
+
+    def stream_step(
+        self,
+        x_t: torch.Tensor,
+        state: tuple[DecayScanState, DecayScanState],
+    ) -> tuple[torch.Tensor, tuple[DecayScanState, DecayScanState]]:
+        """One autoregressive step: coupling applied token-wise with O(1) state.
+
+        Reproduces :meth:`coupling_forward` exactly for the current token, keeping
+        only the two ``[B, half]`` decay states — inference memory is independent
+        of context length.
+        """
+        f_state, g_state = state
+        x1, x2 = x_t[..., : self.half], x_t[..., self.half :]
+        f_out, f_state = self.f.stream_step(x2, f_state)
+        y1 = x1 + f_out
+        g_out, g_state = self.g.stream_step(y1, g_state)
+        y2 = x2 + g_out
+        return torch.cat([y1, y2], dim=-1), (f_state, g_state)
 
     @torch.no_grad()
     def inverse(self, y: torch.Tensor) -> torch.Tensor:

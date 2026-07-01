@@ -131,3 +131,20 @@ def test_reversible_is_not_a_softmax_twin() -> None:
     lane = ReversibleCouplingMixerLane(24)
     props = measure_algebraic_properties(lane, dim=24, n_seeds=3)
     assert not props.is_softmax_twin(), props.to_dict()
+
+
+def test_streaming_decode_matches_batched_forward() -> None:
+    """Token-by-token O(1)-state decode reproduces the batched forward (KV-free)."""
+    torch.manual_seed(0)
+    lane = ReversibleCouplingMixerLane(16)
+    x = torch.randn(2, 18, 16)
+    with torch.no_grad():
+        batched = lane(x)
+        state = lane.stream_init(2)
+        for t in range(x.shape[1]):
+            y_t, state = lane.stream_step(x[:, t, :], state)
+            assert torch.allclose(y_t, batched[:, t, :], atol=1e-5)
+        # State is two [B, half] tensors — independent of sequence length.
+        f_state, g_state = state
+        assert f_state.context.shape == (2, 8)
+        assert g_state.context.shape == (2, 8)

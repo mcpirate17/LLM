@@ -5,7 +5,12 @@ from __future__ import annotations
 import pytest
 import torch
 
-from component_fab.generator._causal_scan import causal_decay_context
+from component_fab.generator._causal_scan import (
+    causal_decay_context,
+    causal_decay_context_streaming,
+    decay_scan_step,
+    init_decay_scan_state,
+)
 
 
 def _naive_decay_context(x: torch.Tensor, decay: torch.Tensor) -> torch.Tensor:
@@ -52,3 +57,42 @@ def test_rejects_bad_shapes() -> None:
         causal_decay_context(torch.randn(3, 8), torch.rand(8))
     with pytest.raises(ValueError):
         causal_decay_context(torch.randn(2, 8, 4), torch.rand(5))
+
+
+def test_streaming_matches_batched() -> None:
+    torch.manual_seed(0)
+    x = torch.randn(3, 40, 8)
+    decay = torch.sigmoid(torch.randn(8))
+    assert torch.allclose(
+        causal_decay_context_streaming(x, decay),
+        causal_decay_context(x, decay),
+        atol=1e-5,
+    )
+
+
+def test_streaming_state_is_constant_size() -> None:
+    """The decode state is [B, C] regardless of how many tokens have been fed."""
+    torch.manual_seed(1)
+    x = torch.randn(2, 30, 4)
+    decay = torch.sigmoid(torch.randn(4))
+    batched = causal_decay_context(x, decay)
+    state = init_decay_scan_state(2, 4)
+    for t in range(x.shape[1]):
+        c_t, state = decay_scan_step(state, x[:, t, :], decay)
+        assert state.context.shape == (2, 4)  # never grows with t
+        assert torch.allclose(c_t, batched[:, t, :], atol=1e-5)
+
+
+def test_streaming_prefill_then_continue() -> None:
+    """Prefill a prefix batched, then stream the rest — same as full batched."""
+    torch.manual_seed(2)
+    x = torch.randn(2, 20, 6)
+    decay = torch.sigmoid(torch.randn(6))
+    full = causal_decay_context(x, decay)
+    split = 12
+    prefix = causal_decay_context(x[:, :split, :], decay)
+    state = init_decay_scan_state(2, 6)
+    state.context = prefix[:, -1, :]  # carry the prefill's last state
+    for t in range(split, x.shape[1]):
+        c_t, state = decay_scan_step(state, x[:, t, :], decay)
+        assert torch.allclose(c_t, full[:, t, :], atol=1e-5)

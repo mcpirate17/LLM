@@ -19,6 +19,8 @@ Shared by ``reversible_primitives._CausalDecayMLP`` and
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 import torch
 from torch import Tensor
 
@@ -62,3 +64,68 @@ def causal_decay_context(x: Tensor, decay: Tensor, *, chunk: int = 64) -> Tensor
         out[:, start:end, :] = c
         state = c[:, -1, :]
     return out
+
+
+# ── streaming / autoregressive inference (KV-free, O(1) state) ────────────────
+#
+# The batched ``causal_decay_context`` is for training / prefill. For token-by-
+# token generation, the same recurrence ``c_t = ρ ⊙ c_{t-1} + x_t`` runs with a
+# single ``[B, C]`` state — memory independent of context length, so a stack of
+# decayed-context lanes decodes with NO growing KV cache (the inference-VRAM
+# analog of the reversible training-VRAM lever).
+
+
+@dataclass(slots=True)
+class DecayScanState:
+    """Running decay-context state for O(1)-per-token autoregressive inference."""
+
+    context: Tensor  # [B, C] — the current c_t
+
+
+def init_decay_scan_state(
+    batch: int, channels: int, *, device=None, dtype=None
+) -> DecayScanState:
+    """A zeroed streaming state (``c_{-1} = 0``)."""
+    return DecayScanState(
+        context=torch.zeros(batch, channels, device=device, dtype=dtype)
+    )
+
+
+def decay_scan_step(
+    state: DecayScanState, x_t: Tensor, decay: Tensor
+) -> tuple[Tensor, DecayScanState]:
+    """One recurrence step ``c_t = decay ⊙ c_{t-1} + x_t``.
+
+    Args:
+        state: the running :class:`DecayScanState` (``c_{t-1}``).
+        x_t: ``[B, C]`` current token features.
+        decay: ``[C]`` per-channel decay ``ρ ∈ (0, 1)``.
+
+    Returns:
+        ``(c_t, new_state)`` — ``c_t`` is ``[B, C]``; ``new_state`` carries it.
+    """
+    if x_t.dim() != 2:
+        raise ValueError(f"expected [B, C] token; got {tuple(x_t.shape)}")
+    if decay.shape != (x_t.shape[-1],):
+        raise ValueError(f"decay must be [{x_t.shape[-1]}]; got {tuple(decay.shape)}")
+    c = decay * state.context + x_t
+    return c, DecayScanState(context=c)
+
+
+def causal_decay_context_streaming(x: Tensor, decay: Tensor) -> Tensor:
+    """Reference streaming loop — identical result to :func:`causal_decay_context`.
+
+    Exists to pin the streaming recurrence against the batched form in tests and
+    to document the O(1)-state inference path; the batched form is preferred for
+    training / prefill.
+    """
+    if x.dim() != 3:
+        raise ValueError(f"expected [B, L, C]; got {tuple(x.shape)}")
+    state = init_decay_scan_state(
+        x.shape[0], x.shape[-1], device=x.device, dtype=x.dtype
+    )
+    outputs = []
+    for t in range(x.shape[1]):
+        c_t, state = decay_scan_step(state, x[:, t, :], decay)
+        outputs.append(c_t)
+    return torch.stack(outputs, dim=1)
