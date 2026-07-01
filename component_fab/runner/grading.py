@@ -11,6 +11,7 @@ from component_fab.proposer.spec_generator import ProposalSpec
 from component_fab.proposer.tier2_feedback import Tier2Feedback, tier2_score_multiplier
 from component_fab.runner.niche import annotate_niche_metadata
 from component_fab.state.ledger import Ledger, PROMOTION_REJECTED
+from component_fab.state.math_sweep_features import extract_math_sweep_metadata
 from component_fab.validator.grade import eliminated_solo_scorecard, grade_candidate
 from component_fab.validator.paired import paired_metadata_for_spec
 from component_fab.validator.solo import SoloScorecard
@@ -104,6 +105,7 @@ def metadata_for_grade(
         ),
         "range_ran": bool(capability and capability.get("range_ran")),
         **_physics_probe_metadata(spec, probe),
+        **extract_math_sweep_metadata(spec.math_axes),
     }
     if mechanism:
         meta.update(

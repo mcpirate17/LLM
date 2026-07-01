@@ -27,6 +27,7 @@ from typing import Any
 from .gates import CANONICAL_GATE_ORDER, eliminated_by, reached
 from .ledger import DEFAULT_LEDGER_PATH, write_json_report
 from .ledger import read_last_grades_and_statuses as _read_ledger
+from .math_sweep_features import math_sweep_failure_reason
 
 _REPO = Path(__file__).resolve().parents[2]
 DEFAULT_OUTPUT_PATH = _REPO / "component_fab" / "catalog" / "failure_attribution.json"
@@ -67,6 +68,7 @@ class FailureReport:
     gate_stats: list[GateStats] = field(default_factory=list)
     over_eager_gates: list[str] = field(default_factory=list)
     anchor_pool: list[AnchorCandidate] = field(default_factory=list)
+    math_sweep_failures: dict[str, int] = field(default_factory=dict)
 
 
 def _count_outcomes(
@@ -213,6 +215,17 @@ def _build_anchor_pool(
     return candidates[:anchor_pool_size]
 
 
+def _count_math_sweep_failures(
+    last_grade: dict[str, dict[str, Any]],
+) -> dict[str, int]:
+    failures: dict[str, int] = defaultdict(int)
+    for grade in last_grade.values():
+        reason = math_sweep_failure_reason(grade.get("metadata") or {})
+        if reason:
+            failures[reason] += 1
+    return dict(sorted(failures.items()))
+
+
 def compute_failure_attribution(
     ledger_path: Path | str = DEFAULT_LEDGER_PATH,
     *,
@@ -249,6 +262,7 @@ def compute_failure_attribution(
         gate_stats=gate_stats,
         over_eager_gates=[g.gate for g in gate_stats if g.over_eager],
         anchor_pool=anchor_pool,
+        math_sweep_failures=_count_math_sweep_failures(last_grade),
     )
 
 
@@ -264,5 +278,6 @@ def write_failure_attribution(
         "over_eager_gates": list(report.over_eager_gates),
         "gate_stats": [asdict(g) for g in report.gate_stats],
         "anchor_pool": [asdict(c) for c in report.anchor_pool],
+        "math_sweep_failures": dict(report.math_sweep_failures),
     }
     return write_json_report(payload, output_path)

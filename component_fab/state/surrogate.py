@@ -25,13 +25,14 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any, Mapping, Sequence
 
 import numpy as np
 
 from ._stats import spearman
 from .ledger import DEFAULT_LEDGER_PATH, write_json_report
 from .ledger import read_last_grades_and_statuses as _read_ledger
+from .math_sweep_features import math_sweep_surrogate_features
 
 _REPO = Path(__file__).resolve().parents[2]
 DEFAULT_OUTPUT_PATH = _REPO / "component_fab" / "catalog" / "surrogate_report.json"
@@ -88,6 +89,7 @@ def features_from_metadata(
     synthesis_kind: str,
     math_axes: dict[str, Any],
     math_knobs: Sequence[str],
+    metadata: Mapping[str, Any] | None = None,
 ) -> dict[str, float]:
     """Build the one-hot/multi-hot feature dict for a single candidate.
 
@@ -103,6 +105,7 @@ def features_from_metadata(
     for knob in math_knobs:
         if knob:
             feat[f"knob={knob}"] = 1.0
+    feat.update(math_sweep_surrogate_features(metadata or math_axes))
     return feat
 
 
@@ -163,6 +166,7 @@ def _training_rows(
                     synthesis_kind=str(grade.get("synthesis_kind") or ""),
                     math_axes=axes,
                     math_knobs=knobs,
+                    metadata=meta,
                 ),
                 composite=max(0.0, min(1.0, target)),
                 promoted=1 if last_status.get(pid) == "promoted" else 0,

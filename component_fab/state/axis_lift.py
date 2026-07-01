@@ -12,6 +12,7 @@ values appear in the dict with `n=0` and shrink toward the global mean
 Axes mined per entry:
   - ``math_knob``      from ``metadata.math_knobs`` (list[str])
   - ``math_knob_pair`` ordered pair from the same list (len 2+)
+  - ``math_variant_*`` from pre-assembly dynamic math sweeps
   - ``synthesis_kind`` from the grade record top-level
   - ``category``       from the grade record top-level
   - ``anchor_op``      parsed from ``metadata.anchor_witness`` when present
@@ -32,6 +33,7 @@ from typing import Any, Iterable
 
 from .ledger import DEFAULT_LEDGER_PATH, write_json_report
 from .ledger import read_last_grades_and_statuses as _read_grades_and_promotions
+from .math_sweep_features import math_sweep_axis_values
 
 _REPO = Path(__file__).resolve().parents[2]
 DEFAULT_OUTPUT_PATH = _REPO / "component_fab" / "catalog" / "axis_lift.json"
@@ -78,6 +80,7 @@ def _emit_axes(grade: dict[str, Any]) -> Iterable[tuple[str, str]]:
     anchor = meta.get("anchor_witness")
     if isinstance(anchor, str) and anchor:
         yield ("anchor_op", anchor)
+    yield from math_sweep_axis_values(meta)
 
 
 def compute_axis_lift(

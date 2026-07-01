@@ -161,6 +161,40 @@ def test_physics_probe_task_ratios_persist_in_grade_metadata() -> None:
     ]
 
 
+def test_math_sweep_axes_persist_as_compact_grade_metadata() -> None:
+    spec = make_spec(
+        {
+            "op_math_variant_family": "algebraic",
+            "op_math_variant_transform": "reciprocal_cauchy_read",
+            "op_math_variant_target": "binding",
+            "op_math_variant_score": 0.42,
+            "op_math_variant_delta_long_range_reach": 0.15,
+            "op_math_variant_delta_content_match_gating": 0.08,
+            "op_math_variant_artifact_ref": "research/reports/sweep.jsonl",
+            "math_sweep_passed": True,
+            "math_sweep_version": "dynamic_math_sweep_v1",
+        },
+        "sweep_spec",
+    )
+
+    metadata = _metadata_for_grade(
+        spec,
+        {"can_bind": True, "erf_density": 0.1},
+        None,
+    )
+
+    assert metadata["math_sweep_passed"] is True
+    assert metadata["math_sweep_version"] == "dynamic_math_sweep_v1"
+    assert metadata["math_variant_family"] == "algebraic"
+    assert metadata["math_variant_transform"] == "reciprocal_cauchy_read"
+    assert metadata["math_variant_target"] == "binding"
+    assert metadata["math_variant_score"] == 0.42
+    assert metadata["math_variant_delta_long_range_reach"] == 0.15
+    assert metadata["math_variant_delta_content_match_gating"] == 0.08
+    assert metadata["math_variant_target_improved"] is True
+    assert metadata["math_variant_artifact_ref"] == "research/reports/sweep.jsonl"
+
+
 def test_selection_preskips_known_s05_physics_coordinate(tmp_path, monkeypatch) -> None:
     bad_axes = {
         "op_search_track": "physics_atom",

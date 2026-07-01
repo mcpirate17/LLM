@@ -74,6 +74,47 @@ def test_axis_lift_pair_axis_present_only_for_multi_knob(tmp_path: Path) -> None
     assert pair_values == {"x+y"}
 
 
+def test_axis_lift_emits_math_sweep_variant_axes(tmp_path: Path) -> None:
+    ledger = tmp_path / "ledger.jsonl"
+    sweep_grade = grade_record("sweep", composite=0.7, learned=True)
+    sweep_grade["metadata"].update(
+        {
+            "math_sweep_passed": True,
+            "math_variant_family": "algebraic+tropical",
+            "math_variant_transform": "reciprocal_cauchy_read",
+            "math_variant_target": "binding",
+            "math_variant_stability_band": "marginal",
+            "math_variant_score": 0.21,
+            "math_variant_delta_long_range_reach": 0.12,
+            "math_variant_delta_content_match_gating": 0.0,
+        }
+    )
+    write_ledger_jsonl(ledger, [sweep_grade, promote_record("sweep", "promoted")])
+
+    report = compute_axis_lift(ledger, min_n=1)
+
+    assert {
+        row.value for row in report.by_axis["math_variant_family"]
+    } == {"algebraic+tropical"}
+    assert {
+        row.value for row in report.by_axis["math_variant_family_pair"]
+    } == {"algebraic+tropical"}
+    assert {
+        row.value for row in report.by_axis["math_variant_transform"]
+    } == {"reciprocal_cauchy_read"}
+    assert {row.value for row in report.by_axis["math_variant_target"]} == {"binding"}
+    assert {
+        row.value for row in report.by_axis["math_variant_delta_long_range_reach"]
+    } == {"up"}
+    assert {
+        row.value
+        for row in report.by_axis["math_variant_delta_content_match_gating"]
+    } == {"flat"}
+    assert {
+        row.value for row in report.by_axis["math_variant_target_improved"]
+    } == {"true"}
+
+
 def test_axis_lift_round_trip_json(tmp_path: Path) -> None:
     ledger = tmp_path / "ledger.jsonl"
     out = tmp_path / "axis_lift.json"
@@ -194,6 +235,40 @@ def test_failure_attribution_writes_json(tmp_path: Path) -> None:
     data = json.loads(out.read_text(encoding="utf-8"))
     assert data["total_graded"] == 1
     assert data["total_rejected"] == 1
+
+
+def test_failure_attribution_counts_math_sweep_failures(tmp_path: Path) -> None:
+    ledger = tmp_path / "ledger.jsonl"
+    rank = grade_record("rank", eliminated_by="nano_bind")
+    rank["metadata"].update(
+        {
+            "math_sweep_passed": False,
+            "math_variant_failure_reason": "rank_collapse",
+        }
+    )
+    shape = grade_record("shape", eliminated_by="smoke")
+    shape["metadata"].update(
+        {
+            "math_sweep_passed": False,
+            "math_variant_failure_reason": "compile_failed",
+        }
+    )
+    write_ledger_jsonl(
+        ledger,
+        [
+            rank,
+            promote_record("rank", "rejected"),
+            shape,
+            promote_record("shape", "rejected"),
+        ],
+    )
+
+    report = compute_failure_attribution(ledger)
+
+    assert report.math_sweep_failures == {
+        "compile_failed": 1,
+        "rank_collapse": 1,
+    }
 
 
 def test_failure_attribution_floor_bunching_unflags_correct_erf_gate(

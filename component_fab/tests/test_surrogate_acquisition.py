@@ -15,6 +15,7 @@ from component_fab.state.surrogate import (
     _marginal_scores,
     _recall_at_k,
     compute_surrogate_report,
+    features_from_metadata,
     features_for_spec,
     write_surrogate_report,
 )
@@ -73,6 +74,35 @@ def test_features_for_spec_encodes_axes_and_knobs():
     assert feat["op_algebraic_space=tropical"] == 1.0
     assert feat["synthesis_kind=novel_hybrid"] == 1.0
     assert feat["knob=a"] == 1.0 and feat["knob=b"] == 1.0
+
+
+def test_features_from_metadata_includes_math_sweep_features() -> None:
+    features = features_from_metadata(
+        category="lane",
+        synthesis_kind="novel_hybrid",
+        math_axes={},
+        math_knobs=[],
+        metadata={
+            "math_sweep_passed": False,
+            "math_variant_family": "spectral_graph",
+            "math_variant_transform": "dct",
+            "math_variant_target": "binding",
+            "math_variant_score": -0.1,
+            "math_variant_delta_long_range_reach": -0.2,
+            "math_variant_delta_effective_rank": 0.3,
+            "math_variant_failure_reason": "rank_collapse",
+        },
+    )
+
+    assert features["math_variant_family=spectral_graph"] == 1.0
+    assert features["math_variant_transform=dct"] == 1.0
+    assert features["math_variant_target=binding"] == 1.0
+    assert features["math_variant_delta_long_range_reach=down"] == 1.0
+    assert features["math_variant_delta_effective_rank=up"] == 1.0
+    assert features["math_variant_failure_reason=rank_collapse"] == 1.0
+    assert features["math_variant_score"] == -0.1
+    assert features["math_sweep_passed"] == 0.0
+    assert features["math_variant_rank_collapsed"] == 1.0
 
 
 # --------------------------------------------------------------------------- #
