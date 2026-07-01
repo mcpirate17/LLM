@@ -71,6 +71,17 @@ DEFAULT_MATH_KNOBS: tuple[MathKnob, ...] = (
         cost_class="low",
         rationale="causal path-graph Laplacian diffusion",
     ),
+    MathKnob(
+        knob_id="lambda_functional_blend",
+        family="lambda_functional",
+        axes={
+            "op_lambda_transform": "learned_functional_blend",
+            "op_lambda_gate": "content",
+            "op_lambda_basis": "identity",
+        },
+        cost_class="low",
+        rationale="identity-biased lambda-gated functional blend",
+    ),
 )
 
 KNOB_ID_BY_FAMILY: dict[str, str] = {

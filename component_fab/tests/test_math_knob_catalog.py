@@ -5,7 +5,10 @@ from __future__ import annotations
 import pytest
 
 from component_fab.generator.code_generator import generate_module_from_spec
-from component_fab.generator.primitive_templates import SparseBandedAdapterLane
+from component_fab.generator.primitive_templates import (
+    LambdaFunctionalAdapterLane,
+    SparseBandedAdapterLane,
+)
 from component_fab.math_knobs import math_knobs_from_axes
 from component_fab.improver.axis_variants import DEFAULT_META_DB
 from component_fab.improver.math_knob_catalog import (
@@ -25,6 +28,7 @@ def test_default_math_knob_catalog_covers_requested_families() -> None:
     assert "kernel_methods" in families
     assert "multiscale" in families
     assert "graph_diffusion" in families
+    assert "lambda_functional" in families
 
 
 def test_math_knobs_from_axes_parses_explicit_stack() -> None:
@@ -39,6 +43,9 @@ def test_math_knobs_from_axes_uses_family_fallbacks() -> None:
     assert math_knobs_from_axes({"op_math_family": "spectral_graph"}) == (
         "spectral_chebyshev",
     )
+    assert math_knobs_from_axes({"op_math_family": "lambda_functional"}) == (
+        "lambda_functional_blend",
+    )
 
 
 def test_enumerate_math_knob_compositions_against_real_db() -> None:
@@ -47,8 +54,8 @@ def test_enumerate_math_knob_compositions_against_real_db() -> None:
     specs = enumerate_math_knob_compositions(
         ["tropical_attention"], min_depth=2, max_depth=3
     )
-    # Six knobs at depth 2/3 => C(6,2) + C(6,3) = 35 specs per anchor.
-    assert len(specs) == 35
+    # Seven knobs at depth 2/3 => C(7,2) + C(7,3) = 56 specs per anchor.
+    assert len(specs) == 56
     assert any(
         spec.math_axes["op_math_knobs"]
         == "calculus_finite_difference+linear_algebra_low_rank+sparse_matrix_banded"
@@ -69,6 +76,21 @@ def test_composed_math_knob_spec_dispatches_to_stack() -> None:
     )[0]
     module = generate_module_from_spec(spec, dim=16)
     assert isinstance(module, SparseBandedAdapterLane)
+
+
+def test_lambda_math_knob_spec_dispatches_to_stack() -> None:
+    if not DEFAULT_META_DB.exists():
+        pytest.skip("meta_analysis.db not present")
+    spec = enumerate_math_knob_compositions(
+        ["tropical_attention"],
+        knobs=tuple(
+            knob for knob in DEFAULT_MATH_KNOBS if knob.knob_id == "lambda_functional_blend"
+        ),
+        min_depth=1,
+        max_depth=1,
+    )[0]
+    module = generate_module_from_spec(spec, dim=16)
+    assert isinstance(module, LambdaFunctionalAdapterLane)
 
 
 def test_score_knob_stack_rejects_exact_failed_stack(tmp_path) -> None:

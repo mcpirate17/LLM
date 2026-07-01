@@ -188,6 +188,103 @@ class GraphDiffusionAdapterLane(_ResidualAdapterLane):
         self.diffusion_steps = diffusion_steps
 
 
+class LambdaFunctionalLane(nn.Module):
+    """Identity-biased lambda-gated functional blend.
+
+    ``y = x + lambda(x, t) * (F(basis(x)) - x)``. The lambda gate is initialized
+    near zero, so the lane starts close to identity but can learn to open a
+    functional transform over channel bases that are not attention scores.
+    """
+
+    _VALID_GATES = frozenset({"content", "position", "state"})
+    _VALID_BASES = frozenset({"identity", "dct", "valuation", "phase"})
+
+    def __init__(
+        self,
+        dim: int,
+        *,
+        gate: str = "content",
+        basis: str = "identity",
+        hidden_dim: int | None = None,
+    ) -> None:
+        super().__init__()
+        if gate not in self._VALID_GATES:
+            raise ValueError(f"unsupported lambda gate {gate!r}")
+        if basis not in self._VALID_BASES:
+            raise ValueError(f"unsupported lambda basis {basis!r}")
+        hidden_dim = hidden_dim or dim
+        self.functional_in = nn.Linear(dim, hidden_dim)
+        self.functional_out = nn.Linear(hidden_dim, dim)
+        self.gate_proj = nn.Linear(dim, dim)
+        nn.init.zeros_(self.gate_proj.weight)
+        nn.init.zeros_(self.gate_proj.bias)
+        self.gate_logit = nn.Parameter(torch.full((dim,), -4.0))
+        self.register_buffer("dct_basis", self._build_dct_basis(dim), persistent=False)
+        self.lambda_gate_kind = gate
+        self.lambda_basis = basis
+        self.lambda_transform = "learned_functional_blend"
+        self.dim = dim
+
+    @staticmethod
+    def _build_dct_basis(dim: int) -> torch.Tensor:
+        positions = torch.arange(dim, dtype=torch.float32) + 0.5
+        freqs = torch.arange(dim, dtype=torch.float32).unsqueeze(1)
+        basis = torch.cos(math.pi * freqs * positions.unsqueeze(0) / float(dim))
+        basis = basis * math.sqrt(2.0 / float(dim))
+        basis[0] = basis[0] / math.sqrt(2.0)
+        return basis
+
+    def _basis_features(self, x: torch.Tensor) -> torch.Tensor:
+        if self.lambda_basis == "identity":
+            return x
+        if self.lambda_basis == "dct":
+            basis = self.dct_basis.to(device=x.device, dtype=x.dtype)
+            return torch.matmul(x, basis.t())
+        if self.lambda_basis == "valuation":
+            return torch.sign(x) * torch.log1p(x.abs())
+        if self.lambda_basis == "phase":
+            return torch.sin(x) * torch.cos(torch.roll(x, shifts=1, dims=-1))
+        raise RuntimeError("unreachable lambda basis")
+
+    def _lambda_gate(self, x: torch.Tensor) -> torch.Tensor:
+        if self.lambda_gate_kind == "content":
+            gate_input = x
+        elif self.lambda_gate_kind == "state":
+            steps = torch.arange(1, x.shape[1] + 1, device=x.device, dtype=x.dtype)
+            gate_input = _cumsum_dim1_eager(x) / steps.view(1, -1, 1)
+        elif self.lambda_gate_kind == "position":
+            positions = torch.linspace(
+                -1.0, 1.0, x.shape[1], device=x.device, dtype=x.dtype
+            )
+            gate_input = positions.view(1, -1, 1).expand_as(x)
+        else:
+            raise RuntimeError("unreachable lambda gate")
+        return torch.sigmoid(self.gate_logit.view(1, 1, -1) + self.gate_proj(gate_input))
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        features = self._basis_features(x)
+        functional = self.functional_out(torch.tanh(self.functional_in(features)))
+        gate = self._lambda_gate(x)
+        return x + gate * (functional - x)
+
+
+class LambdaFunctionalAdapterLane(_ResidualAdapterLane):
+    """Wrap a base lane with a lambda-gated functional residual blend."""
+
+    def __init__(
+        self,
+        base: nn.Module,
+        dim: int,
+        *,
+        gate: str = "content",
+        basis: str = "identity",
+    ) -> None:
+        super().__init__(base, LambdaFunctionalLane(dim, gate=gate, basis=basis), dim)
+        self.lambda_gate_kind = self.adapter.lambda_gate_kind
+        self.lambda_basis = self.adapter.lambda_basis
+        self.lambda_transform = self.adapter.lambda_transform
+
+
 class CliffordAttention(nn.Module):
     """Cl(2,0) geometric-product attention.
 

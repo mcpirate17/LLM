@@ -109,6 +109,24 @@ def test_validate_solo_cross_checks_new_math_knobs() -> None:
     assert cross["graph_diffusion_future_drift"] < 1e-5
 
 
+def test_validate_solo_cross_checks_lambda_math_knob() -> None:
+    spec = make_candidate_spec(
+        {
+            "op_algebraic_space": "tropical",
+            "op_dynamical_has_state": 0,
+            "op_math_knobs": ("lambda_functional_blend",),
+            "op_lambda_gate": "content",
+            "op_lambda_basis": "phase",
+        }
+    )
+    module = generate_module_from_spec(spec, dim=16)
+    card = validate_solo(spec, module, dim=16, seq_len=16)
+    cross = card.property_cross_check
+    assert cross["declared_math_knobs"] == ["lambda_functional_blend"]
+    assert cross["lambda_functional_consistent"] is True
+    assert 0.0 <= cross["lambda_functional_gate_mean"] < 0.1
+
+
 def test_append_scorecard_writes_jsonl(tmp_path: Path) -> None:
     spec = make_candidate_spec({"op_algebraic_space": "tropical"})
     module = TropicalAttention(dim=16)

@@ -299,6 +299,19 @@ def _math_knob_cross_check(
             and drift < 1e-5
         )
 
+    if "lambda_functional_blend" in knobs:
+        gate_values = [
+            float(torch.sigmoid(child.gate_logit).mean().item())
+            for child in module.modules()
+            if hasattr(child, "gate_logit")
+        ]
+        gate_mean = min(gate_values) if gate_values else 0.0
+        findings["lambda_functional_gate_mean"] = gate_mean
+        findings["lambda_functional_consistent"] = (
+            _module_has_class_fragment(module, "LambdaFunctional")
+            and 0.0 <= gate_mean < 0.1
+        )
+
 
 def _is_promotable(smoke: dict[str, Any], cross: dict[str, Any]) -> bool:
     required_smoke = (

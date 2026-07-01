@@ -54,6 +54,8 @@ from .primitive_templates import (
     FourierBasisLane,
     GraphDiffusionAdapterLane,
     GraphDiffusionLane,
+    LambdaFunctionalAdapterLane,
+    LambdaFunctionalLane,
     LinearStateSpaceLane,
     LowRankAdapterLane,
     LowRankFactorizedLane,
@@ -231,6 +233,14 @@ def _dispatch_math_knob(
         topology = _axis(math_axes, "op_graph_topology")
         if topology in ("causal_path_laplacian", "causal_path"):
             return GraphDiffusionLane(dim)
+    if family == "lambda_functional":
+        transform = _axis(math_axes, "op_lambda_transform")
+        if transform in ("learned_functional_blend", ""):
+            return LambdaFunctionalLane(
+                dim,
+                gate=_axis(math_axes, "op_lambda_gate") or "content",
+                basis=_axis(math_axes, "op_lambda_basis") or "identity",
+            )
     if family == "information_geometry":
         operator = _axis(math_axes, "op_info_geom_operator")
         if operator in ("fisher_attention", "fisher", ""):
@@ -341,6 +351,13 @@ def _apply_math_knobs(
             module = MultiscaleWaveletAdapterLane(module, dim)
         elif knob == "graph_laplacian_diffusion":
             module = GraphDiffusionAdapterLane(module, dim)
+        elif knob == "lambda_functional_blend":
+            module = LambdaFunctionalAdapterLane(
+                module,
+                dim,
+                gate=_axis(math_axes, "op_lambda_gate") or "content",
+                basis=_axis(math_axes, "op_lambda_basis") or "identity",
+            )
         elif knob == "info_geom_fisher":
             module = FisherAdapterLane(module, dim)
         elif knob == "spectral_chebyshev":

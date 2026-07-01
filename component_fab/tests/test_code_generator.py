@@ -23,6 +23,8 @@ from component_fab.generator.primitive_templates import (
     FourierBasisLane,
     GraphDiffusionAdapterLane,
     GraphDiffusionLane,
+    LambdaFunctionalAdapterLane,
+    LambdaFunctionalLane,
     LowRankAdapterLane,
     LowRankFactorizedLane,
     MultiscaleWaveletAdapterLane,
@@ -199,6 +201,34 @@ def test_dispatch_graph_diffusion_math_knob() -> None:
     assert isinstance(m, GraphDiffusionLane)
 
 
+def test_dispatch_lambda_functional_math_knob() -> None:
+    m = generate_module(
+        {
+            "op_math_family": "lambda_functional",
+            "op_lambda_transform": "learned_functional_blend",
+            "op_lambda_gate": "state",
+            "op_lambda_basis": "phase",
+        },
+        dim=16,
+    )
+    assert isinstance(m, LambdaFunctionalLane)
+    x = torch.randn(2, 8, 16)
+    y = m(x)
+    assert y.shape == x.shape
+    assert torch.isfinite(y).all()
+    assert float(torch.sigmoid(m.gate_logit).mean().detach()) < 0.05
+
+
+def test_lambda_functional_gate_changes_output() -> None:
+    m = LambdaFunctionalLane(16, gate="content", basis="dct")
+    x = torch.randn(2, 8, 16)
+    closed = m(x)
+    with torch.no_grad():
+        m.gate_logit.fill_(6.0)
+    opened = m(x)
+    assert (opened - closed).abs().mean().item() > 1e-4
+
+
 def test_dispatch_composes_math_knobs_over_base_lane() -> None:
     m = generate_module(
         {
@@ -235,6 +265,22 @@ def test_dispatch_composes_new_math_knobs_over_base_lane() -> None:
     assert isinstance(m.base, MultiscaleWaveletAdapterLane)
     assert isinstance(m.base.base, RandomFeatureKernelAdapterLane)
     assert isinstance(m.base.base.base, TropicalAttention)
+    x = torch.randn(2, 8, 16)
+    assert m(x).shape == x.shape
+
+
+def test_dispatch_composes_lambda_math_knob_over_base_lane() -> None:
+    m = generate_module(
+        {
+            "op_algebraic_space": "tropical",
+            "op_math_knobs": ("lambda_functional_blend",),
+            "op_lambda_gate": "content",
+            "op_lambda_basis": "valuation",
+        },
+        dim=16,
+    )
+    assert isinstance(m, LambdaFunctionalAdapterLane)
+    assert isinstance(m.base, TropicalAttention)
     x = torch.randn(2, 8, 16)
     assert m(x).shape == x.shape
 
