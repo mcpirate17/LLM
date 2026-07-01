@@ -274,3 +274,71 @@ edited by codex (post-WS-A may touch this).
 End state (after Tier 1 lands): the fab searches **4 NEW algebraic spaces, 2 NEW stage kinds,
 1 NEW stateful memory primitive, 1 NEW block template, 3 NEW invention blueprints** — anti-softmax-
 twin by construction, each with twin/collapse detectors in metadata.
+
+---
+
+## Tier D — Compaction & weight-sharing (decrease model size → less VRAM; hold accuracy + speed)
+
+**Origin:** user directive 2026-07-01 — GOAL: add as many novel mechanisms as possible
+that keep accuracy + speed but **reduce model size** (→ less VRAM in training AND
+inference). Deep version (all 22 lanes, math, gates, build-on, baselines-to-beat):
+`research/notes/component_fab_compaction_lanes_2026-07-01.md`.
+
+**Why mission-amplifying, not a throttle:** VRAM decides whether a novel non-QKV
+mechanism can train/eval at competitive scale. At cl100k the **embedding is ~75% of
+params** and per-layer O(d²)×n dominates the rest; a 3×-smaller iso-capable mechanism
+fits 3× the depth/width on the same GPU — compaction is how the novel branch reaches
+the scale where it beats softmax. MoE / pruning / PTQ / LoRA / ALBERT-tying are
+**baselines to beat**, never the path.
+
+Prefix **NM-C** (Novel Math — Compaction).
+
+| ID | Lever | Mechanism (size / FLOP win) |
+|----|-------|------------------------------|
+| NM-C1 | embedding | product-quantized / factored embedding — O(√V·d) vs O(V·d), ~10× cut at cl100k |
+| NM-C2 | embedding | compositional feature-hash token rep — zero V×d table |
+| NM-C3 | per-layer W | Monarch-parameterized mixer — O(d√d) vs O(d²), permutation learned |
+| NM-C4 | per-layer W | Kronecker-factored mixing — W=A⊗B, split learned |
+| NM-C5 | per-layer W | butterfly / orthogonal-flow weight — O(d log d), exactly orthogonal |
+| NM-C6 | per-layer W | TT / tensor-ring weighted mixer — O(d·r·log d) |
+| NM-C7 | depth | recurrent-depth weight-shared refinement — 1 block ×T, NON-softmax loop gate |
+| NM-C8 | depth | shared weight dictionary across layers — W_l=Σ c_{l,b}·M_b (B≪n) |
+| NM-C9 | depth | hypernetwork-generated per-layer weights — hyper(role,layer)→W_l |
+| NM-C10 | depth | single-layer + persistent external memory — retrieval pathway (p-adic gap fix) |
+| NM-C11 | seq/state | native block-sparse mixer — K≪d² nonzero blocks, non-softmax gate |
+| NM-C12 | seq/state | token-merging-as-mechanism — L→K, sheaf-consistent merge |
+| NM-C13 | seq/state | low-rank-native state memory — KV-analog O(r·d) not O(L·d) |
+| NM-C14 | seq/state | tropical argmax-only retrieval — top-K reads O(K), max-plus algebra |
+| NM-C15 | precision | ternary-native mixer — {−1,0,+1}, ÷16 VRAM, sign-semiring (not post-hoc) |
+| NM-C16 | precision | p-adic low-precision mixer — lossless low bit-width by valuation truncation |
+| NM-C17 | precision | dynamic precision router — capability-gated 2-bit/wider paths |
+| NM-C18 | cond. compute | Mixture-of-Depths w/ NON-softmax router (collapse-proof) |
+| NM-C19 | cond. compute | capability-gated early exit (mixing/learning-speed axes, not loss) |
+| NM-C20 | cond. compute | Mixture-of-Subspaces — O(r·d) per layer, learned grouping |
+| NM-C21 | META | active-param / footprint fab objective — rank by non-embed params per capability |
+| NM-C22 | research | knowledge-baked architectural equivalence (symmetry → 1/N size) |
+
+**Sequencing:** (1) **NM-C21** footprint objective — cheapest, multiplies every lane's
+yield; (2) **NM-C3/4/5** factorizations — biggest per-layer win, proven expressivity,
+GLM synthesis zone; (3) **NM-C1** factored embedding — biggest absolute cut (~45M at
+cl100k), coordinate on embedding path; (4) **NM-C7/NM-C10** — collapse n_layers +
+retrieval-pathway fix the p-adic scale result demands; (5) **NM-C15/NM-C16** — ÷16 VRAM
+native-bit math; (6) long tail.
+
+**Anti-collapse gates (the win silently erasing itself):**
+- weight-shared / tying (C7/C8/C9) → diversity/orthogonality + coefficient entropy + condition number;
+- low-rank (C6/C13/C20) → learned rank + capability floor + effective-rank probe;
+- recurrent-depth (C7/C18) → **NON-softmax** gate + entropy + load-balance + NM-11 twin detector
+  (the documented `recursive_depth_router` collapse must not repeat);
+- every lane ships the softmax-twin detector +, where structural, a randomized-query binding control.
+
+**Coordination:** GLM zone = NM-C3/4/5/6/14 + NM-C21 (check `ranking.py` vs codex);
+codex zone = C7/C10/C18 blueprints (`mechanism_catalog.py`); embedding path C1/C2 +
+ranking C21 may be shared → re-read fresh, additive only, stage own files, `--no-verify`,
+`Co-Authored-By: GLM-5.2`. NM-1 math-lattice ops (codex, done) are reusable forward kernels.
+
+**Done-when (program-level):** the fab can, in one cycle, (a) factor every per-layer
+weight (Monarch/Kronecker/butterfly/TT), (b) tie/share weights across layers without
+expressivity collapse, (c) shrink the embedding ≥5×, and (d) RANK candidates by
+non-embedding params per unit capability — every compact op passing fwd/bwd +
+non-collapse + twin-detector + capability nano-probe before GPU.
