@@ -30,8 +30,10 @@ import ast
 import json
 import re
 import statistics as st
+from collections import Counter
 from pathlib import Path
 
+import polars as pl
 import torch
 
 from research.tools.babi_twoarg_cpu_probe import (
@@ -66,11 +68,11 @@ def _target_binding(row) -> tuple[str, str]:
 
 
 def _with_target_bindings(df):
-    df = df.copy()
-    bindings = [_target_binding(row) for _, row in df.iterrows()]
-    df["_target_relation"] = [b[0] for b in bindings]
-    df["_target_entity"] = [b[1] for b in bindings]
-    return df
+    bindings = [_target_binding(row) for row in df.iter_rows(named=True)]
+    return df.with_columns(
+        pl.Series("_target_relation", [b[0] for b in bindings]),
+        pl.Series("_target_entity", [b[1] for b in bindings]),
+    )
 
 
 def _binding_split(df, n_holdout, seed):
@@ -93,13 +95,15 @@ def _binding_split(df, n_holdout, seed):
         raise ValueError(f"could only select {len(held_pairs)} distinct held bindings")
 
     held_set = set(held_pairs)
-    is_test = df.apply(
-        lambda row: (row["_target_relation"], row["_target_entity"]) in held_set,
-        axis=1,
+    is_test = pl.Series(
+        [
+            (rel, ent) in held_set
+            for rel, ent in zip(df["_target_relation"], df["_target_entity"])
+        ]
     )
-    train = df[~is_test].reset_index(drop=True)
-    test = df[is_test].reset_index(drop=True)
-    train_answers = set(train["answer"].astype(str).str.rstrip("."))
+    train = df.filter(~is_test)
+    test = df.filter(is_test)
+    train_answers = set(train["answer"].cast(pl.String).str.strip_chars_end("."))
     missing = sorted(held_entities - train_answers)
     if missing:
         raise AssertionError(
@@ -116,10 +120,11 @@ def _binding_split(df, n_holdout, seed):
 def _majority_accuracy(train, test, candidates) -> tuple[str, float]:
     """Accuracy of the most frequent train answer within the candidate set."""
     cand = set(candidates)
-    counts = train[train["answer"].isin(cand)]["answer"].value_counts()
-    if counts.empty:
+    overlap = train.filter(pl.col("answer").is_in(cand))["answer"].to_list()
+    if not overlap:
         raise ValueError(f"no training answers overlap candidates {sorted(cand)!r}")
-    pred = str(counts.idxmax())
+    counts = Counter(overlap)  # insertion-ordered: ties go to the first-seen answer
+    pred = str(max(counts.items(), key=lambda kv: kv[1])[0])
     return pred, float((test["answer"] == pred).mean())
 
 
@@ -257,9 +262,8 @@ def main() -> None:
     args = ap.parse_args()
 
     df = _load_category(CATEGORY)
-    df = df.copy()
-    df["answer"] = df["answer"].astype(str).str.rstrip(".")
-    rooms = sorted(df["answer"].unique())
+    df = df.with_columns(pl.col("answer").cast(pl.String).str.strip_chars_end("."))
+    rooms = sorted(df["answer"].unique().to_list())
     room_toks = [_answer_token(r) for r in rooms]
     strict_chance = 1.0 / len(rooms)
 

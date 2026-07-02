@@ -22,6 +22,7 @@ import json
 import statistics as st
 from pathlib import Path
 
+import polars as pl
 import torch
 
 from research.tools.babi_twoarg_cpu_probe import (
@@ -29,6 +30,7 @@ from research.tools.babi_twoarg_cpu_probe import (
     _answer_token,
     _encode_rows,
     _load_category,
+    _majority_fraction,
     _split,
     _train,
 )
@@ -43,12 +45,14 @@ AXES = {
 
 def _prep(cat: str):
     """Load + normalize a category; return (df, candidate_tokens, majority)."""
-    df = _load_category(cat)
-    df = df.copy()
-    df["answer"] = df["answer"].astype(str).str.rstrip(".")  # 'office.' -> 'office'
-    answers = sorted(df["answer"].unique())
+    df = _load_category(cat).with_columns(
+        pl.col("answer")
+        .cast(pl.String)
+        .str.strip_chars_end(".")  # 'office.' -> 'office'
+    )
+    answers = sorted(df["answer"].unique().to_list())
     cand = [_answer_token(a) for a in answers]
-    majority = df["answer"].value_counts().iloc[0] / len(df)
+    majority = _majority_fraction(df["answer"])
     return df, cand, majority, answers
 
 

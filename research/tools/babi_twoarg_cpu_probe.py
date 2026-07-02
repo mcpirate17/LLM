@@ -25,7 +25,7 @@ import argparse
 import json
 from pathlib import Path
 
-import pandas as pd
+import polars as pl
 import tiktoken
 import torch
 import torch.nn.functional as F
@@ -44,29 +44,30 @@ def _answer_token(word: str) -> int:
     return ids[0]
 
 
-def _load_category(cat: str) -> pd.DataFrame:
-    tr = pd.read_csv(DATA / "train.csv")
-    test_df = pd.read_csv(DATA / "test.csv")
-    df = pd.concat([tr, test_df], ignore_index=True)
-    df = df[df["query_type"] == cat].copy()
+def _load_category(cat: str) -> pl.DataFrame:
+    tr = pl.read_csv(DATA / "train.csv")
+    test_df = pl.read_csv(DATA / "test.csv")
+    df = pl.concat([tr, test_df], how="vertical")
+    df = df.filter(pl.col("query_type") == cat)
     # dedupe on the full prompt so train/test can't share identical rows
-    df = df.drop_duplicates(subset=["query"]).reset_index(drop=True)
-    return df
+    return df.unique(subset=["query"], keep="first", maintain_order=True)
 
 
-def _split(df: pd.DataFrame, frac_test: float, seed: int):
+def _majority_fraction(answers: pl.Series) -> float:
+    """Fraction of the most frequent answer (the majority-class baseline)."""
+    return answers.value_counts()["count"].max() / len(answers)
+
+
+def _split(df: pl.DataFrame, frac_test: float, seed: int):
     g = torch.Generator().manual_seed(seed)
     perm = torch.randperm(len(df), generator=g).tolist()
     n_test = int(len(df) * frac_test)
     test_idx = set(perm[:n_test])
-    train = df.iloc[[i for i in range(len(df)) if i not in test_idx]].reset_index(
-        drop=True
-    )
-    test = df.iloc[sorted(test_idx)].reset_index(drop=True)
-    return train, test
+    is_test = pl.Series([i in test_idx for i in range(len(df))])
+    return df.filter(~is_test), df.filter(is_test)
 
 
-def _encode_rows(df: pd.DataFrame, max_len: int):
+def _encode_rows(df: pl.DataFrame, max_len: int):
     """Return (input_ids[B,L] padded, answer_pos[B], answer_tok[B]).
 
     The model is trained/scored to predict the answer token at the position of
@@ -74,7 +75,7 @@ def _encode_rows(df: pd.DataFrame, max_len: int):
     """
     # guardrail: allow-complexity - tiny CSV tokenizer loop; model training dominates.
     seqs, ans_pos, ans_tok = [], [], []
-    for _, row in df.iterrows():
+    for row in df.iter_rows(named=True):
         prompt = ENC.encode(str(row["query"]))
         a = _answer_token(str(row["answer"]))
         # sequence = prompt + answer; predict answer at position len(prompt)-1
@@ -189,8 +190,8 @@ def main() -> None:
     # --- data ---
     two = _load_category("two-arg-relations")
     ind = _load_category("basic-induction")
-    rooms = sorted(two["answer"].unique())
-    colors = sorted(ind["answer"].unique())
+    rooms = sorted(two["answer"].unique().to_list())
+    colors = sorted(ind["answer"].unique().to_list())
     room_toks = [_answer_token(r) for r in rooms]
     color_toks = [_answer_token(c) for c in colors]
 
@@ -200,8 +201,8 @@ def main() -> None:
     ind_ids, ind_pos, ind_ans = _encode_rows(ind, args.max_len + 40)
 
     # majority baselines (on train answer distribution)
-    two_major = tr["answer"].value_counts().iloc[0] / len(tr)
-    ind_major = ind["answer"].value_counts().iloc[0] / len(ind)
+    two_major = _majority_fraction(tr["answer"])
+    ind_major = _majority_fraction(ind["answer"])
 
     # --- model ---
     model = _build_tinylm(

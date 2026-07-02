@@ -1,4 +1,4 @@
-import pandas as pd
+import polars as pl
 import torch
 
 from research.tools.babi_entity_holdout_probe import (
@@ -26,7 +26,7 @@ def test_target_binding_parses_supporting_relation_entity() -> None:
 def test_binding_split_keeps_held_entities_trainable() -> None:
     rooms = ["bathroom", "bedroom", "garden", "hallway"]
     relations = ["north", "south", "east", "west"]
-    df = pd.DataFrame(
+    df = pl.DataFrame(
         [
             _row(room, relation, rooms[(i + j + 1) % len(rooms)], i * 10 + j)
             for i, room in enumerate(rooms)
