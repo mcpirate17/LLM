@@ -55,13 +55,30 @@ from .quality_diversity import Elite, MapElitesArchive
 # at their seeded init — the same identity-at-init knobs, sampled instead of zero.
 _KNOB_MARKERS = ("logit", "beta", "gate", "scale", "decay", "tau")
 
+# Fraction of fresh samples whose mixer stage is a registry-wired novel
+# mechanism instead of a ParametricMix. The parametric-atom space saturates at
+# ~8/243 physics niches (measured 2026-07-02, 6K == 20K iterations); the
+# registry families are the new-mechanism supply that grows coverage.
+_REGISTRY_STAGE_PROB = 1.0 / 3.0
+
+
+@dataclass(frozen=True)
+class RegistryStageSpec:
+    """Mixer stage backed by a registry-wired novel op (NM-C / NM-F)."""
+
+    op_name: str
+
+    @property
+    def key(self) -> str:
+        return f"reg:{self.op_name}"
+
 
 @dataclass(frozen=True)
 class ProgramSpec:
     """A sampled program = atom stack + mixer stage choice + knob spread."""
 
     atom: AtomSpec
-    stage: StageSpec
+    stage: StageSpec | RegistryStageSpec
     knob_scale: float
 
     @property
@@ -103,10 +120,15 @@ def _randomize_knobs(module: nn.Module, gen: torch.Generator, scale: float) -> N
 
 def build_program(spec: ProgramSpec, dim: int, seed: int) -> nn.Module:
     """Deterministically build (and knob-randomize) a program for one seed."""
+    from .registry_mixer_atoms import build_registry_mixer
+
     gen = torch.Generator().manual_seed(seed)
     torch.manual_seed(seed)
     atoms = build_atom_stack(dim, spec.atom)
-    mixer = build_parametric_mix(dim, spec.stage)
+    if isinstance(spec.stage, RegistryStageSpec):
+        mixer = build_registry_mixer(spec.stage.op_name, dim)
+    else:
+        mixer = build_parametric_mix(dim, spec.stage)
     program = nn.Sequential(atoms, mixer)
     _randomize_knobs(program, gen, spec.knob_scale)
     return program
@@ -167,6 +189,8 @@ def _choice(seq, gen: torch.Generator):
 
 
 def _fresh(gen: torch.Generator, max_atom_depth: int) -> ProgramSpec:
+    from .registry_mixer_atoms import REGISTRY_STAGE_OPS
+
     depth = int(torch.randint(max_atom_depth + 1, (1,), generator=gen))
     kinds = tuple(_choice(ATOM_KINDS, gen) for _ in range(depth))
     atom = AtomSpec(
@@ -174,11 +198,15 @@ def _fresh(gen: torch.Generator, max_atom_depth: int) -> ProgramSpec:
         norm_axis=_choice(NORM_AXES, gen),
         basis_axis=_choice(BASIS_AXES, gen),
     )
-    stage = StageSpec(
-        address=_choice(ADDRESS_FAMILIES, gen),
-        score_norm=_choice(SCORE_NORM_FAMILIES, gen),
-        aggregate=_choice(AGGREGATE_FAMILIES, gen),
-    )
+    stage: StageSpec | RegistryStageSpec
+    if float(torch.rand(1, generator=gen)) < _REGISTRY_STAGE_PROB:
+        stage = RegistryStageSpec(op_name=_choice(REGISTRY_STAGE_OPS, gen))
+    else:
+        stage = StageSpec(
+            address=_choice(ADDRESS_FAMILIES, gen),
+            score_norm=_choice(SCORE_NORM_FAMILIES, gen),
+            aggregate=_choice(AGGREGATE_FAMILIES, gen),
+        )
     knob_scale = float(0.5 + 2.5 * torch.rand(1, generator=gen))
     return ProgramSpec(atom=atom, stage=stage, knob_scale=knob_scale)
 
@@ -192,17 +220,35 @@ def _mutate(
     # the steer toward empty niches. The knob spread IS the coordinate the search
     # moves along; physics descriptors are measured post-hoc, so we cannot solve
     # for an exact delta vector — pushing spread up is the implementable proxy.
+    from .registry_mixer_atoms import REGISTRY_STAGE_OPS
+
     if push:
         knob_scale = float(2.0 + 2.0 * torch.rand(1, generator=gen))
     else:
         knob_scale = float(0.5 + 2.5 * torch.rand(1, generator=gen))
-    stage = base.stage
+    stage: StageSpec | RegistryStageSpec = base.stage
     if push or float(torch.rand(1, generator=gen)) < 0.5:
-        stage = StageSpec(
-            address=_choice(ADDRESS_FAMILIES, gen),
-            score_norm=base.stage.score_norm,
-            aggregate=_choice(AGGREGATE_FAMILIES, gen),
-        )
+        if isinstance(base.stage, RegistryStageSpec):
+            # Swap within the registry family, or drop back to a parametric
+            # stage — both directions keep the search space connected.
+            if float(torch.rand(1, generator=gen)) < 0.5:
+                stage = RegistryStageSpec(op_name=_choice(REGISTRY_STAGE_OPS, gen))
+            else:
+                # Full re-roll (no score_norm to inherit) — sampling it avoids
+                # silently defaulting mutations into the softmax basin.
+                stage = StageSpec(
+                    address=_choice(ADDRESS_FAMILIES, gen),
+                    score_norm=_choice(SCORE_NORM_FAMILIES, gen),
+                    aggregate=_choice(AGGREGATE_FAMILIES, gen),
+                )
+        elif float(torch.rand(1, generator=gen)) < _REGISTRY_STAGE_PROB:
+            stage = RegistryStageSpec(op_name=_choice(REGISTRY_STAGE_OPS, gen))
+        else:
+            stage = StageSpec(
+                address=_choice(ADDRESS_FAMILIES, gen),
+                score_norm=base.stage.score_norm,
+                aggregate=_choice(AGGREGATE_FAMILIES, gen),
+            )
     return ProgramSpec(atom=base.atom, stage=stage, knob_scale=knob_scale)
 
 

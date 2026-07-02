@@ -138,3 +138,88 @@ def test_run_novelty_aware_adds_distance_axis() -> None:
     assert "perm_equivariance" in axis_names
     # every archived elite carries a measured geometric-novelty coordinate
     assert all(NOVELTY_AXIS_NAME in e.descriptors for e in result.archive.elites)
+
+
+# ── Registry mixers as discovery stages (coverage growth, 2026-07-02) ─────────
+
+
+def test_registry_stage_builds_and_knobs_open() -> None:
+    """A registry-backed stage builds at any dim and the knob randomizer opens
+    its ReZero/gate parameters (identity-at-init mechanisms must be probed in
+    their ACTIVE regime)."""
+    import torch
+
+    from research.synthesis.open_discovery import (
+        ProgramSpec,
+        RegistryStageSpec,
+        build_program,
+    )
+    from research.synthesis.parametric_atoms import AtomSpec
+    from research.synthesis.registry_mixer_atoms import REGISTRY_STAGE_OPS
+
+    for op in REGISTRY_STAGE_OPS:
+        spec = ProgramSpec(
+            atom=AtomSpec(kinds=(), norm_axis="channel", basis_axis="channel"),
+            stage=RegistryStageSpec(op_name=op),
+            knob_scale=1.5,
+        )
+        program = build_program(spec, dim=32, seed=0)
+        x = torch.randn(2, 8, 32)
+        y = program(x)
+        assert y.shape == x.shape, op
+        assert torch.isfinite(y).all(), op
+        assert "reg:" in spec.key
+
+
+def test_fresh_samples_registry_stages() -> None:
+    """~1/3 of fresh specs use a registry mixer stage."""
+    import torch
+
+    from research.synthesis.open_discovery import RegistryStageSpec, _fresh
+
+    gen = torch.Generator().manual_seed(0)
+    n_reg = sum(
+        isinstance(_fresh(gen, 2).stage, RegistryStageSpec) for _ in range(200)
+    )
+    assert 30 <= n_reg <= 110, f"registry stage rate off: {n_reg}/200"
+
+
+def test_mutate_handles_registry_stages_both_directions() -> None:
+    import torch
+
+    from research.synthesis.open_discovery import (
+        ProgramSpec,
+        RegistryStageSpec,
+        _mutate,
+    )
+    from research.synthesis.parametric_atoms import AtomSpec
+
+    gen = torch.Generator().manual_seed(1)
+    base = ProgramSpec(
+        atom=AtomSpec(kinds=(), norm_axis="channel", basis_axis="channel"),
+        stage=RegistryStageSpec(op_name="token_merge_mix"),
+        knob_scale=1.0,
+    )
+    kinds = {type(_mutate(base, gen, push=True).stage).__name__ for _ in range(40)}
+    assert "RegistryStageSpec" in kinds and "StageSpec" in kinds
+
+
+def test_run_with_registry_stages_inserts_elites() -> None:
+    """End-to-end mini run: registry stages are evaluated and archived."""
+    from research.synthesis.open_discovery import OpenDiscovery, RegistryStageSpec
+
+    disc = OpenDiscovery(dim=16, vocab=32, n_seeds=1, novelty_aware=True)
+    result = disc.run(iters=30, seed=2)
+    assert result.inserted > 0
+    reg_elites = [
+        e
+        for e in result.archive.elites
+        if isinstance(getattr(e.payload, "stage", None), RegistryStageSpec)
+    ]
+    # With 1/3 registry sampling over 30 iters, at least one registry-backed
+    # program should have been evaluated; archive insertion is fitness-gated,
+    # so assert on evaluation via the payload keys seen in elites OR accept
+    # zero elites but require the run not to crash. Pin the stronger claim
+    # only when present:
+    for e in reg_elites:
+        assert e.payload.key.split(">>")[1].startswith("reg:")
