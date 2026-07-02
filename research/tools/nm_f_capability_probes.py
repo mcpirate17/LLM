@@ -14,15 +14,42 @@ two falsifiable predictions made in ``tasks/nm_f_operator_families_2026-07-01.md
     decay-by-parameterization baseline, identical except for the state law)
     falls off. A tiny 2-layer RoPE transformer runs as the positive-control
     probe in both (a control, NOT a new baseline training run).
+  * **Probe C (NM-F2)** — overwrite: keys bound once (k→v1), a subset REBOUND
+    later (k→v2), dense query over all bound keys. Split accuracy: overwritten
+    keys (must return v2) vs once-written control keys. Prediction:
+    ``IdempotentObliqueMemory``'s projector overwrite returns v2 exactly; an
+    additive-blend memory leaks a v1/v2 mixture and fails the overwritten split
+    while passing the control split.
+  * **Probe D (NM-F3)** — anagram/order discrimination: a window, then (after a
+    gap) either an exact repeat or a random permutation of it; binary
+    same/permuted prediction. Prediction: ``NilpotentLieScan``'s Chen-identity
+    level-2 term is order-sensitive by construction; a commutative/sum-pooling
+    mixer sees identical bags-of-tokens in both cases and sits at chance (0.5).
+  * **Probe E (NM-F5)** — length-extrapolated mod-counter: running count of a
+    marked token mod 2 and mod 4, queried at sequence end. Train at body length
+    128, eval at {128,512,1024,4096} (32x extrapolation). Prediction:
+    ``PortHamiltonianMixer``'s certified energy-norm contraction keeps state
+    trackable far past train length; the attention control is reported honestly
+    at every length (this is the lane a non-QKV mixer should beat it outright).
+  * **Probe F (NM-F6)** — induction distance generalization: classic induction
+    (…A B … A → predict B) with train copy-gap in {8,32,64}, eval gap buckets
+    {8,32,64 in-dist, 256,1024,2048}. Prediction: ``ScaleEquivariantWaveletStack``'s
+    shared mother filter reused at dyadic dilations gives receptive field
+    ``2**n_scales`` while params grow linearly — it should track the A…B gap far
+    past anything a fixed local conv spans.
 
 Pair/query positions are randomized every sequence — a recency/positional
-shortcut cannot pass either task. 3 seeds, median-of-seeds reported. Writes JSON
+shortcut cannot pass any task. 3 seeds, median-of-seeds reported. Writes JSON
 to ``research/reports/nm_f_probes/`` (auto-pruned); durable conclusions go to
 ``research/notes/``. NO runs.db / notebook writes — this is a standalone probe.
+None of the new probes (C-F) have a dedicated hard-negative/scatter control
+variant the way binding does — every JSON result carries
+``"saturation_control": "none"`` rather than silently omitting the check.
 
 Usage:
     python research/tools/nm_f_capability_probes.py --probe all --seeds 3
     python research/tools/nm_f_capability_probes.py --probe binding --steps 30 --seeds 1
+    python research/tools/nm_f_capability_probes.py --probe overwrite --steps 30 --seeds 1
 """
 
 from __future__ import annotations
@@ -47,15 +74,29 @@ from research.synthesis.cdma_slot_binding import (  # noqa: E402
     CDMASlotBinding,
     gold_cross_correlation_bound,
 )
+from research.synthesis.idempotent_oblique_memory import (  # noqa: E402
+    IdempotentObliqueMemory,
+)
 from research.synthesis.integral_control_gate import IntegralControlMixer  # noqa: E402
+from research.synthesis.nilpotent_lie_scan import NilpotentLieScan  # noqa: E402
+from research.synthesis.port_hamiltonian_mix import PortHamiltonianMixer  # noqa: E402
+from research.synthesis.scale_equivariant_wavelet import (  # noqa: E402
+    ScaleEquivariantWaveletStack,
+)
+from research.tools._nm_f_probe_tasks import (  # noqa: E402
+    FILLER,
+    KEYS,
+    QUERY_TOK,
+    VALUES,
+    run_anagram_probe,
+    run_induction_probe,
+    run_modcounter_probe,
+    run_overwrite_probe,
+)
 
 VOCAB = 256
 DIM = 256
 N_BLOCKS = 2
-QUERY_TOK = 1
-KEYS = (8, 72)  # 64 keys
-VALUES = (128, 192)  # 64 values
-FILLER = (200, 250)
 REPORT_DIR = Path(__file__).resolve().parents[1] / "reports" / "nm_f_probes"
 
 
@@ -311,6 +352,34 @@ def build_mixer(name: str) -> nn.Module:
         return DeltaWrap(IntegralControlMixer(DIM))
     if name == "ema":
         return EMAMixer(DIM)
+    if name.startswith("oblique"):
+        # Name grammar: oblique[r{rank}], e.g. obliquer8 (default rank 4).
+        spec = re.fullmatch(r"oblique(?:r(\d+))?", name)
+        if spec is None:
+            raise ValueError(f"bad oblique mixer spec {name!r}")
+        rank = int(spec.group(1)) if spec.group(1) else 4
+        return DeltaWrap(IdempotentObliqueMemory(DIM, rank=rank))
+    if name.startswith("lie"):
+        # Name grammar: lie[k{lift_dim}], e.g. liek32 (default lift_dim 16).
+        spec = re.fullmatch(r"lie(?:k(\d+))?", name)
+        if spec is None:
+            raise ValueError(f"bad lie mixer spec {name!r}")
+        lift_dim = int(spec.group(1)) if spec.group(1) else 16
+        return DeltaWrap(NilpotentLieScan(DIM, lift_dim=lift_dim))
+    if name.startswith("phmix"):
+        # Name grammar: phmix[b{band}], e.g. phmixb8 (default band 4).
+        spec = re.fullmatch(r"phmix(?:b(\d+))?", name)
+        if spec is None:
+            raise ValueError(f"bad phmix mixer spec {name!r}")
+        band = int(spec.group(1)) if spec.group(1) else 4
+        return DeltaWrap(PortHamiltonianMixer(DIM, band=band))
+    if name.startswith("wavelet"):
+        # Name grammar: wavelet[n{n_scales}], e.g. waveletn8 (default n_scales 5).
+        spec = re.fullmatch(r"wavelet(?:n(\d+))?", name)
+        if spec is None:
+            raise ValueError(f"bad wavelet mixer spec {name!r}")
+        n_scales = int(spec.group(1)) if spec.group(1) else 5
+        return DeltaWrap(ScaleEquivariantWaveletStack(DIM, n_scales=n_scales))
     if name == "attn":
         return RoPEAttention(DIM)
     raise ValueError(f"unknown mixer {name!r}")
@@ -366,15 +435,20 @@ class ProbeBlock(nn.Module):
         return x + self.mlp(self.norm2(x))
 
 
+#: State-recurrent mixers without their own previous-token shift pathway (unlike
+#: attention's previous-token heads, CDMA's frozen write-address taps — F9.2
+#: ablation, the block conv POLLUTES its read addresses — and the wavelet
+#: stack / nilpotent-Lie scan, whose own dyadic-conv / cumsum reach already
+#: covers adjacent tokens). Matched by prefix so e.g. ``obliquer8``/``phmixb8``
+#: still route through the same rule as their base names.
+NEEDS_LOCAL_CONV_PREFIXES = ("integral", "ema", "oblique", "phmix")
+
+
 class ProbeLM(nn.Module):
     def __init__(self, mixer_name: str) -> None:
         super().__init__()
         self.embed = nn.Embedding(VOCAB, DIM)
-        # Local conv only for state mixers WITHOUT their own shift pathway:
-        # attention has previous-token heads; CDMA has the frozen write-address
-        # taps (F9.2 ablation: the block conv POLLUTES its read addresses —
-        # removing it was worth ~0.10 accuracy).
-        local = mixer_name in ("integral", "ema")
+        local = mixer_name.startswith(NEEDS_LOCAL_CONV_PREFIXES)
         self.blocks = nn.ModuleList(
             [ProbeBlock(build_mixer(mixer_name), local=local) for _ in range(N_BLOCKS)]
         )
@@ -609,11 +683,23 @@ def run_retention_probe(args, device: torch.device) -> dict:
     return results
 
 
+#: Probe name -> runner, in run order. ``PROBE_TASKS`` doubles as the report
+#: JSON's task-key contract: the ingester (``ingest_nm_f_probes.py``) imports it
+#: so a probe added here without ingest coverage fails LOUD there, not silently.
+PROBE_RUNNERS: dict = {
+    "binding": run_binding_probe,
+    "retention": run_retention_probe,
+    "overwrite": run_overwrite_probe,
+    "anagram": run_anagram_probe,
+    "modcounter": run_modcounter_probe,
+    "induction": run_induction_probe,
+}
+PROBE_TASKS: tuple[str, ...] = tuple(PROBE_RUNNERS)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
-        "--probe", choices=["binding", "retention", "all"], default="all"
-    )
+    parser.add_argument("--probe", choices=[*PROBE_TASKS, "all"], default="all")
     parser.add_argument("--seeds", type=int, default=3)
     parser.add_argument("--steps", type=int, default=400)
     parser.add_argument("--batch", type=int, default=64)
@@ -634,10 +720,9 @@ def main() -> None:
         "device": str(device),
     }
     t0 = time.time()
-    if args.probe in ("binding", "all"):
-        out["binding"] = run_binding_probe(args, device)
-    if args.probe in ("retention", "all"):
-        out["retention"] = run_retention_probe(args, device)
+    for task, runner in PROBE_RUNNERS.items():
+        if args.probe in (task, "all"):
+            out[task] = runner(args, device)
     out["wall_seconds"] = round(time.time() - t0, 1)
     path = REPORT_DIR / f"{stamp}_nm_f_probes.json"
     path.write_text(json.dumps(out, indent=2))
