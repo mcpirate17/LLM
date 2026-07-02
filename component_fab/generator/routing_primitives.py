@@ -273,13 +273,11 @@ class HashedMoELane(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         bucket = self._route(x)
-        out = torch.zeros_like(x)
-        for index, expert in enumerate(self.experts):
-            mask = (bucket == index).unsqueeze(-1).to(x.dtype)
-            if mask.sum() == 0:
-                continue
-            out = out + mask * expert(x)
-        return out
+        expert_out = torch.stack([expert(x) for expert in self.experts], dim=-2)
+        gather_idx = (
+            bucket.unsqueeze(-1).unsqueeze(-1).expand(*bucket.shape, 1, x.shape[-1])
+        )
+        return expert_out.gather(-2, gather_idx).squeeze(-2)
 
 
 class DifficultyRoutedLane(nn.Module):
@@ -339,7 +337,9 @@ class AuctionCapacityRouter(nn.Module):
         return max(1, math.ceil(self.capacity_factor * seq_len / self.n_experts))
 
     @staticmethod
-    def _surrogate_weights(adjusted: torch.Tensor, available: torch.Tensor) -> torch.Tensor:
+    def _surrogate_weights(
+        adjusted: torch.Tensor, available: torch.Tensor
+    ) -> torch.Tensor:
         masked = adjusted.masked_fill(~available, -1e9)
         shifted = masked - masked.min(dim=-1, keepdim=True).values
         positive = torch.relu(shifted) * available.to(adjusted.dtype)
@@ -356,23 +356,34 @@ class AuctionCapacityRouter(nn.Module):
             )
         batch, seq_len, _ = x.shape
         bids = self.bid_proj(x)
-        prices = bids.new_zeros(batch, self.n_experts)
-        loads = torch.zeros(
-            batch, self.n_experts, dtype=torch.long, device=bids.device
-        )
         capacity = self.capacity(seq_len)
-        routes: list[torch.Tensor] = []
-        for pos in range(seq_len):
-            available = loads < capacity
-            adjusted = bids[:, pos, :] - prices
-            masked = adjusted.masked_fill(~available, -1e9)
-            chosen = masked.argmax(dim=-1)
-            hard = torch.zeros_like(adjusted).scatter_(1, chosen.unsqueeze(-1), 1.0)
-            surrogate = self._surrogate_weights(adjusted, available)
-            routes.append(hard + surrogate - surrogate.detach())
-            loads = loads + hard.to(torch.long)
-            prices = prices + hard * self.price_step
-        return torch.stack(routes, dim=1)
+        # The auction state (prices/loads) evolves only through argmax→scatter,
+        # which carries no gradient, so the sequential scan runs grad-free; the
+        # differentiable surrogate is then one batched call over all positions.
+        with torch.no_grad():
+            prices = bids.new_zeros(batch, self.n_experts)
+            loads = torch.zeros(
+                batch, self.n_experts, dtype=torch.long, device=bids.device
+            )
+            hard_steps: list[torch.Tensor] = []
+            price_steps: list[torch.Tensor] = []
+            avail_steps: list[torch.Tensor] = []
+            for pos in range(seq_len):
+                available = loads < capacity
+                adjusted = bids[:, pos, :] - prices
+                masked = adjusted.masked_fill(~available, -1e9)
+                chosen = masked.argmax(dim=-1)
+                hard = torch.zeros_like(adjusted).scatter_(1, chosen.unsqueeze(-1), 1.0)
+                hard_steps.append(hard)
+                price_steps.append(prices)
+                avail_steps.append(available)
+                loads = loads + hard.to(torch.long)
+                prices = prices + hard * self.price_step
+            hard_all = torch.stack(hard_steps, dim=1)
+            prices_all = torch.stack(price_steps, dim=1)
+            available_all = torch.stack(avail_steps, dim=1)
+        surrogate = self._surrogate_weights(bids - prices_all, available_all)
+        return hard_all + surrogate - surrogate.detach()
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.route_weights(x)
@@ -440,8 +451,8 @@ class RoutedBottleneckLane(nn.Module):
         gather_idx = topk_idx.unsqueeze(-1).expand(-1, -1, -1, x.shape[-1])
         selected = torch.gather(expert_out, dim=2, index=gather_idx)
         out = (selected * topk_vals.unsqueeze(-1)).sum(dim=2)
-        fraction_per_expert = F.one_hot(topk_idx, self.n_experts).to(x.dtype).mean(
-            dim=(0, 1, 2)
+        fraction_per_expert = (
+            F.one_hot(topk_idx, self.n_experts).to(x.dtype).mean(dim=(0, 1, 2))
         )
         mean_prob_per_expert = probs.mean(dim=(0, 1))
         self.aux_loss = (

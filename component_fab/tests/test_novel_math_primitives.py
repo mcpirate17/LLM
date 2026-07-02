@@ -23,6 +23,7 @@ from component_fab.generator.reversible_primitives import ReversibleCouplingMixe
 from component_fab.generator.routing_primitives import (
     AuctionCapacityRoutedLane,
     AuctionCapacityRouter,
+    HashedMoELane,
 )
 from component_fab.inventor.mechanism_catalog import (
     enumerate_invention_specs,
@@ -327,6 +328,75 @@ def test_auction_capacity_mixes_but_is_not_a_softmax_twin() -> None:
     assert props.cross_token_mixing > 0.05
     assert props.softmax_twin_score < 0.4
     assert not props.is_softmax_twin()
+
+
+def _reference_auction_route_weights(
+    router: AuctionCapacityRouter, x: torch.Tensor
+) -> torch.Tensor:
+    """Verbatim pre-vectorization step-wise auction (per-position surrogate)."""
+    batch, seq_len, _ = x.shape
+    bids = router.bid_proj(x)
+    prices = bids.new_zeros(batch, router.n_experts)
+    loads = torch.zeros(batch, router.n_experts, dtype=torch.long, device=bids.device)
+    capacity = router.capacity(seq_len)
+    routes: list[torch.Tensor] = []
+    for pos in range(seq_len):
+        available = loads < capacity
+        adjusted = bids[:, pos, :] - prices
+        masked = adjusted.masked_fill(~available, -1e9)
+        chosen = masked.argmax(dim=-1)
+        hard = torch.zeros_like(adjusted).scatter_(1, chosen.unsqueeze(-1), 1.0)
+        surrogate = router._surrogate_weights(adjusted, available)
+        routes.append(hard + surrogate - surrogate.detach())
+        loads = loads + hard.to(torch.long)
+        prices = prices + hard * router.price_step
+    return torch.stack(routes, dim=1)
+
+
+def test_auction_route_weights_bit_identical_to_stepwise_reference() -> None:
+    """The grad-free scan + batched surrogate must not change the mechanism:
+    forward AND input gradients stay bit-identical to the per-position loop."""
+    for seed, (batch, seq_len, dim, n_experts, cap) in enumerate(
+        [(4, 48, 16, 4, 1.0), (2, 65, 24, 6, 1.25), (8, 33, 12, 3, 2.0)]
+    ):
+        torch.manual_seed(seed)
+        router = AuctionCapacityRouter(
+            dim, n_experts=n_experts, capacity_factor=cap
+        ).double()
+        x_ref = torch.randn(
+            batch, seq_len, dim, dtype=torch.float64, requires_grad=True
+        )
+        x_new = x_ref.detach().clone().requires_grad_(True)
+        ref = _reference_auction_route_weights(router, x_ref)
+        new = router.route_weights(x_new)
+        assert torch.equal(ref, new)
+        grad_out = torch.randn_like(ref)
+        ref.backward(grad_out)
+        new.backward(grad_out)
+        assert x_ref.grad is not None and x_new.grad is not None
+        assert torch.equal(x_ref.grad, x_new.grad)
+
+
+def test_hashed_moe_gather_bit_identical_to_masked_loop() -> None:
+    """Gather dispatch must match the original per-expert masked accumulation."""
+    torch.manual_seed(0)
+    n_experts = 4
+    factories = tuple((lambda d: torch.nn.Linear(d, d)) for _ in range(n_experts))
+    lane = HashedMoELane(factories, 16).double()
+    x_ref = torch.randn(3, 40, 16, dtype=torch.float64, requires_grad=True)
+    x_new = x_ref.detach().clone().requires_grad_(True)
+    bucket = lane._route(x_ref)
+    ref = torch.zeros_like(x_ref)
+    for index, expert in enumerate(lane.experts):
+        mask = (bucket == index).unsqueeze(-1).to(x_ref.dtype)
+        ref = ref + mask * expert(x_ref)
+    new = lane(x_new)
+    assert torch.equal(ref, new)
+    grad_out = torch.randn_like(ref)
+    ref.backward(grad_out)
+    new.backward(grad_out)
+    assert x_ref.grad is not None and x_new.grad is not None
+    assert torch.equal(x_ref.grad, x_new.grad)
 
 
 # --------------------------------------------------------------------------- #
