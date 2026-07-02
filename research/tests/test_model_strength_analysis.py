@@ -2,8 +2,6 @@ from __future__ import annotations
 
 import json
 
-import pandas as pd
-
 from research.scientist.analytics.model_strength import (
     _counter_feature_map,
     _graph_features,
@@ -264,21 +262,17 @@ def test_graph_features_supports_list_nodes_and_preserves_raw_ops():
     assert features["pattern_dynamic_branch_component"] == 1
 
 
-def test_counter_feature_map_dedupes_within_row_and_preserves_index():
-    series = pd.Series(
-        [
-            ["relu", "relu", "norm"],
-            None,
-            ["norm", ""],
-            "relu",
-        ],
-        index=["a", "b", "c", "d"],
-    )
+def test_counter_feature_map_dedupes_within_row_and_preserves_position():
+    rows = [
+        ["relu", "relu", "norm"],
+        None,
+        ["norm", ""],
+        "relu",
+    ]
 
-    features = _counter_feature_map(series)
+    features = _counter_feature_map(rows)
 
     assert sorted(features) == ["norm", "relu"]
-    assert features["relu"].index.tolist() == ["a", "b", "c", "d"]
     assert features["relu"].tolist() == [1.0, 0.0, 0.0, 0.0]
     assert features["norm"].tolist() == [1.0, 0.0, 1.0, 0.0]
 
