@@ -4,6 +4,7 @@ use std::collections::HashMap;
 use rand::rngs::StdRng;
 use rand::seq::SliceRandom;
 use rand::{Rng, SeedableRng};
+use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use crate::error::AriaError;
@@ -291,17 +292,14 @@ pub fn extract_topology_features_batch_json(
     let pair_stability = parse_pair_stability_map(pair_stability_json)?;
     let op_metadata: HashMap<String, OpCategoryMeta> =
         serde_json::from_str(op_metadata_json).map_err(|e| AriaError::InvalidIR(e.to_string()))?;
-    let mut results = Vec::with_capacity(graphs.len());
-    for graph_json in graphs {
-        let graph = NotebookGraph::from_json(graph_json)?;
-        results.push(extract_topology_features_for_graph(
-            &graph,
-            &op_profiles,
-            &pair_stability,
-            &op_metadata,
-        )?);
-    }
-    Ok(results)
+    // Graphs are independent and the shared maps are read-only: parallelize.
+    graphs
+        .par_iter()
+        .map(|graph_json| {
+            let graph = NotebookGraph::from_json(graph_json)?;
+            extract_topology_features_for_graph(&graph, &op_profiles, &pair_stability, &op_metadata)
+        })
+        .collect()
 }
 
 pub fn extract_topology_feature_maps_batch(
@@ -315,19 +313,21 @@ pub fn extract_topology_feature_maps_batch(
     let pair_stability = parse_pair_stability_map(pair_stability_json)?;
     let op_metadata: HashMap<String, OpCategoryMeta> =
         serde_json::from_str(op_metadata_json).map_err(|e| AriaError::InvalidIR(e.to_string()))?;
-    let mut results = Vec::with_capacity(graphs.len());
-    for graph_json in graphs {
-        let graph = NotebookGraph::from_json(graph_json)?;
-        let topo = build_topology_index(&graph)?;
-        results.push(collect_topology_features_for_graph(
-            &graph,
-            &topo,
-            &op_profiles,
-            &pair_stability,
-            &op_metadata,
-        )?);
-    }
-    Ok(results)
+    // Graphs are independent and the shared maps are read-only: parallelize.
+    graphs
+        .par_iter()
+        .map(|graph_json| {
+            let graph = NotebookGraph::from_json(graph_json)?;
+            let topo = build_topology_index(&graph)?;
+            collect_topology_features_for_graph(
+                &graph,
+                &topo,
+                &op_profiles,
+                &pair_stability,
+                &op_metadata,
+            )
+        })
+        .collect()
 }
 
 struct InteractionModelKernel<'a> {
@@ -492,27 +492,26 @@ pub fn extract_topology_features_with_imodel_batch(
         op_names, u, u_rows, u_cols, v, v_rows, v_cols, w_s, ws_rows, ws_cols, w_l, wl_rows,
         wl_cols, b_s, b_l,
     )?;
-    let mut results = Vec::with_capacity(graphs.len());
-    for graph_json in graphs {
-        let graph = NotebookGraph::from_json(graph_json)?;
-        let topo = build_topology_index(&graph)?;
-        let mut features = collect_topology_features_for_graph(
-            &graph,
-            &topo,
-            &op_profiles,
-            &pair_stability,
-            &op_metadata,
-        )?;
-        let (min_stability, mean_stability, mean_loss) = kernel.pair_stats_for_topology(&topo);
-        features.insert("imodel_min_stability".into(), min_stability);
-        features.insert("imodel_mean_stability".into(), mean_stability);
-        features.insert("imodel_mean_loss".into(), mean_loss);
-        results.push(
-            serde_json::to_string(&features)
-                .map_err(|e| AriaError::ExecutionFailed(e.to_string()))?,
-        );
-    }
-    Ok(results)
+    // Graphs are independent; maps and the kernel are read-only: parallelize.
+    graphs
+        .par_iter()
+        .map(|graph_json| {
+            let graph = NotebookGraph::from_json(graph_json)?;
+            let topo = build_topology_index(&graph)?;
+            let mut features = collect_topology_features_for_graph(
+                &graph,
+                &topo,
+                &op_profiles,
+                &pair_stability,
+                &op_metadata,
+            )?;
+            let (min_stability, mean_stability, mean_loss) = kernel.pair_stats_for_topology(&topo);
+            features.insert("imodel_min_stability".into(), min_stability);
+            features.insert("imodel_mean_stability".into(), mean_stability);
+            features.insert("imodel_mean_loss".into(), mean_loss);
+            serde_json::to_string(&features).map_err(|e| AriaError::ExecutionFailed(e.to_string()))
+        })
+        .collect()
 }
 
 pub fn extract_topology_feature_maps_with_imodel_batch(
@@ -545,24 +544,26 @@ pub fn extract_topology_feature_maps_with_imodel_batch(
         op_names, u, u_rows, u_cols, v, v_rows, v_cols, w_s, ws_rows, ws_cols, w_l, wl_rows,
         wl_cols, b_s, b_l,
     )?;
-    let mut results = Vec::with_capacity(graphs.len());
-    for graph_json in graphs {
-        let graph = NotebookGraph::from_json(graph_json)?;
-        let topo = build_topology_index(&graph)?;
-        let mut features = collect_topology_features_for_graph(
-            &graph,
-            &topo,
-            &op_profiles,
-            &pair_stability,
-            &op_metadata,
-        )?;
-        let (min_stability, mean_stability, mean_loss) = kernel.pair_stats_for_topology(&topo);
-        features.insert("imodel_min_stability".into(), min_stability);
-        features.insert("imodel_mean_stability".into(), mean_stability);
-        features.insert("imodel_mean_loss".into(), mean_loss);
-        results.push(features);
-    }
-    Ok(results)
+    // Graphs are independent; maps and the kernel are read-only: parallelize.
+    graphs
+        .par_iter()
+        .map(|graph_json| {
+            let graph = NotebookGraph::from_json(graph_json)?;
+            let topo = build_topology_index(&graph)?;
+            let mut features = collect_topology_features_for_graph(
+                &graph,
+                &topo,
+                &op_profiles,
+                &pair_stability,
+                &op_metadata,
+            )?;
+            let (min_stability, mean_stability, mean_loss) = kernel.pair_stats_for_topology(&topo);
+            features.insert("imodel_min_stability".into(), min_stability);
+            features.insert("imodel_mean_stability".into(), mean_stability);
+            features.insert("imodel_mean_loss".into(), mean_loss);
+            Ok(features)
+        })
+        .collect()
 }
 
 fn extract_topology_features_for_graph(
@@ -970,12 +971,14 @@ pub fn extract_edge_op_pairs_json(graph_json: &str) -> Result<String, AriaError>
 }
 
 pub fn extract_edge_op_pairs_batch_json(graphs: &[String]) -> Result<Vec<String>, AriaError> {
-    let mut results = Vec::with_capacity(graphs.len());
-    for graph_json in graphs {
-        let graph = NotebookGraph::from_json(graph_json)?;
-        results.push(extract_edge_op_pairs_for_graph(&graph)?);
-    }
-    Ok(results)
+    // Graphs are independent: parallelize.
+    graphs
+        .par_iter()
+        .map(|graph_json| {
+            let graph = NotebookGraph::from_json(graph_json)?;
+            extract_edge_op_pairs_for_graph(&graph)
+        })
+        .collect()
 }
 
 fn extract_edge_op_pairs_for_graph(graph: &NotebookGraph) -> Result<String, AriaError> {
