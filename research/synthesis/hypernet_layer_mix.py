@@ -1,0 +1,261 @@
+"""NM-C9 — hypernetwork-generated per-layer weights (collapse n_layers).
+
+A tiny SHARED hypernetwork generates every virtual layer's mixing weights on
+the fly from composed conditioning embeddings:
+
+    W_{l,ρ} = hyper(layer_embed[l] + role_embed[ρ] + chunk_embed[c])   (per chunk c)
+
+The hypernet is a single tanh MLP (``embed_dim → hidden_dim → rows_per_chunk·d``)
+applied per (layer, role, chunk) site; the ``n_chunks`` generated row-blocks are
+stacked into the full ``d×d`` weight. There is NO free per-layer d²-scale
+storage anywhere: the generator's parameters are CONSTANT in ``n_layers`` —
+adding a virtual layer costs ONE embedding row + ONE ReZero scale
+(``embed_dim + 1`` params), versus ``n_roles·d²`` for an independent layer.
+This completes the **collapse-n_layers** lever (Lever 3) alongside NM-C7
+(recurrent ``W^k``), NM-C8 (weight dictionary) and NM-C10 (external memory).
+
+Each virtual layer applies its ``n_roles`` generated weights as a chain inside
+one residual branch (tanh between roles ⟹ for ``n_roles ≥ 2`` the branch is a
+GENERATED micro-MLP, so the role conditioning is load-bearing, not a relabel):
+
+    u = W_{l,ρ_last} · tanh( … tanh(W_{l,ρ_0} · x) … );   x ← x + α_l · u
+
+Novelty vs the Lever-3 siblings: NM-C8 stores an EXPLICIT ``n_basis·d²`` bank
+and every ``W_l`` is a FREE linear combination of it; NM-C9 stores no bank —
+weights are NONLINEAR functions of (role, layer) conditioning through a shared
+generator whose largest tensor is the chunk-shared output projection
+``hidden_dim·(d/n_chunks)·d`` (≤ ``d²`` at defaults, and shared across ALL
+layers, roles, and chunks). Distinct from NM-C7 (one ``W`` applied ``k`` times).
+Distinct from ALBERT weight tying: layers get DISTINCT generated weights, and
+the degenerate regime is detectable (below).
+
+The documented risk of this lane is HYPERNET CAPACITY — an under-sized or
+collapsed generator emits weights that do not span the required rank, or emits
+the SAME weight for every layer (silent ALBERT tying). Both gates ship here:
+
+- ``generated_rank(l, ρ)`` / ``min_rank_fraction()`` — numerical rank of each
+  generated weight over ``d``; the spec's "generated weights span the required
+  rank" capability gate for the fab's ranking/improver.
+- ``layer_tying_loss()`` — differentiable mean pairwise squared cosine of the
+  flattened per-layer weights. Exact tying (hypernet ignores the layer
+  embedding) ⟹ 1.0; healthy compositional conditioning sits well below (the
+  role/chunk embeddings are shared across layers, so the floor is moderate,
+  not 0 — the gate threshold is "≈1 = tying degeneracy"). The fab adds this to
+  the training loss so the generator cannot silently collapse to one matrix.
+
+Identity-at-init: per-layer ReZero scales ``α_l = 0`` ⟹ the whole stack is
+``x`` exactly. Pointwise per token (each token mixed only by its layer's
+generated weights, never with another token) ⟹ ``cross_token_mixing ≈ 0`` ⟹
+passes the NM-11 softmax-twin detector and is NM-10-measurable. Registry
+wiring DEFERRED (NM-C3/C5/C7/C8/C10/C15/C16 convention).
+"""
+
+from __future__ import annotations
+
+import math
+
+import torch
+from torch import nn
+
+_TYING_EPS = 1e-12
+
+
+def hyper_layer_param_count(
+    dim: int,
+    n_layers: int,
+    *,
+    n_roles: int = 2,
+    n_chunks: int = 8,
+    embed_dim: int = 16,
+    hidden_dim: int = 8,
+) -> int:
+    """Exact trainable parameter count.
+
+    Embeddings ``embed_dim·(n_layers + n_roles + n_chunks)`` + generator MLP
+    ``embed_dim·hidden_dim + hidden_dim`` (input layer) +
+    ``hidden_dim·(dim/n_chunks)·dim + (dim/n_chunks)·dim`` (chunk-shared output
+    projection) + ``n_layers`` ReZero scales. The independent-layer baseline is
+    ``n_layers·n_roles·d²``; only the embedding table and scales grow with
+    depth, so the cut widens as ``n_layers`` grows.
+    """
+    _validate(dim, n_layers, n_roles, n_chunks, embed_dim, hidden_dim)
+    rows_per_chunk = dim // n_chunks
+    return (
+        embed_dim * (n_layers + n_roles + n_chunks)
+        + embed_dim * hidden_dim
+        + hidden_dim
+        + hidden_dim * rows_per_chunk * dim
+        + rows_per_chunk * dim
+        + n_layers
+    )
+
+
+def _validate(
+    dim: int,
+    n_layers: int,
+    n_roles: int,
+    n_chunks: int,
+    embed_dim: int,
+    hidden_dim: int,
+) -> None:
+    if dim < 1 or n_layers < 1 or n_roles < 1 or n_chunks < 1:
+        raise ValueError(
+            f"need dim>=1, n_layers>=1, n_roles>=1, n_chunks>=1; "
+            f"got {dim=}, {n_layers=}, {n_roles=}, {n_chunks=}"
+        )
+    if embed_dim < 1 or hidden_dim < 1:
+        raise ValueError(
+            f"need embed_dim>=1, hidden_dim>=1; got {embed_dim=}, {hidden_dim=}"
+        )
+    if dim % n_chunks != 0:
+        raise ValueError(f"dim must be divisible by n_chunks; got {dim=}, {n_chunks=}")
+
+
+class HyperLayerMix(nn.Module):
+    """NM-C9 — virtual-depth mixer whose per-layer weights are GENERATED by a
+    tiny shared hypernetwork conditioned on (role, layer).
+
+    ``forward(x)`` applies ``n_layers`` residual layers; layer ``l`` chains its
+    ``n_roles`` generated weights (tanh between roles) and updates
+    ``x ← x + α_l · u``. ``materialize_weights()`` exposes all generated
+    weights ``(n_layers, n_roles, d, d)``; ``generated_rank`` /
+    ``min_rank_fraction`` and ``layer_tying_loss`` are the capacity and
+    anti-tying gates.
+    """
+
+    def __init__(
+        self,
+        dim: int,
+        *,
+        n_layers: int = 4,
+        n_roles: int = 2,
+        n_chunks: int = 8,
+        embed_dim: int = 16,
+        hidden_dim: int = 8,
+    ) -> None:
+        super().__init__()
+        _validate(dim, n_layers, n_roles, n_chunks, embed_dim, hidden_dim)
+        self.dim = int(dim)
+        self.n_layers = int(n_layers)
+        self.n_roles = int(n_roles)
+        self.n_chunks = int(n_chunks)
+        self.embed_dim = int(embed_dim)
+        self.hidden_dim = int(hidden_dim)
+        self.rows_per_chunk = self.dim // self.n_chunks
+
+        # Conditioning embeddings — the ONLY parameters that grow with depth.
+        self.layer_embed = nn.Parameter(torch.randn(self.n_layers, self.embed_dim))
+        self.role_embed = nn.Parameter(torch.randn(self.n_roles, self.embed_dim))
+        self.chunk_embed = nn.Parameter(torch.randn(self.n_chunks, self.embed_dim))
+
+        # Shared generator MLP. Input layer std 1/sqrt(3·embed_dim): the
+        # conditioning is a sum of 3 unit-std embeddings, so pre-activations
+        # land in tanh's live region instead of saturating.
+        self.w_in = nn.Parameter(
+            torch.randn(self.embed_dim, self.hidden_dim)
+            / math.sqrt(3.0 * self.embed_dim)
+        )
+        self.b_in = nn.Parameter(torch.zeros(self.hidden_dim))
+        # Chunk-shared output projection — the largest tensor in the module:
+        # hidden_dim·(d/n_chunks)·d, constant in n_layers/n_roles/n_chunks.
+        # std 1/sqrt(hidden_dim·dim) ⟹ generated W entries ~ std 1/sqrt(d),
+        # well-scaled for an N(0,1) input once a ReZero scale opens.
+        out_features = self.rows_per_chunk * self.dim
+        self.w_out = nn.Parameter(
+            torch.randn(self.hidden_dim, out_features)
+            / math.sqrt(self.hidden_dim * self.dim)
+        )
+        self.b_out = nn.Parameter(torch.zeros(out_features))
+        # Per-layer ReZero scales: 0 at init ⟹ the whole stack is the identity.
+        self.layer_scales = nn.Parameter(torch.zeros(self.n_layers))
+
+    @property
+    def num_parameters(self) -> int:
+        return hyper_layer_param_count(
+            self.dim,
+            self.n_layers,
+            n_roles=self.n_roles,
+            n_chunks=self.n_chunks,
+            embed_dim=self.embed_dim,
+            hidden_dim=self.hidden_dim,
+        )
+
+    def materialize_weights(self) -> torch.Tensor:
+        """All generated weights ``(n_layers, n_roles, d, d)``.
+
+        Composes the conditioning ``z = layer ⊕ role ⊕ chunk`` (broadcast sum),
+        runs the shared tanh MLP per site, and stacks the ``n_chunks`` generated
+        row-blocks into each full ``d×d`` weight. Vectorized — one generator
+        pass materializes every layer and role at once.
+        """
+        z = (
+            self.layer_embed[:, None, None, :]
+            + self.role_embed[None, :, None, :]
+            + self.chunk_embed[None, None, :, :]
+        )  # (n_layers, n_roles, n_chunks, embed_dim)
+        h = torch.tanh(z @ self.w_in + self.b_in)  # (..., hidden_dim)
+        rows = h @ self.w_out + self.b_out  # (..., rows_per_chunk·d)
+        return rows.reshape(
+            self.n_layers, self.n_roles, self.n_chunks * self.rows_per_chunk, self.dim
+        )
+
+    def materialize_weight(self, layer_idx: int, role_idx: int = 0) -> torch.Tensor:
+        """The generated weight ``W_{l,ρ}`` for one (layer, role) site: ``(d, d)``."""
+        if not 0 <= layer_idx < self.n_layers:
+            raise IndexError(f"layer_idx {layer_idx} out of [0, {self.n_layers})")
+        if not 0 <= role_idx < self.n_roles:
+            raise IndexError(f"role_idx {role_idx} out of [0, {self.n_roles})")
+        return self.materialize_weights()[layer_idx, role_idx]
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        weights = self.materialize_weights()  # (n_layers, n_roles, d, d)
+        out = x
+        for layer in range(self.n_layers):
+            u = out
+            for role in range(self.n_roles):
+                u = torch.einsum("ij,...j->...i", weights[layer, role], u)
+                if role < self.n_roles - 1:
+                    u = torch.tanh(u)
+            out = out + self.layer_scales[layer] * u
+        return out
+
+    def generated_rank(self, layer_idx: int, role_idx: int = 0) -> int:
+        """Numerical rank of the generated weight at one (layer, role) site."""
+        with torch.no_grad():
+            w = self.materialize_weight(layer_idx, role_idx).float()
+            return int(torch.linalg.matrix_rank(w).item())
+
+    def min_rank_fraction(self) -> float:
+        """The hypernet-capacity gate: ``min rank(W_{l,ρ}) / d`` over ALL sites.
+
+        1.0 ⟹ every generated weight is full rank (the generator spans the
+        required rank); ≪1 ⟹ the generator has collapsed (e.g. its output
+        projection degenerated to a shared rank-1 row pattern) and the virtual
+        layers cannot express full mixing — the fab's gate for this lane.
+        """
+        with torch.no_grad():
+            weights = self.materialize_weights().float()
+            flat = weights.reshape(-1, self.dim, self.dim)
+            ranks = torch.linalg.matrix_rank(flat)
+            return float(ranks.min().item()) / self.dim
+
+    def layer_tying_loss(self) -> torch.Tensor:
+        """Anti-ALBERT guard: mean pairwise squared cosine of the flattened
+        per-layer generated weights (roles concatenated), scalar.
+
+        Exact weight tying — the generator ignoring the layer embedding, every
+        layer emitting the SAME weights — scores 1.0. Healthy layer-conditioned
+        generation sits well below (the shared role/chunk conditioning keeps
+        the floor moderate rather than 0; the degeneracy signal is ≈1). The
+        fab adds this to the training loss so the hypernet cannot silently
+        collapse to plain weight tying.
+        """
+        flat = self.materialize_weights().reshape(self.n_layers, -1)
+        if self.n_layers < 2:
+            return flat.new_zeros(())
+        gram = flat @ flat.t()  # (n_layers, n_layers)
+        diag = gram.diagonal().clamp_min(_TYING_EPS)
+        corr = gram / (diag.unsqueeze(0) * diag.unsqueeze(1)).sqrt()
+        off = corr - torch.eye(self.n_layers, device=corr.device, dtype=corr.dtype)
+        n_off = self.n_layers * (self.n_layers - 1)
+        return (off * off).sum() / n_off
