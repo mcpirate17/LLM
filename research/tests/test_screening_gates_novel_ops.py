@@ -78,3 +78,21 @@ def test_gate6_excludes_channel_only_novel_ops() -> None:
     must not sneak in and weaken it."""
     leaked = CHANNEL_ONLY_NOVEL_OPS & SEQUENCE_MIXING_OPS
     assert not leaked, f"channel-only ops must not satisfy gate 6: {sorted(leaked)}"
+
+
+def test_validation_gate_sites_are_config_aware() -> None:
+    """Both S1 validation-gate sites must read the RunConfig threshold — the
+    async path (execution_training_post) duplicated the gate with a hard-coded
+    0.6 and silently ignored the override (found 2026-07-02 when a calibration
+    batch with the knob at 0.95 still failed everything at '> 0.60')."""
+    from pathlib import Path
+
+    root = Path("research/scientist/runner")
+    for fname in ("execution_training_program.py", "execution_training_post.py"):
+        src = (root / fname).read_text()
+        assert "stage1_validation_loss_ratio_threshold" in src, (
+            f"{fname}: validation gate lost its config awareness"
+        )
+        assert "> 0.6\n" not in src and "> 0.6)" not in src.replace(
+            "getattr", ""
+        ), f"{fname}: hard-coded 0.6 validation gate reintroduced"

@@ -187,15 +187,25 @@ class _ExecutionTrainingPostMixin:
             result["gate_loss_source"] = gate_loss_source
 
             # Validation loss gate: if val loss didn't improve, fail.
+            # Config-aware threshold (0.6 default = production regime); this
+            # site is the live async path — it previously duplicated the gate
+            # in execution_training_program.py with a hard-coded 0.6, which
+            # silently ignored the RunConfig override (found 2026-07-02 when a
+            # calibration batch with the knob at 0.95 still failed everything
+            # at "> 0.60").
+            _vlr_thr = float(
+                getattr(config, "stage1_validation_loss_ratio_threshold", 0.6)
+            )
             if (
                 result["passed"]
                 and validation_loss_ratio is not None
-                and validation_loss_ratio > 0.6
+                and validation_loss_ratio > _vlr_thr
             ):
                 result["passed"] = False
                 result["error_type"] = "insufficient_learning"
                 result["error"] = (
-                    f"Validation loss ratio {validation_loss_ratio:.4f} > 0.60 — "
+                    f"Validation loss ratio {validation_loss_ratio:.4f} > "
+                    f"{_vlr_thr:.2f} — "
                     f"model memorized training but failed to generalize"
                 )
             # Inflight checks already flagged this run — override pass
