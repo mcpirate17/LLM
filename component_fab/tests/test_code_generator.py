@@ -282,6 +282,36 @@ def test_dispatch_lambda_functional_math_knob() -> None:
     assert float(torch.sigmoid(m.gate_logit).mean().detach()) < 0.05
 
 
+def test_dispatch_lambda_functional_token_basis() -> None:
+    m = generate_module(
+        {
+            "op_math_family": "lambda_functional",
+            "op_lambda_transform": "learned_functional_blend",
+            "op_lambda_gate": "content",
+            "op_lambda_basis": "token",
+        },
+        dim=16,
+    )
+    assert isinstance(m, LambdaFunctionalLane)
+    assert m.lambda_basis == "token"
+    x = torch.randn(2, 8, 16)
+    y = m(x)
+    assert y.shape == x.shape
+    assert torch.isfinite(y).all()
+
+
+def test_lambda_functional_token_basis_is_causal() -> None:
+    m = LambdaFunctionalLane(16, gate="content", basis="token").eval()
+    x = torch.randn(1, 8, 16)
+    with torch.no_grad():
+        base = m(x)
+        perturbed = x.clone()
+        perturbed[:, -1] += 5.0
+        after = m(perturbed)
+    # A causal token-domain basis must not let a future token change the prefix.
+    assert torch.allclose(base[:, :-1], after[:, :-1], atol=1e-6)
+
+
 def test_lambda_functional_gate_changes_output() -> None:
     m = LambdaFunctionalLane(16, gate="content", basis="dct")
     x = torch.randn(2, 8, 16)

@@ -303,7 +303,7 @@ class LambdaFunctionalLane(nn.Module):
     """
 
     _VALID_GATES = frozenset({"content", "position", "state"})
-    _VALID_BASES = frozenset({"identity", "dct", "valuation", "phase"})
+    _VALID_BASES = frozenset({"identity", "dct", "valuation", "phase", "token"})
 
     def __init__(
         self,
@@ -350,6 +350,9 @@ class LambdaFunctionalLane(nn.Module):
             return torch.sign(x) * torch.log1p(x.abs())
         if self.lambda_basis == "phase":
             return torch.sin(x) * torch.cos(torch.roll(x, shifts=1, dims=-1))
+        if self.lambda_basis == "token":
+            shifted = torch.cat((torch.zeros_like(x[:, :1, :]), x[:, :-1, :]), dim=1)
+            return x - shifted
         raise RuntimeError("unreachable lambda basis")
 
     def _lambda_gate(self, x: torch.Tensor) -> torch.Tensor:
@@ -365,7 +368,9 @@ class LambdaFunctionalLane(nn.Module):
             gate_input = positions.view(1, -1, 1).expand_as(x)
         else:
             raise RuntimeError("unreachable lambda gate")
-        return torch.sigmoid(self.gate_logit.view(1, 1, -1) + self.gate_proj(gate_input))
+        return torch.sigmoid(
+            self.gate_logit.view(1, 1, -1) + self.gate_proj(gate_input)
+        )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         features = self._basis_features(x)
