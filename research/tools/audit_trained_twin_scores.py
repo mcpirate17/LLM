@@ -48,6 +48,11 @@ Usage:
         --cpu-budget-seconds 600
 """
 
+# torch.device / torch.Generator are public API; pyright's stub marks them
+# private (reportPrivateImportUsage). Suppressed file-wide, matching the
+# convention in research/synthesis/idempotent_oblique_memory.py et al.
+# pyright: reportPrivateImportUsage=false
+
 from __future__ import annotations
 
 import argparse

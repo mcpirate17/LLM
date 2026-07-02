@@ -85,11 +85,14 @@ repos:
       - id: pip-audit
         name: Pip-audit dependency vulnerability check
         language: system
-        # PYSEC-2024-271 (flask-cors) and PYSEC-2025-183 (pyjwt): both at latest
-        # upstream version with no published fix as of 2026-05-21. PYSEC-2026-161
-        # (starlette 1.0.0 -> 1.0.1) is a transitive dep we can't bump from here
-        # without a wider sync. Re-audit and drop these when upstream patches land.
-        entry: uv run pip-audit --progress-spinner off --ignore-vuln PYSEC-2024-271 --ignore-vuln PYSEC-2025-183 --ignore-vuln PYSEC-2026-161
+        # pyjwt 2.12.1 is the latest published release; advisories
+        # PYSEC-2026-175/176/177/178/179 all fix in 2.13.0, which is NOT yet
+        # released upstream as of 2026-07-02. cryptography/starlette/
+        # python-multipart/msgpack/pip/pydantic-settings were bumped to fixed
+        # versions on 2026-07-02 (see .venv + uv.lock), retiring the prior
+        # PYSEC-2024-271 / PYSEC-2025-183 / PYSEC-2026-161 ignores. Drop these
+        # five the day pyjwt 2.13.0 ships.
+        entry: uv run pip-audit --progress-spinner off --ignore-vuln PYSEC-2026-175 --ignore-vuln PYSEC-2026-176 --ignore-vuln PYSEC-2026-177 --ignore-vuln PYSEC-2026-178 --ignore-vuln PYSEC-2026-179
         pass_filenames: false
       - id: protected-data-deletes
         name: Block protected research data deletes
