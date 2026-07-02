@@ -128,3 +128,27 @@ def test_probe_fails_loud_on_shape_change() -> None:
 
     with pytest.raises(ValueError):
         _measure(bad)
+
+
+def test_tells_with_precomputed_fx_match_direct_calls() -> None:
+    """The fx=/fy= dedup must be a pure forward-count saving, never a value change."""
+    from component_fab.proposer.algebraic_properties import (
+        additivity,
+        convex_range_fraction,
+        cross_token_mixing,
+        idempotence,
+    )
+
+    gen = torch.Generator().manual_seed(11)
+    x = torch.randn(2, _SEQ, _DIM, generator=gen)
+    y = torch.randn(2, _SEQ, _DIM, generator=gen)
+    for f in (_softmax_qk_mixer, _mean_pool, _token_difference):
+        fx, fy = f(x), f(y)
+        assert convex_range_fraction(f, x) == convex_range_fraction(f, x, fx=fx)
+        assert idempotence(f, x) == idempotence(f, x, fx=fx)
+        assert additivity(f, x, y) == additivity(f, x, y, fx=fx, fy=fy)
+        g1 = torch.Generator().manual_seed(3)
+        g2 = torch.Generator().manual_seed(3)
+        assert cross_token_mixing(f, x, generator=g1) == cross_token_mixing(
+            f, x, generator=g2, fx=fx
+        )

@@ -108,14 +108,16 @@ def constant_token_preservation(f: Operator, x: Tensor) -> float:
 
 
 @torch.no_grad()
-def convex_range_fraction(f: Operator, x: Tensor) -> float:
+def convex_range_fraction(
+    f: Operator, x: Tensor, *, fx: Tensor | None = None
+) -> float:
     """Fraction of output entries inside the per-channel token hull of the input.
 
     Non-negative token mixing keeps every output inside ``[min_j x_j, max_j x_j]``
     (score ~1). A tolerance scaled to the channel range absorbs float noise.
     """
     _require_3d(x)
-    y = f(x)
+    y = f(x) if fx is None else fx
     lo = x.min(dim=1, keepdim=True).values
     hi = x.max(dim=1, keepdim=True).values
     tol = 1e-4 * (hi - lo).abs() + _EPS
@@ -124,7 +126,9 @@ def convex_range_fraction(f: Operator, x: Tensor) -> float:
 
 
 @torch.no_grad()
-def cross_token_mixing(f: Operator, x: Tensor, generator=None) -> float:
+def cross_token_mixing(
+    f: Operator, x: Tensor, generator=None, *, fx: Tensor | None = None
+) -> float:
     """Does the output at a position depend on OTHER tokens? 0 for pointwise ops.
 
     Probes causally at the LAST position: resamples every earlier token, holds
@@ -138,7 +142,8 @@ def cross_token_mixing(f: Operator, x: Tensor, generator=None) -> float:
     last = x.shape[1] - 1
     if last < 1:
         return 0.0
-    y_last = f(x)[:, last, :]
+    base = f(x) if fx is None else fx
+    y_last = base[:, last, :]
     noise = torch.randn(x.shape, dtype=x.dtype, device=x.device, generator=generator)
     xp = x.clone()
     xp[:, :last, :] = noise[:, :last, :]
@@ -147,15 +152,22 @@ def cross_token_mixing(f: Operator, x: Tensor, generator=None) -> float:
 
 
 @torch.no_grad()
-def idempotence(f: Operator, x: Tensor) -> float:
+def idempotence(f: Operator, x: Tensor, *, fx: Tensor | None = None) -> float:
     """``f(f(x)) ≈ f(x)``? Projections and normalizations score ~1."""
     _require_3d(x)
-    y = f(x)
+    y = f(x) if fx is None else fx
     return _bounded(_rel_err(f(y), y))
 
 
 @torch.no_grad()
-def additivity(f: Operator, x: Tensor, y: Tensor) -> float:
+def additivity(
+    f: Operator,
+    x: Tensor,
+    y: Tensor,
+    *,
+    fx: Tensor | None = None,
+    fy: Tensor | None = None,
+) -> float:
     """``f(x + y) ≈ f(x) + f(y)``? Linear maps score ~1, nonlinear ones low.
 
     Content-dependent mixers (softmax weights computed from the input) are NOT
@@ -164,7 +176,9 @@ def additivity(f: Operator, x: Tensor, y: Tensor) -> float:
     """
     _require_3d(x)
     _require_3d(y)
-    return _bounded(_rel_err(f(x + y), f(x) + f(y)))
+    fx = f(x) if fx is None else fx
+    fy = f(y) if fy is None else fy
+    return _bounded(_rel_err(f(x + y), fx + fy))
 
 
 def softmax_twin_score(
@@ -282,16 +296,19 @@ class AlgebraicPropertyProbe:
     def _measure_from_stimuli(
         f: Operator, x: Tensor, y: Tensor, gen: torch.Generator
     ) -> dict[str, float]:
+        with torch.no_grad():
+            fx = f(x)
+            fy = f(y)
         const = constant_token_preservation(f, x)
-        convex = convex_range_fraction(f, x)
-        mixing = cross_token_mixing(f, x, generator=gen)
+        convex = convex_range_fraction(f, x, fx=fx)
+        mixing = cross_token_mixing(f, x, generator=gen, fx=fx)
         return {
             "constant_token_preservation": const,
             "convex_range_fraction": convex,
             "cross_token_mixing": mixing,
             "softmax_twin_score": softmax_twin_score(const, convex, mixing),
-            "idempotence": idempotence(f, x),
-            "additivity": additivity(f, x, y),
+            "idempotence": idempotence(f, x, fx=fx),
+            "additivity": additivity(f, x, y, fx=fx, fy=fy),
         }
 
 

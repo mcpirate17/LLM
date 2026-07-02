@@ -116,3 +116,20 @@ def test_physics_axes_bin_the_fingerprint() -> None:
     assert {"perm_equivariance", "shift_equivariance", "spectral_radius"} <= names
     # Every axis name a descriptor the probe actually produces.
     assert names <= set(PHYSICS_DESCRIPTOR_NAMES)
+
+
+def test_descriptors_with_precomputed_fx_match_direct_calls() -> None:
+    """The fx= dedup must be a pure forward-count saving, never a value change."""
+    x = _x(seed=9)
+    for f in (_pointwise, _neighbor_mix):
+        fx = f(x)
+        perm = torch.randperm(x.shape[1], generator=torch.Generator().manual_seed(2))
+        assert perm_equivariance(f, x, perm) == perm_equivariance(f, x, perm, fx=fx)
+        assert shift_equivariance(f, x, 3) == shift_equivariance(f, x, 3, fx=fx)
+        assert scale_homogeneity(f, x) == scale_homogeneity(f, x, fx=fx)
+        assert energy_gain(f, x) == energy_gain(f, x, fx=fx)
+        g1 = torch.Generator().manual_seed(4)
+        g2 = torch.Generator().manual_seed(4)
+        assert spectral_radius(f, x, generator=g1) == spectral_radius(
+            f, x, generator=g2, fx=fx
+        )

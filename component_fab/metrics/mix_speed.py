@@ -31,9 +31,10 @@ class MixSpeedScorecard:
     n_trials: int
 
 
-def _sample_trial_response(
+def _sample_trial_responses(
     forward_fn: Callable[[torch.Tensor], torch.Tensor],
     *,
+    n_trials: int,
     batch_size: int,
     seq_len: int,
     feature_dim: int,
@@ -43,7 +44,10 @@ def _sample_trial_response(
     device: str | torch.device,
     dtype: torch.dtype,
 ) -> torch.Tensor:
+    if n_trials <= 0:
+        raise ValueError("n_trials must be positive")
     x = torch.randn(
+        n_trials,
         batch_size,
         seq_len,
         feature_dim,
@@ -53,6 +57,7 @@ def _sample_trial_response(
     )
     delta = (
         torch.randn(
+            n_trials,
             batch_size,
             feature_dim,
             generator=generator,
@@ -62,20 +67,28 @@ def _sample_trial_response(
         * delta_scale
     )
     x_perturbed = x.clone()
-    x_perturbed[:, inject_at, :] = x_perturbed[:, inject_at, :] + delta
+    x_perturbed[:, :, inject_at, :] = x_perturbed[:, :, inject_at, :] + delta
+    x_flat = x.reshape(n_trials * batch_size, seq_len, feature_dim)
+    xp_flat = x_perturbed.reshape(n_trials * batch_size, seq_len, feature_dim)
 
     with torch.no_grad():
-        y = forward_fn(x)
-        y_perturbed = forward_fn(x_perturbed)
+        y = forward_fn(x_flat)
+        y_perturbed = forward_fn(xp_flat)
 
-    if y.shape != x.shape or y_perturbed.shape != x.shape:
+    if y.shape != x_flat.shape or y_perturbed.shape != x_flat.shape:
         raise ValueError(
-            f"forward_fn must preserve shape; got input {tuple(x.shape)}, "
+            f"forward_fn must preserve shape; got input {tuple(x_flat.shape)}, "
             f"output {tuple(y.shape)}"
         )
 
-    diff = (y_perturbed - y).pow(2).sum(dim=-1).sqrt()
-    return diff.mean(dim=0)
+    diff = (
+        (y_perturbed - y)
+        .reshape(n_trials, batch_size, seq_len, feature_dim)
+        .pow(2)
+        .sum(dim=-1)
+        .sqrt()
+    )
+    return diff.mean(dim=1)
 
 
 def _fold_response_by_offset(
@@ -147,20 +160,19 @@ def measure_mix_speed(
         raise ValueError(f"inject_at={inject_at} out of range [0, {seq_len})")
 
     generator = torch.Generator(device=device).manual_seed(seed)
-    accum = torch.zeros(seq_len, dtype=dtype, device=device)
-    for _ in range(n_trials):
-        accum = accum + _sample_trial_response(
-            forward_fn,
-            batch_size=batch_size,
-            seq_len=seq_len,
-            feature_dim=feature_dim,
-            inject_at=inject_at,
-            delta_scale=delta_scale,
-            generator=generator,
-            device=device,
-            dtype=dtype,
-        )
-    response = (accum / n_trials).cpu()
+    responses = _sample_trial_responses(
+        forward_fn,
+        n_trials=n_trials,
+        batch_size=batch_size,
+        seq_len=seq_len,
+        feature_dim=feature_dim,
+        inject_at=inject_at,
+        delta_scale=delta_scale,
+        generator=generator,
+        device=device,
+        dtype=dtype,
+    )
+    response = responses.mean(dim=0).cpu()
     decay = _fold_response_by_offset(response, inject_at)
     half_life, peak_offset, peak, mixes_globally, is_pure_local = _classify_decay(
         decay,
@@ -209,6 +221,7 @@ def influence_matrix(
     """
     generator = torch.Generator(device=device).manual_seed(seed)
     accum = torch.zeros(seq_len, seq_len, dtype=dtype, device=device)
+    positions = torch.arange(seq_len, device=device)
     with torch.no_grad():
         for _ in range(n_trials):
             x = torch.randn(
@@ -230,11 +243,21 @@ def influence_matrix(
                 * delta_scale
             )
             y = forward_fn(x)
-            for i in range(seq_len):
-                xp = x.clone()
-                xp[:, i, :] = xp[:, i, :] + delta
-                yp = forward_fn(xp)
-                # mean L2 response over batch at each output position -> [L]
-                resp = (yp - y).pow(2).sum(dim=-1).sqrt().mean(dim=0)
-                accum[i] += resp
+            if y.shape != x.shape:
+                raise ValueError(
+                    f"forward_fn must preserve shape; got input {tuple(x.shape)}, "
+                    f"output {tuple(y.shape)}"
+                )
+            xp = x.unsqueeze(0).expand(seq_len, -1, -1, -1).clone()
+            xp[positions, :, positions, :] = xp[positions, :, positions, :] + delta
+            yp = forward_fn(xp.reshape(seq_len * batch_size, seq_len, feature_dim))
+            if yp.shape != (seq_len * batch_size, seq_len, feature_dim):
+                raise ValueError(
+                    "forward_fn must preserve shape; got batched influence output "
+                    f"{tuple(yp.shape)}"
+                )
+            yp = yp.reshape(seq_len, batch_size, seq_len, feature_dim)
+            # mean L2 response over batch at each output position -> [L, L]
+            resp = (yp - y.unsqueeze(0)).pow(2).sum(dim=-1).sqrt().mean(dim=1)
+            accum += resp
     return accum / n_trials

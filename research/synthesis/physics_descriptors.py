@@ -71,7 +71,9 @@ def _equivariance_score(rel_err: float) -> float:
 
 
 @torch.no_grad()
-def perm_equivariance(f: Operator, x: Tensor, perm: Tensor) -> float:
+def perm_equivariance(
+    f: Operator, x: Tensor, perm: Tensor, *, fx: Tensor | None = None
+) -> float:
     """How well ``f`` commutes with permuting the token (sequence) axis.
 
     ``f(P x)`` vs ``P f(x)``. A pure channel/pointwise op commutes exactly (1.0);
@@ -83,12 +85,15 @@ def perm_equivariance(f: Operator, x: Tensor, perm: Tensor) -> float:
             f"perm must have shape ({x.shape[1]},); got {tuple(perm.shape)}"
         )
     f_of_perm = f(x[:, perm, :])
-    perm_of_f = f(x)[:, perm, :]
+    base = f(x) if fx is None else fx
+    perm_of_f = base[:, perm, :]
     return _equivariance_score(_rel_err(f_of_perm, perm_of_f))
 
 
 @torch.no_grad()
-def shift_equivariance(f: Operator, x: Tensor, k: int) -> float:
+def shift_equivariance(
+    f: Operator, x: Tensor, k: int, *, fx: Tensor | None = None
+) -> float:
     """How well ``f`` commutes with a circular shift of tokens by ``k``.
 
     ``f(shift_k x)`` vs ``shift_k f(x)``. Translation-equivariant operators
@@ -97,12 +102,15 @@ def shift_equivariance(f: Operator, x: Tensor, k: int) -> float:
     """
     _require_3d(x)
     f_of_shift = f(torch.roll(x, shifts=k, dims=1))
-    shift_of_f = torch.roll(f(x), shifts=k, dims=1)
+    base = f(x) if fx is None else fx
+    shift_of_f = torch.roll(base, shifts=k, dims=1)
     return _equivariance_score(_rel_err(f_of_shift, shift_of_f))
 
 
 @torch.no_grad()
-def scale_homogeneity(f: Operator, x: Tensor, alpha: float = 2.0) -> float:
+def scale_homogeneity(
+    f: Operator, x: Tensor, alpha: float = 2.0, *, fx: Tensor | None = None
+) -> float:
     """Degree-1 homogeneity: how close is ``f(alpha x)`` to ``alpha f(x)``?
 
     Linear maps score 1.0; saturating activations, gates and normalization
@@ -111,17 +119,18 @@ def scale_homogeneity(f: Operator, x: Tensor, alpha: float = 2.0) -> float:
     _require_3d(x)
     if alpha == 0.0:
         raise ValueError("alpha must be non-zero")
-    return _equivariance_score(_rel_err(f(alpha * x), alpha * f(x)))
+    base = f(x) if fx is None else fx
+    return _equivariance_score(_rel_err(f(alpha * x), alpha * base))
 
 
 @torch.no_grad()
-def energy_gain(f: Operator, x: Tensor) -> float:
+def energy_gain(f: Operator, x: Tensor, *, fx: Tensor | None = None) -> float:
     """Mean per-example energy ratio ``||f(x)|| / ||x||`` over the batch.
 
     A physics stability descriptor: <1 dissipative, ~1 conservative, >1 expansive.
     """
     _require_3d(x)
-    y = f(x)
+    y = f(x) if fx is None else fx
     xn = x.flatten(1).norm(dim=1)
     yn = y.flatten(1).norm(dim=1)
     return float((yn / (xn + _EPS)).mean())
@@ -129,7 +138,13 @@ def energy_gain(f: Operator, x: Tensor) -> float:
 
 @torch.no_grad()
 def spectral_radius(
-    f: Operator, x: Tensor, *, iters: int = 6, eps: float = 1e-2, generator=None
+    f: Operator,
+    x: Tensor,
+    *,
+    iters: int = 6,
+    eps: float = 1e-2,
+    generator=None,
+    fx: Tensor | None = None,
 ) -> float:
     """Dominant eigenvalue magnitude of the local linearization of ``f`` at ``x``.
 
@@ -138,7 +153,7 @@ def spectral_radius(
     ``no_grad``/native ones. <1 contractive, ~1 marginal, >1 expansive.
     """
     _require_3d(x)
-    fx = f(x)
+    fx = f(x) if fx is None else fx
     scale = eps * x.norm() / (x.numel() ** 0.5 + _EPS)
     v = torch.randn(x.shape, dtype=x.dtype, device=x.device, generator=generator)
     v = v / (v.norm() + _EPS)
@@ -235,12 +250,14 @@ class PhysicsDescriptorProbe:
     ) -> dict[str, float]:
         perm = torch.randperm(x.shape[1], device=x.device, generator=gen)
         k = int(torch.randint(1, x.shape[1], (1,), device=x.device, generator=gen))
+        with torch.no_grad():
+            fx = f(x)
         return {
-            "perm_equivariance": perm_equivariance(f, x, perm),
-            "shift_equivariance": shift_equivariance(f, x, k),
-            "scale_homogeneity": scale_homogeneity(f, x),
-            "energy_gain": energy_gain(f, x),
-            "spectral_radius": spectral_radius(f, x, generator=gen),
+            "perm_equivariance": perm_equivariance(f, x, perm, fx=fx),
+            "shift_equivariance": shift_equivariance(f, x, k, fx=fx),
+            "scale_homogeneity": scale_homogeneity(f, x, fx=fx),
+            "energy_gain": energy_gain(f, x, fx=fx),
+            "spectral_radius": spectral_radius(f, x, generator=gen, fx=fx),
         }
 
     @staticmethod
