@@ -159,7 +159,12 @@ class ParametricMix(nn.Module):
         a = 1.0 - q
         az = a * z
         pos = (1.0 + az) > 0.0
-        az_safe = az.clamp(min=-1.0 + 1e-12)
+        # Margin must survive float32 rounding: 1e-12 << float32 eps (1.19e-7), so
+        # -1.0 + 1e-12 collapses to exactly -1.0 and log1p(-1.0) = -inf. The where
+        # cutoff below then computes 0 * -inf = NaN in the backward. 1e-4 stays
+        # representable (log1p ~ -9.2, finite) and only bites in the already-zeroed
+        # hard-cutoff region, so the forward is unchanged.
+        az_safe = az.clamp(min=-1.0 + 1e-4)
         small = a.abs() < 1e-3
         a_den = torch.where(small, torch.ones_like(a), a)
         exact = torch.log1p(az_safe) / a_den
