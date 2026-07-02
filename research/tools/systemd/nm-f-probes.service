@@ -1,0 +1,10 @@
+[Unit]
+Description=NM-F operator capability probes (nightly) + runs.db ingest + dashboard
+After=network.target
+
+[Service]
+Type=oneshot
+ExecStart=/home/tim/Projects/LLM/research/tools/nm_f_probe_nightly.sh
+WorkingDirectory=/home/tim/Projects/LLM
+TimeoutStartSec=3h
+Nice=10

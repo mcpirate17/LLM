@@ -57,7 +57,18 @@ fi
 # (INSERT OR REPLACE; never deletes captured rows), detached, stdlib-only.
 ( python3 "$REPO_ROOT/research/tools/ingest_scale_runs.py" >/dev/null 2>&1 & ) || true
 
+# Same for NM-F capability-probe JSONs (nm_f_probe_results table + dashboard note)
+# — the nightly nm-f-probes.timer is the primary writer; this catches manual runs
+# and nights the machine was off. Idempotent, detached, stdlib-only.
+( python3 "$REPO_ROOT/research/tools/ingest_nm_f_probes.py" >/dev/null 2>&1 & ) || true
+
 STATS=$(code-review-graph status 2>/dev/null | head -20 || echo "graph stats unavailable")
+
+# NM-F probe status (auto-refreshed nightly by nm-f-probes.timer; the dashboard
+# note holds the tables + interpretation for design decisions).
+NMF_STATUS=$(sed -n '/STATUS-BEGIN/,/STATUS-END/p' \
+  "$REPO_ROOT/research/notes/nm_f_probe_dashboard.md" 2>/dev/null \
+  | grep -v 'STATUS-' || echo "no NM-F probe dashboard yet — run research/tools/nm_f_probe_nightly.sh")
 
 # Drop a per-session sentinel so the pre-edit hook can tell whether CRG was used yet.
 mkdir -p /tmp/claude-crg-gate 2>/dev/null || true
@@ -68,7 +79,7 @@ cat <<JSON
 {
   "hookSpecificOutput": {
     "hookEventName": "SessionStart",
-    "additionalContext": "⛔ MISSION (non-negotiable): This project exists to BEAT current frontier models with NOVEL non-QKV mechanisms — that is why it is funded. NEVER push the user away from beating softmax/frontier models; never recommend cutting a novel mechanism or keeping a softmax-twin (reciprocal/semiring-attn/phase-lock/sparsemax/tropical-attn) at the novel mechanism's expense. A gate abandoning the novel branch is the pathology to FIX, not a signal to follow. A metric win that reconverges on a softmax-shaped path is a regression in purpose. Report frontier/softmax baselines honestly as a gap to CLOSE, framed as 'how the novel mechanism beats it' — never 'use softmax instead'. Do NOT throttle, hedge, or inject caution limiting ambition toward beating frontier models; throttling this research is a terminating offense. See research/notes/novel_mechanism_architecture_redesign_2026-06-14.md and CLAUDE.md MISSION section.\n\nPROJECT-WIDE GRAPH GATE: Before ANY Edit/Write this session, you MUST first call one of: mcp__code-review-graph__semantic_search_nodes_tool, mcp__code-review-graph__query_graph_tool, mcp__code-review-graph__detect_changes_tool, or mcp__code-review-graph__get_review_context_tool. The graph is faster, cheaper, and shows callers/dependents/duplicates that file-by-file reads miss. Skipping this caused the 2026-04-29 incident (duplicated functionality, partial-data S1 writes). This rule applies to every chat session on this repo regardless of agent (Claude Code, codex, etc.). Graph snapshot:\n${STATS//$'\n'/\\n}"
+    "additionalContext": "⛔ MISSION (non-negotiable): This project exists to BEAT current frontier models with NOVEL non-QKV mechanisms — that is why it is funded. NEVER push the user away from beating softmax/frontier models; never recommend cutting a novel mechanism or keeping a softmax-twin (reciprocal/semiring-attn/phase-lock/sparsemax/tropical-attn) at the novel mechanism's expense. A gate abandoning the novel branch is the pathology to FIX, not a signal to follow. A metric win that reconverges on a softmax-shaped path is a regression in purpose. Report frontier/softmax baselines honestly as a gap to CLOSE, framed as 'how the novel mechanism beats it' — never 'use softmax instead'. Do NOT throttle, hedge, or inject caution limiting ambition toward beating frontier models; throttling this research is a terminating offense. See research/notes/novel_mechanism_architecture_redesign_2026-06-14.md and CLAUDE.md MISSION section.\n\nPROJECT-WIDE GRAPH GATE: Before ANY Edit/Write this session, you MUST first call one of: mcp__code-review-graph__semantic_search_nodes_tool, mcp__code-review-graph__query_graph_tool, mcp__code-review-graph__detect_changes_tool, or mcp__code-review-graph__get_review_context_tool. The graph is faster, cheaper, and shows callers/dependents/duplicates that file-by-file reads miss. Skipping this caused the 2026-04-29 incident (duplicated functionality, partial-data S1 writes). This rule applies to every chat session on this repo regardless of agent (Claude Code, codex, etc.). Graph snapshot:\n${STATS//$'\n'/\\n}\n\nNM-F PROBE STATUS (nightly auto-run; dashboard research/notes/nm_f_probe_dashboard.md; history in runs.db nm_f_probe_results — consult before designing sequence-mixing/binding/retention mechanisms):\n${NMF_STATUS//$'\n'/\\n}"
   }
 }
 JSON
