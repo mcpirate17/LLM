@@ -162,10 +162,85 @@ def test_augment_with_novelty_preserves_and_adds() -> None:
 def test_novelty_axis_bins_coarsely() -> None:
     axis = novelty_behavior_axis()
     assert axis.name == NOVELTY_AXIS_NAME
-    assert axis.n_bins == 3
+    assert axis.n_bins == 5
     assert axis.bin_of(0.0) == 0  # inside the basin
     assert axis.bin_of(1.0) == 1  # adjacent
-    assert axis.bin_of(5.0) == 2  # far
+    assert axis.bin_of(3.0) == 2  # far bulk
+    assert axis.bin_of(5.0) == 3  # very far
+    assert axis.bin_of(50.0) == 4  # blow-up quarantine
+
+
+# G3 drift pin: the 30 deep-registry elites from the 8000-iter
+# `deep_registry_discovery` run, with their MEASURED standardized novelty
+# distances (recomputed by `research/tools/audit_novelty_axis_distribution.py`,
+# committed `bbec2a4a`; source JSON `research/reports/novelty_axis_audit_*.json`
+# is auto-pruned so the values are pinned here, not loaded). Each pair is
+# (raw_novelty_distance, expected_bin_under_the_5-bin_edges). If the production
+# edges drift away from (0.75, 1.75, 4.0, 16.0) the per-elite bins diverge from
+# the independent bisect below and this test fails loud — same silent-drift class
+# as the gates-5/6/8 incident.
+_DEEP_REGISTRY_ELITE_DISTANCES: tuple[float, ...] = (
+    175.588571906197,
+    29.74163646760285,
+    2.8046893867849847,
+    4.029766346577487,
+    2.6266030302240493,
+    2.1151659717942954,
+    2.7826606325871355,
+    2.1825526821486583,
+    2.21554600350526,
+    2.271191705323358,
+    2.1376905514433133,
+    1.9121607534654048,
+    1.8527967093709785,
+    1.6893305225332376,
+    1.3040239577997164,
+    13.753866814069712,
+    2.4300017731544235,
+    2.126444897983714,
+    1.258142649429461,
+    1.5558333603764678,
+    1.8053560793985188,
+    1.5352605847657235,
+    1.7318472511837293,
+    1.6261354233713146,
+    1.6758981989437132,
+    3.298213515570017,
+    1.3317225093653962,
+    1.364470410112312,
+    1.4917347218151247,
+    1.9289865875267411,
+)
+
+
+def test_novelty_axis_five_bin_drift_pin() -> None:
+    """The 5-bin novelty edges must stay pinned to (0.75, 1.75, 4.0, 16.0).
+
+    The two extra edges sit in the natural data gaps 3.298→4.030 and
+    13.75→29.74; the >=16 bin quarantines numerically-expansive blow-up
+    descriptors so they cannot squat on the far niches stable novel mechanisms
+    should own (G3 QC1 verdict, `research/notes/nm_verification_split_plan_*.md`).
+    """
+    import bisect
+
+    pinned_edges = (0.75, 1.75, 4.0, 16.0)
+    axis = novelty_behavior_axis()
+    assert tuple(axis.edges) == pinned_edges
+    assert axis.n_bins == 5
+
+    histogram = [0, 0, 0, 0, 0]
+    for dist in _DEEP_REGISTRY_ELITE_DISTANCES:
+        expected = bisect.bisect_right(pinned_edges, dist)
+        assert axis.bin_of(dist) == expected, (
+            f"novelty distance {dist} binned to {axis.bin_of(dist)}, "
+            f"expected {expected} under edges {pinned_edges} — edges drifted"
+        )
+        histogram[expected] += 1
+
+    # Distribution the QC1 verdict recorded: no elite inside the basin, 11
+    # adjacent, a 15-elite far bulk, and 2+2 splitting the very-far / blow-up
+    # tail that the old 3-bin axis lumped into one 97×-wide bin.
+    assert histogram == [0, 11, 15, 2, 2]
 
 
 def test_novelty_aware_axes_extend_physics() -> None:

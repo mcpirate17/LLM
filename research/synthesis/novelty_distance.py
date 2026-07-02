@@ -266,20 +266,30 @@ def augment_with_novelty(
     return out
 
 
-def novelty_behavior_axis(edges: tuple[float, float] = (0.75, 1.75)) -> BehaviorAxis:
+def novelty_behavior_axis(
+    edges: tuple[float, ...] = (0.75, 1.75, 4.0, 16.0),
+) -> BehaviorAxis:
     """MAP-Elites behavior axis over geometric novelty (distance from softmax).
 
-    Coarse 3-bin edges in standardized-distance units: ``<0.75`` ≈ inside the
-    softmax basin, ``[0.75, 1.75)`` ≈ adjacent, ``>=1.75`` ≈ geometrically far
-    (the region the mission wants illuminated). Edges are a parameter so a finer
-    archive can refine; the default follows the diversity charter's
-    "coarse bins first".
+    5-bin edges in standardized-distance units: ``<0.75`` ≈ inside the softmax
+    basin, ``[0.75, 1.75)`` ≈ adjacent, ``[1.75, 4.0)`` ≈ the far-from-softmax
+    bulk (the region the mission wants illuminated), ``[4.0, 16.0)`` ≈ very far,
+    ``>=16.0`` ≈ a blow-up quarantine for numerically-expansive descriptors
+    (saturating ``energy_gain``/``spectral_radius``) so they cannot squat on the
+    far niches that *stable* novel mechanisms should own.
+
+    The 3-bin default ``(0.75, 1.75)`` did zero selection work among far elites:
+    the G3 within-archive audit (``research/tools/audit_novelty_axis_distribution.py``,
+    commit ``bbec2a4a``) found all 19 "far" deep-registry elites collapsed into one
+    bin spanning 1.805–175.589 (97×). The two extra edges sit in the natural data
+    gaps 3.298→4.030 and 13.75→29.74. Edges are a parameter so a finer archive can
+    refine.
     """
     return BehaviorAxis(NOVELTY_AXIS_NAME, edges)
 
 
 def novelty_aware_axes(
-    novelty_edges: tuple[float, float] = (0.75, 1.75),
+    novelty_edges: tuple[float, ...] = (0.75, 1.75, 4.0, 16.0),
 ) -> tuple[BehaviorAxis, ...]:
     """Physics behavior axes + the geometric-novelty axis.
 
