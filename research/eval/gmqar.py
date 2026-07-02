@@ -191,19 +191,33 @@ def _candidate_values(input_ids: torch.Tensor, cfg: GMQARConfig) -> torch.Tensor
     return input_ids[:, 1 : 2 * cfg.n_pairs : 2]
 
 
-@torch.no_grad()
+@torch.inference_mode()
 def score_cell(
     model: nn.Module,
     cfg: GMQARConfig,
     device: str = "cpu",
     scoring: GMQARScoring = "candidate",
+    autocast: bool = False,
 ) -> float:
-    """Zero-shot recall accuracy at the answer positions for one difficulty cell."""
+    """Zero-shot recall accuracy at the answer positions for one difficulty cell.
+
+    ``autocast`` (opt-in, default OFF) runs the model forward in bf16 on CUDA.
+    Leave it off for record-keeping runs: gMQAR is the AR metric of record, and
+    a forward-precision change can flip near-tie argmaxes, silently breaking
+    comparability with stored scores.
+    """
     was_training = model.training
     model.eval()
     g = torch.Generator(device=device).manual_seed(cfg.seed)
     input_ids, target_ids, answer_mask = make_gmqar_batch(cfg, g, device)
-    logits = _logits_from_model(model, input_ids)
+    amp = torch.autocast(
+        device_type="cuda",
+        dtype=torch.bfloat16,
+        enabled=autocast and torch.device(device).type == "cuda",
+    )
+    with amp:
+        logits = _logits_from_model(model, input_ids)
+    logits = logits.float()
     # logits[:, t] predict token t+1; answer_mask marks position t whose NEXT
     # token is the value. By default, score associative recall over the row's
     # in-context values, not over the full LM vocabulary; otherwise frequent
@@ -273,18 +287,20 @@ def score_model_gmqar(
     device: str = "cpu",
     token_pool: int = 0,
     scoring: GMQARScoring = "candidate",
+    autocast: bool = False,
 ) -> GMQARResult:
     """Run the full difficulty grid and summarise as AUDC + D50.
 
     AUDC = mean per-cell accuracy (area under the difficulty curve, normalised).
     D50  = max n_pairs whose accuracy (averaged over that pair-count's cells)
            is still >= 0.5 ("breaking difficulty").
+    ``autocast`` is opt-in bf16 for the forward on CUDA — see ``score_cell``.
     """
     if grid is None:
         grid = default_grid(vocab_size, token_pool=token_pool)
     cells: list[dict] = []
     for cfg in grid:
-        acc = score_cell(model, cfg, device, scoring=scoring)
+        acc = score_cell(model, cfg, device, scoring=scoring, autocast=autocast)
         cells.append(
             {
                 "n_pairs": cfg.n_pairs,

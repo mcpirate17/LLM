@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import time
+from contextlib import nullcontext
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -44,10 +45,17 @@ DEFAULT_QUERY_SLOTS = 3
 DEFAULT_TRAIN_STEPS = 1_000
 DEFAULT_EVAL_EVERY = 125
 DEFAULT_BATCH_SIZE = 16
+DEFAULT_EVAL_BATCH_SIZE = 64
 DEFAULT_EVAL_EXAMPLES = 256
 DEFAULT_LR = 1e-3
 DEFAULT_TIMEOUT_S = 240.0
 DEFAULT_THRESHOLD = 0.08
+
+
+def _amp_context(device: torch.device | str):
+    if torch.device(device).type == "cuda":
+        return torch.autocast(device_type="cuda", dtype=torch.bfloat16)
+    return nullcontext()
 
 
 @dataclass(frozen=True, slots=True)
@@ -63,6 +71,7 @@ class BindingMultislotConfig:
     train_steps: int = DEFAULT_TRAIN_STEPS
     eval_every: int = DEFAULT_EVAL_EVERY
     batch_size: int = DEFAULT_BATCH_SIZE
+    eval_batch_size: int = DEFAULT_EVAL_BATCH_SIZE
     n_eval: int = DEFAULT_EVAL_EXAMPLES
     lr: float = DEFAULT_LR
     timeout_s: float = DEFAULT_TIMEOUT_S
@@ -344,7 +353,7 @@ def _class_predictions(pred: torch.Tensor, layout: MultiBlankLayout) -> torch.Te
     return (pred >= int(layout.object_lo)).to(torch.long)
 
 
-@torch.no_grad()
+@torch.inference_mode()
 def _evaluate_split(
     model: nn.Module,
     layout: MultiBlankLayout,
@@ -386,7 +395,8 @@ def _evaluate_split(
             device=device,
             generator=gen,
         )
-        logits = model(ids)
+        with _amp_context(device):
+            logits = model(ids)
         pred = logits[:, ans_positions, layout.value_lo : layout.value_hi].argmax(-1)
         pred = pred + int(layout.value_lo)
         slot_ok = pred == targets
@@ -437,12 +447,13 @@ def _train_one_batch(
     layout: MultiBlankLayout,
 ) -> torch.Tensor | None:
     opt.zero_grad(set_to_none=True)
-    logits = model(ids)
-    pred = logits[:, ans_positions, layout.value_lo : layout.value_hi].float()
-    loss = F.cross_entropy(
-        pred.reshape(-1, int(layout.value_hi - layout.value_lo)),
-        (targets - int(layout.value_lo)).reshape(-1),
-    )
+    with _amp_context(ids.device):
+        logits = model(ids)
+        pred = logits[:, ans_positions, layout.value_lo : layout.value_hi].float()
+        loss = F.cross_entropy(
+            pred.reshape(-1, int(layout.value_hi - layout.value_lo)),
+            (targets - int(layout.value_lo)).reshape(-1),
+        )
     if not torch.isfinite(loss):
         return None
     loss.backward()
@@ -529,6 +540,7 @@ def binding_multislot_probe(
             fused_if_available=(dev.type == "cuda"),
         )
         eval_every = max(1, int(cfg.eval_every))
+        eval_batch_size = max(1, int(cfg.eval_batch_size))
         deadline = t0 + float(cfg.timeout_s)
         learning_curve: list[dict[str, float | int]] = []
         steps_done = 0
@@ -576,7 +588,7 @@ def binding_multislot_probe(
                         layout,
                         split="train",
                         n_eval=int(cfg.n_eval),
-                        batch_size=int(cfg.batch_size),
+                        batch_size=eval_batch_size,
                         bindings_per_example=int(cfg.bindings_per_example),
                         query_slots=int(cfg.query_slots),
                         device=dev,
@@ -595,7 +607,7 @@ def binding_multislot_probe(
                         layout,
                         split="held_entity",
                         n_eval=int(cfg.n_eval),
-                        batch_size=int(cfg.batch_size),
+                        batch_size=eval_batch_size,
                         bindings_per_example=int(cfg.bindings_per_example),
                         query_slots=int(cfg.query_slots),
                         device=dev,
@@ -664,7 +676,7 @@ def binding_multislot_probe(
                 layout,
                 split="train",
                 n_eval=int(cfg.n_eval),
-                batch_size=int(cfg.batch_size),
+                batch_size=eval_batch_size,
                 bindings_per_example=int(cfg.bindings_per_example),
                 query_slots=int(cfg.query_slots),
                 device=dev,
@@ -683,7 +695,7 @@ def binding_multislot_probe(
                 layout,
                 split="held_entity",
                 n_eval=int(cfg.n_eval),
-                batch_size=int(cfg.batch_size),
+                batch_size=eval_batch_size,
                 bindings_per_example=int(cfg.bindings_per_example),
                 query_slots=int(cfg.query_slots),
                 device=dev,

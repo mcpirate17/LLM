@@ -340,18 +340,24 @@ def measure_loss(
     if not input_batches:
         return None
     model.eval()
-    losses: List[float] = []
+    total_loss = torch.zeros((), device=device, dtype=torch.float64)
+    valid_batches = torch.zeros((), device=device, dtype=torch.long)
     skipped = 0
     first_error: Exception | None = None
-    with torch.no_grad():
+    with torch.inference_mode():
         for batch in input_batches:
             try:
                 batch = batch.to(device)
                 logits = model(batch)
                 v = vocab_size if vocab_size > 0 else logits.shape[-1]
                 loss = language_model_loss(logits, batch, v)
-                if torch.isfinite(loss):
-                    losses.append(loss.item())
+                finite = torch.isfinite(loss)
+                total_loss = total_loss + torch.where(
+                    finite,
+                    loss.detach().to(torch.float64),
+                    total_loss.new_zeros(()),
+                )
+                valid_batches = valid_batches + finite.to(torch.long)
             except Exception as exc:
                 skipped += 1
                 if first_error is None:
@@ -360,7 +366,10 @@ def measure_loss(
         logger.warning(
             "measure_loss skipped %d batches; first error: %s", skipped, first_error
         )
-    return sum(losses) / len(losses) if losses else None
+    count = int(valid_batches.item())
+    if count == 0:
+        return None
+    return float((total_loss / count).item())
 
 
 @torch.no_grad()
@@ -440,16 +449,34 @@ def compute_perplexity(
 ) -> Optional[float]:
     """Compute exponential of cross-entropy loss over batches."""
     model.eval()
-    total_loss = 0.0
-    total_tokens = 0
-    with torch.no_grad():
+    total_loss: torch.Tensor | None = None
+    total_tokens: torch.Tensor | None = None
+    with torch.inference_mode():
         for batch in batches:
             logits = model(batch)
             loss = language_model_loss(logits, batch, vocab_size, reduction="sum")
-            if torch.isfinite(loss):
-                total_loss += loss.item()
-                total_tokens += batch[:, 1:].numel()
+            if total_loss is None:
+                total_loss = torch.zeros((), device=loss.device, dtype=torch.float64)
+                total_tokens = torch.zeros((), device=loss.device, dtype=torch.long)
+            finite = torch.isfinite(loss)
+            token_count = torch.tensor(
+                batch[:, 1:].numel(), device=loss.device, dtype=torch.long
+            )
+            total_loss = total_loss + torch.where(
+                finite,
+                loss.detach().to(torch.float64),
+                total_loss.new_zeros(()),
+            )
+            total_tokens = total_tokens + torch.where(
+                finite,
+                token_count,
+                total_tokens.new_zeros(()),
+            )
 
-    if total_tokens == 0:
+    if total_tokens is None:
         return None
-    return math.exp(min(total_loss / total_tokens, 20.0))
+    token_total = int(total_tokens.item())
+    if token_total == 0:
+        return None
+    mean_loss = float((total_loss / token_total).item())
+    return math.exp(min(mean_loss, 20.0))

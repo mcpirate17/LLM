@@ -49,6 +49,30 @@ def _grad_stats(
     return dict(load_runner_native().grad_stats_fused(grads, names))
 
 
+def _scaled_grad_stats(stats: dict[str, Any], coef: float) -> dict[str, Any]:
+    """Post-clip stats derived from the pre-clip ones.
+
+    The native clip multiplies every gradient by ONE scalar
+    ``c = clamp(max_norm / (total_norm + eps), 0, 1)``
+    (``_training_native.cpp::clip_grad_norm_``), so every norm-valued stat
+    scales by exactly ``c``. Deriving them replaces a second full
+    ``grad_stats_fused`` pass (one host sync per layer) per telemetry step;
+    values differ from a re-measured pass only in last-ulp norm rounding.
+    """
+    layer_norms = {
+        name: (None if value is None else value * coef)
+        for name, value in stats["layer_norms"].items()
+    }
+    finite = [value for value in layer_norms.values() if value is not None]
+    return {
+        **stats,
+        "total_norm": stats["total_norm"] * coef,
+        "layer_norms": layer_norms,
+        "max_layer_norm": stats["max_layer_norm"] * coef,
+        "has_zero": all(value <= 1e-10 for value in finite) if finite else True,
+    }
+
+
 def _append_step_telemetry(
     train_telemetry: dict[str, Any],
     *,
@@ -540,6 +564,7 @@ def run_training_loop(
 
     if train_telemetry is None and parameter_names is None:
         final_loss = float("inf")
+        last_loss: torch.Tensor | None = None
         steps_completed = 0
         diverged = False
         for step in range(n_steps):
@@ -571,10 +596,14 @@ def run_training_loop(
             if scheduler_step is not None:
                 scheduler_step()
 
-            final_loss = float(loss.item())
+            last_loss = loss.detach()
             steps_completed = step + 1
             if loss_trajectory is not None:
+                final_loss = float(last_loss.item())
                 loss_trajectory[steps_completed] = final_loss
+
+        if steps_completed > 0 and last_loss is not None and loss_trajectory is None:
+            final_loss = float(last_loss.item())
 
         return TrainLoopResult(
             final_loss=final_loss,
@@ -628,10 +657,16 @@ def run_training_loop(
             break
 
         clipped = False
+        post_clip = pre_clip
         if clip_grad > 0:
-            clip_grad_norm(param_values, clip_grad)
+            # The clip kernel returns the total norm it scaled against; derive
+            # the post-clip stats from pre_clip instead of a third full grad
+            # pass over every parameter (see _scaled_grad_stats).
+            clip_total = float(clip_grad_norm(param_values, clip_grad).item())
             clipped = pre_clip["total_norm"] > float(clip_grad)
-        post_clip = _grad_stats(param_values, parameter_names)
+            clip_coef = min(1.0, float(clip_grad) / (clip_total + 1e-6))
+            if clip_coef < 1.0:
+                post_clip = _scaled_grad_stats(pre_clip, clip_coef)
         actual_lrs_before_step = [
             float(group["lr"]) for group in optimizer.param_groups
         ]

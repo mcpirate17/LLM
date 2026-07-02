@@ -161,3 +161,53 @@ def test_prepare_text_split_batches_reports_token_counts_on_cache_hit(tmp_path):
     assert val_tokens_first > 0
     assert train_tokens_second == train_tokens_first
     assert val_tokens_second == val_tokens_first
+
+
+def test_scaled_grad_stats_matches_measured_post_clip_pass() -> None:
+    """Derived post-clip telemetry == a re-measured grad_stats_fused pass.
+
+    The telemetry loop derives post-clip stats from pre-clip ones instead of a
+    third full grad pass per step; the native clip applies ONE fp32 scalar, so
+    the only allowed difference is fp32 coefficient rounding.
+    """
+    from research.eval.training_core import _grad_stats, _scaled_grad_stats
+    from research.eval.utils import clip_grad_norm
+
+    torch.manual_seed(0)
+    params = [
+        torch.nn.Parameter(torch.randn(shape))
+        for shape in [(8, 8), (16,), (4, 12), (32, 3)]
+    ]
+    names = [f"p{i}" for i in range(len(params))]
+    loss = sum((p * torch.randn_like(p)).sum() for p in params)
+    loss.backward()
+
+    pre = _grad_stats(params, names)
+    max_norm = pre["total_norm"] * 0.3  # force clipping
+    clip_total = float(clip_grad_norm(params, max_norm).item())
+    measured = _grad_stats(params, names)
+    coef = min(1.0, max_norm / (clip_total + 1e-6))
+    derived = _scaled_grad_stats(pre, coef)
+
+    assert measured.keys() == derived.keys()
+    for key in ("total_norm", "max_layer_norm"):
+        assert measured[key] == pytest.approx(derived[key], rel=1e-5)
+    for name in measured["layer_norms"]:
+        assert measured["layer_norms"][name] == pytest.approx(
+            derived["layer_norms"][name], rel=1e-5
+        )
+    for key in ("max_layer", "has_nonfinite", "has_zero", "num_grads"):
+        assert measured[key] == derived[key]
+
+
+def test_telemetry_post_clip_equals_pre_clip_when_not_clipped() -> None:
+    from research.eval.training_core import _grad_stats
+    from research.eval.utils import clip_grad_norm
+
+    torch.manual_seed(1)
+    params = [torch.nn.Parameter(torch.randn(6, 6))]
+    (params[0] * 0.001).sum().backward()
+    pre = _grad_stats(params, ["p0"])
+    clip_grad_norm(params, pre["total_norm"] * 10.0)  # coef clamps to 1: no-op
+    measured = _grad_stats(params, ["p0"])
+    assert measured == pre
