@@ -56,6 +56,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from ._linear_recurrence_scan import constant_matrix_scan
+
 
 def ph_param_count(dim: int, band: int) -> int:
     """Banded skew (``Σ_{j=1..band} (D−j)``) + ``r``/``λ`` (``2D``) + gate
@@ -141,18 +143,30 @@ class PortHamiltonianMixer(nn.Module):
         root = self.energy_metric().sqrt()
         return torch.linalg.matrix_norm(root.unsqueeze(1) * p / root, ord=2)
 
+    @staticmethod
+    def _evolve_reference(p: torch.Tensor, inputs: torch.Tensor) -> torch.Tensor:
+        """Sequential ``h_t = h_{t-1} @ pᵀ + inputs_t`` — the probe-scale reference
+        and the parity oracle for :func:`constant_matrix_scan`."""
+        h = inputs.new_zeros(inputs.shape[0], inputs.shape[-1])
+        states = []
+        for t in range(inputs.shape[1]):
+            h = h @ p.T + inputs[:, t]
+            states.append(h)
+        return torch.stack(states, dim=1)
+
     def evolve(self, x: torch.Tensor) -> torch.Tensor:
         """Run the recurrence; returns states ``(B, L, D)`` (the verification
-        surface for the dissipation/conservation/boundedness claims)."""
+        surface for the dissipation/conservation/boundedness claims).
+
+        The transition ``P`` is time-invariant, so the constant-matrix parallel
+        scan removes the per-step Python loop (``O(L log L D²)``, autograd-exact
+        vs the reference) — the NM-F §5 native hot path.
+        """
         p, inject = self._cayley()
         u = self.in_lift(x)
         gate = torch.sigmoid(x @ self.gate_weight + self.gate_bias)  # (B, L)
-        h = x.new_zeros(x.shape[0], self.d)
-        states = []
-        for t in range(x.shape[1]):
-            h = h @ p.T + (gate[:, t : t + 1] * u[:, t]) @ inject.T
-            states.append(h)
-        return torch.stack(states, dim=1)
+        inputs = (gate.unsqueeze(-1) * u) @ inject.T  # (B, L, D) injections b_t
+        return constant_matrix_scan(p, inputs)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """``(B, L, D) -> (B, L, D)``: residual + lifted port-Hamiltonian state."""
