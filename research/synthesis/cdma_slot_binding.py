@@ -229,6 +229,7 @@ class CDMASlotBinding(nn.Module):
         # Trainer-settable anneal knob; 1.0 == pure hard top-1 (deploy behavior).
         self.selection_hardness = 1.0 if selection == "hard" else 0.0
         self.aux_loss: torch.Tensor | None = None
+        self.write_slot_usage: torch.Tensor | None = None
         if code_family == "gold":
             codes, self.degree = _gold_codes(n_slots, chips)
         elif code_family == "hadamard":
@@ -242,6 +243,16 @@ class CDMASlotBinding(nn.Module):
         self.query_lift = (
             self.key_lift if tie_addressing else nn.Linear(dim, chips, bias=False)
         )
+        # Code-span init (F9.3): W = codesᵀ·G/√chips makes the INITIAL addressing
+        # a decisive random hash into slots (logit spread ~√chips instead of
+        # near-uniform mush) and starts the lift inside the span the alignment
+        # aux pulls toward. Ablation 2026-07-02: this removed the seed lottery —
+        # 4/4 seeds converge (16-pair min 0.723 vs 0.343 with default init).
+        lifts = [self.key_lift] if tie_addressing else [self.key_lift, self.query_lift]
+        with torch.no_grad():
+            for lift in lifts:
+                g = torch.randn(n_slots, dim) / math.sqrt(dim)
+                lift.weight.copy_(codes.T @ g / math.sqrt(chips))
         self.value_compress = nn.Linear(dim, d_v, bias=False)
         # Zero-init output lift ⟹ forward(x) == x at init (identity-at-init).
         self.out_lift = nn.Linear(d_v, dim, bias=False)
@@ -319,6 +330,9 @@ class CDMASlotBinding(nn.Module):
         key_dir = key / key.norm(dim=-1, keepdim=True).clamp(min=1e-6)
         cos = (key_dir @ self.codes.T * scale).max(dim=-1).values
         self.aux_loss = 1.0 - cos.mean()
+        # Mean write-slot usage over the batch (differentiable) — collapse
+        # diagnostic and the hook for utilization-diversity training pressure.
+        self.write_slot_usage = write_sel.mean(dim=(0, 1))
         gate = torch.sigmoid(x @ self.gate_weight + self.gate_bias)  # (B, L)
         payload = self.value_compress(x)  # (B, L, d_v)
         spread = (

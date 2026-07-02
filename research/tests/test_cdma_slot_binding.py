@@ -238,6 +238,28 @@ def test_tied_addressing_shares_the_lift() -> None:
     assert untied.query_lift is not untied.key_lift
 
 
+def test_code_span_init() -> None:
+    """F9.3: the address lift initializes INSIDE the code span (W = codesᵀ·G/√c)
+    so initial addressing is a decisive hash into slots rather than mush —
+    the ablation-verified fix for the seed-convergence lottery. With
+    n_slots=8 < chips=32 the span is a strict subspace, so the containment
+    check is non-vacuous."""
+    torch.manual_seed(0)
+    mix = CDMASlotBinding(dim=64, n_slots=8, chips=32)
+    w = mix.key_lift.weight  # (chips, D); columns must lie in span(codesᵀ)
+    basis = mix.codes.T  # (chips, S)
+    coeffs = torch.linalg.lstsq(basis, w).solution
+    residual = w - basis @ coeffs
+    assert residual.norm() / w.norm() < 1e-5
+    assert w.abs().sum() > 0  # actually initialized, not zeros
+    # Untied mode: BOTH lifts start in the span, with independent draws.
+    untied = CDMASlotBinding(dim=64, n_slots=8, chips=32, tie_addressing=False)
+    wq = untied.query_lift.weight
+    rq = wq - basis @ torch.linalg.lstsq(basis, wq).solution
+    assert rq.norm() / wq.norm() < 1e-5
+    assert not torch.allclose(untied.query_lift.weight, untied.key_lift.weight)
+
+
 def test_annealed_selection_blends_to_hard() -> None:
     """F9.1 fix 2: at hardness 0 the selection is the normalized Lorentzian
     bounded-reciprocal weighting (sums to 1, argmax preserved, NOT one-hot); at

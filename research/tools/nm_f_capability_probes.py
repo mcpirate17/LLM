@@ -424,10 +424,11 @@ def train_model(
     gen: torch.Generator,
     lr: float = 3e-3,
 ) -> list[float]:
-    """F9.1 schedule for CDMA ops (no-op for everything else): selection
-    hardness anneals 0→1 over the first 60% of steps (soft Lorentzian → hard
-    top-1 deploy behavior); the code-alignment aux weight decays 0.1→0 over the
-    first 50%."""
+    """F9.1/F9.3 schedule for CDMA ops (no-op for everything else): selection
+    hardness anneals 0→1 over the first 90% of steps (soft Lorentzian → hard
+    top-1 deploy behavior; F9.3 ablation — 90% beats 60% at high load with the
+    code-span init); the code-alignment aux weight decays 0.1→0 over the first
+    50%."""
     opt = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=0.01)
     sched = torch.optim.lr_scheduler.CosineAnnealingLR(
         opt, T_max=steps, eta_min=lr / 10
@@ -438,7 +439,7 @@ def train_model(
     for step in range(steps):
         aux_weight = 0.1 * max(0.0, 1.0 - step / (0.5 * steps))
         for op in cdma_ops:
-            op.selection_hardness = min(1.0, step / (0.6 * steps))
+            op.selection_hardness = min(1.0, step / (0.9 * steps))
         x, y = sample_batch(batch, gen)
         loss = F.cross_entropy(model(x).flatten(0, 1), y.flatten(), ignore_index=-100)
         if cdma_ops and aux_weight > 0.0:
