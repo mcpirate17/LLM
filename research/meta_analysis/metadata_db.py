@@ -13,7 +13,7 @@ import sqlite3
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Iterable, Iterator
 
 from research.defaults import RUNS_DB
 from research.scientist.notebook.graph_artifacts import resolve_graph_json_value
@@ -461,7 +461,7 @@ def _motif_has_any(motifs: list[str], tokens: tuple[str, ...]) -> bool:
     return any(any(token in motif.lower() for token in tokens) for motif in motifs)
 
 
-def _derived_graph_payload(row: sqlite3.Row) -> dict[str, Any]:
+def _derived_graph_payload(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
     row_keys = row.keys()
     motifs = _as_motif_list(row["motifs_json"] if "motifs_json" in row_keys else None)
     motif_count = len(motifs)
@@ -510,6 +510,37 @@ def _insert_sql(table: str, columns: Iterable[str]) -> str:
     placeholders = ", ".join("?" for _ in cols)
     quoted_cols = ", ".join(_quote(col) for col in cols)
     return f"INSERT OR REPLACE INTO {_quote(table)} ({quoted_cols}) VALUES ({placeholders})"
+
+
+def _db_values(props: dict[str, Any], columns: Iterable[str]) -> tuple[Any, ...]:
+    return tuple(_value_for_db(props[col]) for col in columns)
+
+
+def _executemany_chunked(
+    conn: sqlite3.Connection,
+    sql: str,
+    params: Iterable[tuple[Any, ...]],
+    *,
+    chunk_size: int = 1024,
+) -> None:
+    batch: list[tuple[Any, ...]] = []
+    for row in params:
+        batch.append(row)
+        if len(batch) >= chunk_size:
+            conn.executemany(sql, batch)
+            batch.clear()
+    if batch:
+        conn.executemany(sql, batch)
+
+
+def _canonical_slot_key_of(slot: dict[str, Any]) -> str:
+    return canonical_slot_key(
+        str(
+            slot.get("slot_key_canonical")
+            or slot.get("slot_key")
+            or f"{slot.get('template_name', 'unknown')}.slot{slot.get('slot_index', 0)}"
+        )
+    )
 
 
 _EVAL_METRIC_ROWS: tuple[dict[str, Any], ...] = (
@@ -1025,9 +1056,11 @@ def _fetch_program_rows(
     rows = []
     for row in src.execute(sql).fetchall():
         payload = dict(row)
-        payload["graph_json"] = resolve_graph_json_value(
-            src, source_path, row["graph_json"]
+        payload["graph_json"] = _json_loads(
+            resolve_graph_json_value(src, source_path, row["graph_json"]), {}
         )
+        for json_col in ("templates_json", "slot_usage_json", "motifs_json"):
+            payload[json_col] = _json_loads(payload[json_col], None)
         rows.append(payload)
     return rows
 
@@ -1240,7 +1273,7 @@ def _graph_nodes_edges(graph_json: Any) -> tuple[list[str], list[tuple[str, str]
 
 
 def _graph_profile_payload(
-    row: sqlite3.Row,
+    row: dict[str, Any],
     op_profiles: dict[str, sqlite3.Row],
     pair_profiles: dict[tuple[str, str], sqlite3.Row],
     triplet_profiles: dict[tuple[str, str, str], sqlite3.Row],
@@ -1376,7 +1409,7 @@ def _metadata_from_graph_json(
     )
 
 
-def _row_templates(row: sqlite3.Row) -> list[str]:
+def _row_templates(row: dict[str, Any]) -> list[str]:
     templates = _json_loads(row["templates_json"], [])
     if not isinstance(templates, list) or not templates:
         templates, _slots = _metadata_from_graph_json(row["graph_json"])
@@ -1386,7 +1419,7 @@ def _row_templates(row: sqlite3.Row) -> list[str]:
     return out
 
 
-def _row_slots(row: sqlite3.Row) -> list[dict[str, Any]]:
+def _row_slots(row: dict[str, Any]) -> list[dict[str, Any]]:
     slots = _json_loads(row["slot_usage_json"], [])
     if not isinstance(slots, list) or not slots:
         _templates, slots = _metadata_from_graph_json(row["graph_json"])
@@ -1402,14 +1435,15 @@ def _infer_active_template_names() -> set[str]:
 
 
 def _collect_slot_counts(
-    rows: list[sqlite3.Row],
+    templates_by_row: list[list[str]],
+    slots_by_row: list[list[dict[str, Any]]],
     active_templates: set[str],
 ) -> dict[str, int]:
     counts = {name: 0 for name in active_templates}
-    for row in rows:
-        for template in _row_templates(row):
+    for templates, slots in zip(templates_by_row, slots_by_row):
+        for template in templates:
             counts.setdefault(template, 0)
-        for slot in _row_slots(row):
+        for slot in slots:
             template_name = str(slot.get("template_name") or "").strip()
             if not template_name:
                 slot_key = canonical_slot_key(str(slot.get("slot_key") or ""))
@@ -1664,8 +1698,155 @@ def _reset_materialized_tables(dst: sqlite3.Connection) -> None:
         dst.execute(f"DELETE FROM {_quote(table)}")
 
 
-def _outcome_payload(row: sqlite3.Row) -> dict[str, Any]:
+def _outcome_payload(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
     return {col: row[col] for col in _OUTCOME_COLUMNS}
+
+
+def _obs_row_values(
+    row: sqlite3.Row | dict[str, Any],
+) -> tuple[tuple[Any, ...], tuple[Any, ...]]:
+    return (
+        _db_values(_outcome_payload(row), _OBS_OUTCOME_COLUMNS),
+        _db_values(_derived_graph_payload(row), _DERIVED_GRAPH_COLUMNS),
+    )
+
+
+def _iter_graph_profile_params(
+    rows: list[dict[str, Any]],
+    op_profiles: dict[str, sqlite3.Row],
+    pair_profiles: dict[tuple[str, str], sqlite3.Row],
+    triplet_profiles: dict[tuple[str, str, str], sqlite3.Row],
+    columns: tuple[str, ...],
+) -> Iterator[tuple[Any, ...]]:
+    for row in rows:
+        payload = _graph_profile_payload(
+            row, op_profiles, pair_profiles, triplet_profiles
+        )
+        yield _db_values(payload, columns)
+
+
+def _template_prop_values(
+    cache: dict[tuple[str, int], tuple[Any, ...]],
+    template_name: str,
+    slot_count: int,
+) -> tuple[Any, ...]:
+    key = (template_name, slot_count)
+    values = cache.get(key)
+    if values is None:
+        props = template_descriptive_properties(template_name, slot_count=slot_count)
+        values = _db_values(props, TEMPLATE_PROPERTY_COLUMNS)
+        cache[key] = values
+    return values
+
+
+def _iter_template_obs_params(
+    rows: list[dict[str, Any]],
+    templates_by_row: list[list[str]],
+    slot_counts: dict[str, int],
+    template_prop_cache: dict[tuple[str, int], tuple[Any, ...]],
+) -> Iterator[tuple[Any, ...]]:
+    for row, templates in zip(rows, templates_by_row):
+        if not templates:
+            continue
+        outcome_values, derived_values = _obs_row_values(row)
+        for template_name in templates:
+            slot_count = slot_counts.get(template_name, 0)
+            yield (
+                row["result_id"],
+                template_name,
+                *outcome_values,
+                *derived_values,
+                slot_count,
+                PROPERTY_VERSION,
+                *_template_prop_values(template_prop_cache, template_name, slot_count),
+            )
+
+
+def _iter_slot_obs_params(
+    rows: list[dict[str, Any]],
+    slots_by_row: list[list[dict[str, Any]]],
+    slot_counts: dict[str, int],
+    template_prop_cache: dict[tuple[str, int], tuple[Any, ...]],
+) -> Iterator[tuple[Any, ...]]:
+    slot_prop_cache: dict[tuple[Any, ...], tuple[Any, ...]] = {}
+    for row, slots in zip(rows, slots_by_row):
+        if not slots:
+            continue
+        outcome_values, derived_values = _obs_row_values(row)
+        for slot in slots:
+            slot_key = _canonical_slot_key_of(slot)
+            template_name = str(slot.get("template_name") or slot_key.split(".", 1)[0])
+            slot_index = int(slot.get("slot_index") or 0)
+            slot_classes = [str(item) for item in (slot.get("slot_classes") or [])]
+            slot_count = slot_counts.get(template_name, 0)
+            cache_key = (
+                slot_key,
+                template_name,
+                slot_index,
+                slot_count,
+                tuple(slot_classes),
+            )
+            slot_values = slot_prop_cache.get(cache_key)
+            if slot_values is None:
+                props = slot_descriptive_properties(
+                    slot_key,
+                    template_name=template_name,
+                    slot_index=slot_index,
+                    slot_count=slot_count,
+                    slot_classes=slot_classes,
+                )
+                slot_values = _db_values(props, SLOT_PROPERTY_COLUMNS)
+                slot_prop_cache[cache_key] = slot_values
+            yield (
+                row["result_id"],
+                slot_key,
+                template_name,
+                slot_index,
+                slot.get("selected_motif"),
+                slot.get("selected_motif_class"),
+                int(bool(slot.get("wildcard"))),
+                _json_dumps(slot_classes),
+                *outcome_values,
+                *derived_values,
+                slot_count,
+                PROPERTY_VERSION,
+                *_template_prop_values(template_prop_cache, template_name, slot_count),
+                *slot_values,
+            )
+
+
+def _iter_op_obs_params(
+    op_rows: list[sqlite3.Row],
+    primitive_metadata: dict[str, dict[str, Any]],
+) -> Iterator[tuple[Any, ...]]:
+    op_prop_cache: dict[str, tuple[Any, ...]] = {}
+    obs_values_cache: dict[Any, tuple[tuple[Any, ...], tuple[Any, ...]]] = {}
+    for row in op_rows:
+        op_name = str(row["op_name"] or "").strip()
+        if not op_name:
+            continue
+        prop_values = op_prop_cache.get(op_name)
+        if prop_values is None:
+            props = op_descriptive_properties(
+                op_name,
+                metadata=primitive_metadata.get(op_name, {}),
+            )
+            prop_values = _db_values(props, OP_PROPERTY_COLUMNS)
+            op_prop_cache[op_name] = prop_values
+        result_id = row["result_id"]
+        cached = obs_values_cache.get(result_id)
+        if cached is None:
+            cached = _obs_row_values(row)
+            obs_values_cache[result_id] = cached
+        outcome_values, derived_values = cached
+        yield (
+            result_id,
+            op_name,
+            *outcome_values,
+            *derived_values,
+            OP_PROPERTY_VERSION,
+            *prop_values,
+        )
 
 
 def _count_rows(conn: sqlite3.Connection, table: str) -> int:
@@ -1728,24 +1909,20 @@ def build_meta_analysis_db(
         src.close()
 
     active_templates = _infer_active_template_names()
-    slot_counts = _collect_slot_counts(rows, active_templates)
+    templates_by_row = [_row_templates(row) for row in rows]
+    slots_by_row = [_row_slots(row) for row in rows]
+    slot_counts = _collect_slot_counts(templates_by_row, slots_by_row, active_templates)
     template_observed: dict[str, int] = {name: 0 for name in slot_counts}
     slot_observed: dict[str, int] = {}
     slot_examples: dict[str, dict[str, Any]] = {}
 
-    for row in rows:
-        for template_name in _row_templates(row):
+    for templates, slots in zip(templates_by_row, slots_by_row):
+        for template_name in templates:
             template_observed[template_name] = (
                 template_observed.get(template_name, 0) + 1
             )
-        for slot in _row_slots(row):
-            slot_key = canonical_slot_key(
-                str(
-                    slot.get("slot_key_canonical")
-                    or slot.get("slot_key")
-                    or f"{slot.get('template_name', 'unknown')}.slot{slot.get('slot_index', 0)}"
-                )
-            )
+        for slot in slots:
+            slot_key = _canonical_slot_key_of(slot)
             slot_observed[slot_key] = slot_observed.get(slot_key, 0) + 1
             slot_examples.setdefault(slot_key, slot)
 
@@ -1799,21 +1976,22 @@ def build_meta_analysis_db(
         template_catalog_sql = _insert_sql(
             "template_property_catalog", template_catalog_cols
         )
+        template_prop_cache: dict[tuple[str, int], tuple[Any, ...]] = {}
+        template_catalog_params: list[tuple[Any, ...]] = []
         for template_name in sorted(slot_counts):
             slot_count = slot_counts.get(template_name, 0)
-            props = template_descriptive_properties(
-                template_name, slot_count=slot_count
-            )
-            dst.execute(
-                template_catalog_sql,
+            template_catalog_params.append(
                 (
                     template_name,
                     slot_count,
                     template_observed.get(template_name, 0),
                     PROPERTY_VERSION,
-                    *(_value_for_db(props[col]) for col in TEMPLATE_PROPERTY_COLUMNS),
-                ),
+                    *_template_prop_values(
+                        template_prop_cache, template_name, slot_count
+                    ),
+                )
             )
+        dst.executemany(template_catalog_sql, template_catalog_params)
 
         slot_catalog_cols = (
             "slot_key",
@@ -1825,6 +2003,7 @@ def build_meta_analysis_db(
             *SLOT_PROPERTY_COLUMNS,
         )
         slot_catalog_sql = _insert_sql("slot_property_catalog", slot_catalog_cols)
+        slot_catalog_params: list[tuple[Any, ...]] = []
         for slot_key in sorted(slot_examples):
             slot = slot_examples[slot_key]
             template_name = str(slot.get("template_name") or slot_key.split(".", 1)[0])
@@ -1838,8 +2017,7 @@ def build_meta_analysis_db(
                 slot_count=slot_count,
                 slot_classes=slot_classes,
             )
-            dst.execute(
-                slot_catalog_sql,
+            slot_catalog_params.append(
                 (
                     slot_key,
                     template_name,
@@ -1847,9 +2025,10 @@ def build_meta_analysis_db(
                     _json_dumps(slot_classes),
                     slot_observed.get(slot_key, 0),
                     PROPERTY_VERSION,
-                    *(_value_for_db(props[col]) for col in SLOT_PROPERTY_COLUMNS),
-                ),
+                    *_db_values(props, SLOT_PROPERTY_COLUMNS),
+                )
             )
+        dst.executemany(slot_catalog_sql, slot_catalog_params)
 
         op_catalog_cols = (
             "op_name",
@@ -1865,14 +2044,14 @@ def build_meta_analysis_db(
             *OP_PROPERTY_COLUMNS,
         )
         op_catalog_sql = _insert_sql("op_property_catalog", op_catalog_cols)
+        op_catalog_params: list[tuple[Any, ...]] = []
         for op_name in all_op_names:
             stats = op_stats.get(op_name, {})
             props = op_descriptive_properties(
                 op_name,
                 metadata=primitive_metadata.get(op_name, {}),
             )
-            dst.execute(
-                op_catalog_sql,
+            op_catalog_params.append(
                 (
                     op_name,
                     observed_ops.get(op_name, 0),
@@ -1884,9 +2063,10 @@ def build_meta_analysis_db(
                     stats.get("mean_novelty"),
                     stats.get("math_space_rate"),
                     OP_PROPERTY_VERSION,
-                    *(_value_for_db(props[col]) for col in OP_PROPERTY_COLUMNS),
-                ),
+                    *_db_values(props, OP_PROPERTY_COLUMNS),
+                )
             )
+        dst.executemany(op_catalog_sql, op_catalog_params)
 
         candidate_cols = (
             "candidate_name",
@@ -1896,21 +2076,25 @@ def build_meta_analysis_db(
         candidate_sql = _insert_sql(
             "alternative_math_candidate_catalog", candidate_cols
         )
-        for candidate_name in (
-            "lambda_calculus",
-            "combinatory_logic",
-            "category_theory",
-            "boolean_algebra",
-        ):
-            props = alternative_math_candidate_properties(candidate_name)
-            dst.execute(
-                candidate_sql,
+        dst.executemany(
+            candidate_sql,
+            [
                 (
                     candidate_name,
                     OP_PROPERTY_VERSION,
-                    *(_value_for_db(props[col]) for col in _CANDIDATE_VALUE_COLUMNS),
-                ),
-            )
+                    *_db_values(
+                        alternative_math_candidate_properties(candidate_name),
+                        _CANDIDATE_VALUE_COLUMNS,
+                    ),
+                )
+                for candidate_name in (
+                    "lambda_calculus",
+                    "combinatory_logic",
+                    "category_theory",
+                    "boolean_algebra",
+                )
+            ],
+        )
 
         n_op_profile_rows = _copy_profile_table(
             src=profile_src,
@@ -1954,16 +2138,18 @@ def build_meta_analysis_db(
             "active_for_priors",
         )
         metric_sql = _insert_sql("eval_metric_catalog", metric_cols)
-        for metric in _EVAL_METRIC_ROWS:
-            dst.execute(
-                metric_sql,
+        dst.executemany(
+            metric_sql,
+            [
                 tuple(
                     _json_dumps(metric[col])
                     if col == "source_columns_json"
                     else metric[col]
                     for col in metric_cols
-                ),
-            )
+                )
+                for metric in _EVAL_METRIC_ROWS
+            ],
+        )
 
         external_cols = (
             "external_family",
@@ -1977,16 +2163,18 @@ def build_meta_analysis_db(
             "source_ref",
         )
         external_sql = _insert_sql("external_component_prior_catalog", external_cols)
-        for prior in _EXTERNAL_COMPONENT_PRIOR_ROWS:
-            dst.execute(
-                external_sql,
+        dst.executemany(
+            external_sql,
+            [
                 tuple(
                     _json_dumps(prior[col])
                     if col in {"mapped_ops_json", "mapped_templates_json", "tags_json"}
                     else prior[col]
                     for col in external_cols
-                ),
-            )
+                )
+                for prior in _EXTERNAL_COMPONENT_PRIOR_ROWS
+            ],
+        )
 
         graph_profile_cols = (
             "result_id",
@@ -2019,17 +2207,13 @@ def build_meta_analysis_db(
         graph_profile_sql = _insert_sql(
             "graph_profile_observations", graph_profile_cols
         )
-        for row in rows:
-            payload = _graph_profile_payload(
-                row,
-                op_profiles,
-                pair_profiles,
-                triplet_profiles,
-            )
-            dst.execute(
-                graph_profile_sql,
-                tuple(_value_for_db(payload[col]) for col in graph_profile_cols),
-            )
+        _executemany_chunked(
+            dst,
+            graph_profile_sql,
+            _iter_graph_profile_params(
+                rows, op_profiles, pair_profiles, triplet_profiles, graph_profile_cols
+            ),
+        )
 
         template_obs_cols = (
             "result_id",
@@ -2041,32 +2225,13 @@ def build_meta_analysis_db(
             *TEMPLATE_PROPERTY_COLUMNS,
         )
         template_obs_sql = _insert_sql("template_observations", template_obs_cols)
-        for row in rows:
-            outcomes = _outcome_payload(row)
-            derived = _derived_graph_payload(row)
-            for template_name in _row_templates(row):
-                slot_count = slot_counts.get(template_name, 0)
-                props = template_descriptive_properties(
-                    template_name, slot_count=slot_count
-                )
-                dst.execute(
-                    template_obs_sql,
-                    (
-                        row["result_id"],
-                        template_name,
-                        *(_value_for_db(outcomes[col]) for col in _OBS_OUTCOME_COLUMNS),
-                        *(
-                            _value_for_db(derived[col])
-                            for col in _DERIVED_GRAPH_COLUMNS
-                        ),
-                        slot_count,
-                        PROPERTY_VERSION,
-                        *(
-                            _value_for_db(props[col])
-                            for col in TEMPLATE_PROPERTY_COLUMNS
-                        ),
-                    ),
-                )
+        _executemany_chunked(
+            dst,
+            template_obs_sql,
+            _iter_template_obs_params(
+                rows, templates_by_row, slot_counts, template_prop_cache
+            ),
+        )
 
         slot_obs_cols = (
             "result_id",
@@ -2085,61 +2250,11 @@ def build_meta_analysis_db(
             *SLOT_PROPERTY_COLUMNS,
         )
         slot_obs_sql = _insert_sql("slot_observations", slot_obs_cols)
-        for row in rows:
-            outcomes = _outcome_payload(row)
-            derived = _derived_graph_payload(row)
-            for slot in _row_slots(row):
-                slot_key = canonical_slot_key(
-                    str(
-                        slot.get("slot_key_canonical")
-                        or slot.get("slot_key")
-                        or f"{slot.get('template_name', 'unknown')}.slot{slot.get('slot_index', 0)}"
-                    )
-                )
-                template_name = str(
-                    slot.get("template_name") or slot_key.split(".", 1)[0]
-                )
-                slot_index = int(slot.get("slot_index") or 0)
-                slot_classes = [str(item) for item in (slot.get("slot_classes") or [])]
-                slot_count = slot_counts.get(template_name, 0)
-                template_props = template_descriptive_properties(
-                    template_name, slot_count=slot_count
-                )
-                slot_props = slot_descriptive_properties(
-                    slot_key,
-                    template_name=template_name,
-                    slot_index=slot_index,
-                    slot_count=slot_count,
-                    slot_classes=slot_classes,
-                )
-                dst.execute(
-                    slot_obs_sql,
-                    (
-                        row["result_id"],
-                        slot_key,
-                        template_name,
-                        slot_index,
-                        slot.get("selected_motif"),
-                        slot.get("selected_motif_class"),
-                        int(bool(slot.get("wildcard"))),
-                        _json_dumps(slot_classes),
-                        *(_value_for_db(outcomes[col]) for col in _OBS_OUTCOME_COLUMNS),
-                        *(
-                            _value_for_db(derived[col])
-                            for col in _DERIVED_GRAPH_COLUMNS
-                        ),
-                        slot_count,
-                        PROPERTY_VERSION,
-                        *(
-                            _value_for_db(template_props[col])
-                            for col in TEMPLATE_PROPERTY_COLUMNS
-                        ),
-                        *(
-                            _value_for_db(slot_props[col])
-                            for col in SLOT_PROPERTY_COLUMNS
-                        ),
-                    ),
-                )
+        _executemany_chunked(
+            dst,
+            slot_obs_sql,
+            _iter_slot_obs_params(rows, slots_by_row, slot_counts, template_prop_cache),
+        )
 
         op_obs_cols = (
             "result_id",
@@ -2150,27 +2265,11 @@ def build_meta_analysis_db(
             *OP_PROPERTY_COLUMNS,
         )
         op_obs_sql = _insert_sql("op_observations", op_obs_cols)
-        for row in op_rows:
-            op_name = str(row["op_name"] or "").strip()
-            if not op_name:
-                continue
-            props = op_descriptive_properties(
-                op_name,
-                metadata=primitive_metadata.get(op_name, {}),
-            )
-            outcomes = _outcome_payload(row)
-            derived = _derived_graph_payload(row)
-            dst.execute(
-                op_obs_sql,
-                (
-                    row["result_id"],
-                    op_name,
-                    *(_value_for_db(outcomes[col]) for col in _OBS_OUTCOME_COLUMNS),
-                    *(_value_for_db(derived[col]) for col in _DERIVED_GRAPH_COLUMNS),
-                    OP_PROPERTY_VERSION,
-                    *(_value_for_db(props[col]) for col in OP_PROPERTY_COLUMNS),
-                ),
-            )
+        _executemany_chunked(
+            dst,
+            op_obs_sql,
+            _iter_op_obs_params(op_rows, primitive_metadata),
+        )
 
         dst.commit()
         return BuildSummary(
