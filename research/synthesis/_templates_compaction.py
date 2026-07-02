@@ -65,13 +65,18 @@ def _build_compaction_block(
     primary = rng.choice(primary_pool)
     mixed = _add(graph, primary, [normed], context=f"{template_ctx}.{primary}")
 
-    if rng.random() < 0.5:
-        secondary_pool = (
-            _CHANNEL_COMPACTION_OPS
-            if primary in _SEQUENCE_COMPACTION_OPS
-            else _SEQUENCE_COMPACTION_OPS
-        )
-        secondary = rng.choice(secondary_pool)
+    if primary in _SEQUENCE_COMPACTION_OPS:
+        if rng.random() < 0.5:
+            secondary = rng.choice(_CHANNEL_COMPACTION_OPS)
+            mixed = _add(
+                graph, secondary, [mixed], context=f"{template_ctx}.{secondary}"
+            )
+    else:
+        # A channel-only block has no cross-token path and dies at the
+        # structural no-mixing gate after burning rapid-screening compute
+        # (measured: overnight campaign 2026-07-02). ALWAYS pair a channel
+        # primary with a sequence mixer.
+        secondary = rng.choice(_SEQUENCE_COMPACTION_OPS)
         mixed = _add(graph, secondary, [mixed], context=f"{template_ctx}.{secondary}")
 
     mixed = _fix_dim(graph, mixed)
