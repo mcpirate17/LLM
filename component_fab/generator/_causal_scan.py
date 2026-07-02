@@ -24,6 +24,42 @@ from dataclasses import dataclass
 import torch
 from torch import Tensor
 
+_SCAN_TABLE_CACHE_MAX = 128
+_SCAN_TABLE_CACHE: dict[
+    tuple[int, tuple[str, int | None], torch.dtype],
+    tuple[Tensor, Tensor, Tensor],
+] = {}
+
+
+def _device_cache_key(device: torch.device) -> tuple[str, int | None]:
+    dev = torch.device(device)
+    return dev.type, dev.index
+
+
+def _is_inference_tensor(tensor: Tensor) -> bool:
+    try:
+        return bool(tensor.is_inference())
+    except AttributeError:
+        return False
+
+
+def _chunk_decay_tables(
+    n: int, device: torch.device, dtype: torch.dtype
+) -> tuple[Tensor, Tensor, Tensor]:
+    key = (int(n), _device_cache_key(device), dtype)
+    cached = _SCAN_TABLE_CACHE.get(key)
+    if cached is not None:
+        idx, exps, causal = cached
+        if not (torch.is_grad_enabled() and _is_inference_tensor(idx)):
+            return idx, exps, causal
+    idx = torch.arange(n, device=device, dtype=dtype)
+    exps = (idx[:, None] - idx[None, :]).clamp(min=0)
+    causal = (idx[:, None] >= idx[None, :]).to(dtype)
+    if len(_SCAN_TABLE_CACHE) >= _SCAN_TABLE_CACHE_MAX:
+        _SCAN_TABLE_CACHE.clear()
+    _SCAN_TABLE_CACHE[key] = (idx, exps, causal)
+    return idx, exps, causal
+
 
 def causal_decay_context(x: Tensor, decay: Tensor, *, chunk: int = 64) -> Tensor:
     """Causal power-law decayed context, chunked and stable.
@@ -53,9 +89,7 @@ def causal_decay_context(x: Tensor, decay: Tensor, *, chunk: int = 64) -> Tensor
         end = min(start + chunk, length)
         xc = x[:, start:end, :]  # [B, n, C]
         n = end - start
-        idx = torch.arange(n, device=x.device, dtype=x.dtype)
-        exps = (idx[:, None] - idx[None, :]).clamp(min=0)  # [n, n]
-        causal = (idx[:, None] >= idx[None, :]).to(x.dtype)  # lower-tri
+        idx, exps, causal = _chunk_decay_tables(n, x.device, x.dtype)
         powmat = torch.exp(exps[None] * log_decay[:, None, None]) * causal[None]
         intra = torch.einsum("cts,bsc->btc", powmat, xc)  # within-chunk
         # carry from earlier chunks: c_{start+j} += decay**(j+1) * state

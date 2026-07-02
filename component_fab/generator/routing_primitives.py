@@ -7,6 +7,7 @@ from typing import Callable, cast
 
 import torch
 from torch import nn
+import torch.nn.functional as F
 
 from component_fab.harness.top_ar_block import RMSNorm
 
@@ -435,20 +436,13 @@ class RoutedBottleneckLane(nn.Module):
         probs = torch.softmax(logits, dim=-1)
         topk_vals, topk_idx = probs.topk(self.top_k, dim=-1)
         topk_vals = topk_vals / topk_vals.sum(dim=-1, keepdim=True).clamp_min(1e-6)
-        out = torch.zeros_like(x)
-        for slot in range(self.top_k):
-            idx = topk_idx[..., slot]
-            wt = topk_vals[..., slot].unsqueeze(-1)
-            for index, expert in enumerate(self.experts):
-                mask = (idx == index).unsqueeze(-1).to(x.dtype)
-                if mask.sum() == 0:
-                    continue
-                out = out + mask * wt * expert(x)
-        fraction_per_expert = torch.zeros(
-            self.n_experts, device=x.device, dtype=x.dtype
+        expert_out = torch.stack([expert(x) for expert in self.experts], dim=2)
+        gather_idx = topk_idx.unsqueeze(-1).expand(-1, -1, -1, x.shape[-1])
+        selected = torch.gather(expert_out, dim=2, index=gather_idx)
+        out = (selected * topk_vals.unsqueeze(-1)).sum(dim=2)
+        fraction_per_expert = F.one_hot(topk_idx, self.n_experts).to(x.dtype).mean(
+            dim=(0, 1, 2)
         )
-        for index in range(self.n_experts):
-            fraction_per_expert[index] = (topk_idx == index).float().mean()
         mean_prob_per_expert = probs.mean(dim=(0, 1))
         self.aux_loss = (
             self.n_experts * (fraction_per_expert * mean_prob_per_expert).sum() * 0.01
