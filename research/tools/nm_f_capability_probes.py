@@ -492,7 +492,7 @@ def run_binding_probe(args, device: torch.device) -> dict:
     mixers = (
         args.mixers.split(",")
         if args.mixers
-        else ["cdma32", "cdma64", "cdma128", "attn"]
+        else ["cdma32", "cdma64p8", "cdma128p8", "attn"]  # F9.4 flagship line
     )
     nk, nv = args.n_keys, args.n_values
     results: dict = {
