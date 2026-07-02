@@ -11,10 +11,35 @@ from .compiler_op_utils import (
     aria_core,
     kernels,
     _c,
+    _is_inference_tensor,
     _t,
     _safe_linear,
     record_kernel_fallback,
 )
+
+_MASK_CACHE_MAX = 128
+_FUTURE_MASK_CACHE: dict[tuple[int, tuple[str, int | None]], torch.Tensor] = {}
+
+
+def _device_cache_key(device: torch.device) -> tuple[str, int | None]:
+    dev = torch.device(device)
+    return dev.type, dev.index
+
+
+def _future_mask(seq_len: int, device: torch.device) -> torch.Tensor:
+    key = (int(seq_len), _device_cache_key(device))
+    cached = _FUTURE_MASK_CACHE.get(key)
+    if cached is not None and not (
+        torch.is_grad_enabled() and _is_inference_tensor(cached)
+    ):
+        return cached
+    mask = torch.triu(
+        torch.ones(seq_len, seq_len, device=device, dtype=torch.bool), diagonal=1
+    )
+    if len(_FUTURE_MASK_CACHE) >= _MASK_CACHE_MAX:
+        _FUTURE_MASK_CACHE.clear()
+    _FUTURE_MASK_CACHE[key] = mask
+    return mask
 
 
 def _project_qkv(module, x):
@@ -100,9 +125,7 @@ def _causal_attention_scores(
 ) -> torch.Tensor:
     scores = torch.matmul(q, k.transpose(-2, -1)) * scale
     seq_len = scores.shape[-1]
-    causal = torch.triu(
-        torch.ones(seq_len, seq_len, device=scores.device, dtype=torch.bool), diagonal=1
-    )
+    causal = _future_mask(seq_len, scores.device)
     return scores.masked_fill(causal, -1e9)
 
 
@@ -162,7 +185,7 @@ def _op_reciprocal_rank_attention(module, inputs, _):
         return x
     q, k, v, B, S = _project_qkv(module, x)
     raw_scores = torch.matmul(q, k.transpose(-2, -1)) * module.attn_scale
-    causal = torch.triu(torch.ones(S, S, device=x.device, dtype=torch.bool), diagonal=1)
+    causal = _future_mask(S, x.device)
     scores = raw_scores.masked_fill(causal, -1e9)
 
     reverse_scores = raw_scores.transpose(-2, -1).masked_fill(causal, -1e9)
@@ -190,7 +213,7 @@ def _op_reciprocal_semiring_attention(module, inputs, _):
 
     q, k, v, B, S = _project_qkv(module, x)
     raw_scores = torch.matmul(q, k.transpose(-2, -1)) * module.attn_scale
-    causal = torch.triu(torch.ones(S, S, device=x.device, dtype=torch.bool), diagonal=1)
+    causal = _future_mask(S, x.device)
     scores = raw_scores.masked_fill(causal, -1e9)
 
     # Reciprocal-rank boost on the address (same shape as reciprocal_rank).
@@ -220,7 +243,7 @@ def _op_phase_lock_attention(module, inputs, _):
     phase_q = torch.tanh(q)
     phase_k = torch.tanh(k)
     phase_scores = torch.cos(phase_q.unsqueeze(-2) - phase_k.unsqueeze(-3)).mean(dim=-1)
-    causal = torch.triu(torch.ones(S, S, device=x.device, dtype=torch.bool), diagonal=1)
+    causal = _future_mask(S, x.device)
     phase_scores = phase_scores.masked_fill(causal, 0.0)
     phase_scale = torch.tanh(module.phase_lock_scale).to(x.dtype)
     weights = torch.softmax(dot_scores + phase_scale * phase_scores, dim=-1)

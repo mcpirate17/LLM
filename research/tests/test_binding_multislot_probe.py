@@ -80,6 +80,7 @@ def test_multi_blank_defaults_match_hardened_intermediate_setting():
     assert cfg.query_slots == 3
     assert cfg.train_steps == 1000
     assert cfg.eval_every == 125
+    assert cfg.eval_batch_size == 64
     assert cfg.n_eval == 256
     assert cfg.threshold == pytest.approx(0.08)
 

@@ -80,6 +80,25 @@ class ButterflyMix(nn.Module):
         # Identity-at-init: all angles 0. Shape (n_passes, L, n/2); empty if L == 0.
         init = torch.zeros(self.n_passes, max(self.L, 0), self.n // 2)
         self.angles = nn.Parameter(init)
+        idx = torch.arange(self.n, dtype=torch.long)
+        lo_rows = []
+        hi_rows = []
+        for k in range(self.L):
+            bit = 1 << k
+            lo = idx[idx & bit == 0]
+            lo_rows.append(lo)
+            hi_rows.append(lo ^ bit)
+        empty = torch.empty(0, self.n // 2, dtype=torch.long)
+        self.register_buffer(
+            "_stage_lo",
+            torch.stack(lo_rows) if lo_rows else empty,
+            persistent=False,
+        )
+        self.register_buffer(
+            "_stage_hi",
+            torch.stack(hi_rows) if hi_rows else empty.clone(),
+            persistent=False,
+        )
 
     @property
     def num_parameters(self) -> int:
@@ -87,10 +106,7 @@ class ButterflyMix(nn.Module):
 
     def _stage_pairs(self, k: int) -> Tuple[torch.Tensor, torch.Tensor]:
         """Lower/upper indices of the n/2 disjoint XOR-stride-2^k pairs (stage k)."""
-        bit = 1 << k
-        idx = torch.arange(self.n)
-        lo = idx[idx & bit == 0]
-        return lo, lo ^ bit
+        return self._stage_lo[k], self._stage_hi[k]
 
     def _apply_stage(
         self, x: torch.Tensor, theta: torch.Tensor, k: int
@@ -108,8 +124,8 @@ class ButterflyMix(nn.Module):
     def dense_matrix(self) -> torch.Tensor:
         """Full ``n×n`` product across all passes/stages. Tests only — ``O(n²)``."""
         if self.L == 0:
-            return torch.eye(self.n)
-        eye = torch.eye(self.n)
+            return torch.eye(self.n, device=self.angles.device, dtype=self.angles.dtype)
+        eye = torch.eye(self.n, device=self.angles.device, dtype=self.angles.dtype)
         m = eye
         for p in range(self.n_passes):
             for k in range(self.L):

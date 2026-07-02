@@ -54,6 +54,20 @@ _ENTMAX_ALPHA_SPAN = 1.0
 # entmax (exact zeros), not a blend — a softmax blend would leak strictly-positive
 # weight onto every position and erase the exact-sparsity property.
 _ENTMAX_BLEND_WIDTH = 0.5
+_MASK_CACHE_MAX = 128
+_CAUSAL_MASK_CACHE: dict[tuple[int, tuple[str, int | None]], torch.Tensor] = {}
+
+
+def _device_cache_key(device: torch.device) -> tuple[str, int | None]:
+    dev = torch.device(device)
+    return dev.type, dev.index
+
+
+def _is_inference_tensor(tensor: torch.Tensor) -> bool:
+    try:
+        return bool(tensor.is_inference())
+    except AttributeError:
+        return False
 
 
 @dataclass(frozen=True)
@@ -92,9 +106,19 @@ def all_stage_specs() -> list[StageSpec]:
 
 
 def _causal_mask(seq_len: int, device: torch.device) -> torch.Tensor:
-    return torch.triu(
+    key = (int(seq_len), _device_cache_key(device))
+    cached = _CAUSAL_MASK_CACHE.get(key)
+    if cached is not None and not (
+        torch.is_grad_enabled() and _is_inference_tensor(cached)
+    ):
+        return cached
+    mask = torch.triu(
         torch.ones(seq_len, seq_len, device=device, dtype=torch.bool), diagonal=1
     )
+    if len(_CAUSAL_MASK_CACHE) >= _MASK_CACHE_MAX:
+        _CAUSAL_MASK_CACHE.clear()
+    _CAUSAL_MASK_CACHE[key] = mask
+    return mask
 
 
 class ParametricMix(nn.Module):

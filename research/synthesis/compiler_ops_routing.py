@@ -27,6 +27,53 @@ from .routing_runtime import (
     stage_name,
 )
 
+_CONSTANT_CACHE_MAX = 128
+_DCT_BASIS_CACHE: dict[
+    tuple[int, int, tuple[str, int | None], torch.dtype], torch.Tensor
+] = {}
+_LEGENDRE_BASIS_CACHE: dict[
+    tuple[int, int, tuple[str, int | None], torch.dtype], torch.Tensor
+] = {}
+_TRIL_CACHE: dict[
+    tuple[int, tuple[str, int | None], torch.dtype], torch.Tensor
+] = {}
+_GRAPH_EIGBASIS_CACHE: dict[
+    tuple[int, tuple[str, int | None], float], torch.Tensor
+] = {}
+
+
+def _device_cache_key(device: torch.device) -> tuple[str, int | None]:
+    dev = torch.device(device)
+    return dev.type, dev.index
+
+
+def _cache_get(cache: dict, key: tuple) -> torch.Tensor | None:
+    cached = cache.get(key)
+    if cached is None:
+        return None
+    if torch.is_grad_enabled() and _is_inference_tensor(cached):
+        return None
+    return cached
+
+
+def _cache_put(cache: dict, key: tuple, value: torch.Tensor) -> torch.Tensor:
+    if len(cache) >= _CONSTANT_CACHE_MAX:
+        cache.clear()
+    cache[key] = value
+    return value
+
+
+def _cached_tril(seq_len: int, device: torch.device, dtype: torch.dtype) -> torch.Tensor:
+    key = (int(seq_len), _device_cache_key(device), dtype)
+    cached = _cache_get(_TRIL_CACHE, key)
+    if cached is not None:
+        return cached
+    return _cache_put(
+        _TRIL_CACHE,
+        key,
+        torch.tril(torch.ones(seq_len, seq_len, device=device, dtype=dtype)),
+    )
+
 
 def _capture_routing_trace(module) -> bool:
     return bool(getattr(module, "_capture_routing_trace", False))
@@ -1165,7 +1212,7 @@ def _op_ultrametric_tree_mix(module, inputs, config):
     # Ultrametric kernel = product across scales (nested agreement -> strong triangle inequality).
     K = agree.prod(dim=-1)  # (B, S, S)
     # Causal look-back: forbid future keys (j > i).
-    causal = torch.tril(torch.ones(S, S, device=x.device, dtype=dt), diagonal=0)
+    causal = _cached_tril(S, x.device, dt)
     K = K * causal
     denom = K.sum(dim=2, keepdim=True).clamp_min(1e-6)
     W = K / denom  # row-normalized causal retrieval weights
@@ -1236,16 +1283,24 @@ def _causal_lag(x: torch.Tensor, lag: int) -> torch.Tensor:
 
 
 def _dct_basis(seq_len: int, n_modes: int, device, dtype) -> torch.Tensor:
+    key = (int(seq_len), int(n_modes), _device_cache_key(device), dtype)
+    cached = _cache_get(_DCT_BASIS_CACHE, key)
+    if cached is not None:
+        return cached
     pos = torch.arange(seq_len, device=device, dtype=dtype).unsqueeze(1)
     mode = torch.arange(n_modes, device=device, dtype=dtype).unsqueeze(0)
     basis = torch.cos(math.pi * (pos + 0.5) * mode / float(seq_len))
     basis[:, 0] *= seq_len**-0.5
     if n_modes > 1:
         basis[:, 1:] *= (2.0 / float(seq_len)) ** 0.5
-    return basis
+    return _cache_put(_DCT_BASIS_CACHE, key, basis)
 
 
 def _legendre_basis(seq_len: int, n_modes: int, device, dtype) -> torch.Tensor:
+    key = (int(seq_len), int(n_modes), _device_cache_key(device), dtype)
+    cached = _cache_get(_LEGENDRE_BASIS_CACHE, key)
+    if cached is not None:
+        return cached
     z = torch.linspace(-1.0, 1.0, seq_len, device=device, dtype=dtype)
     cols = [
         torch.ones_like(z),
@@ -1254,7 +1309,31 @@ def _legendre_basis(seq_len: int, n_modes: int, device, dtype) -> torch.Tensor:
         0.5 * (5.0 * z.pow(3) - 3.0 * z),
     ][:n_modes]
     basis = torch.stack(cols, dim=1)
-    return basis / basis.norm(dim=0, keepdim=True).clamp_min(1e-6)
+    basis = basis / basis.norm(dim=0, keepdim=True).clamp_min(1e-6)
+    return _cache_put(_LEGENDRE_BASIS_CACHE, key, basis)
+
+
+def _graph_eigbasis(seq_len: int, device: torch.device, decay: torch.Tensor) -> torch.Tensor:
+    idx = torch.arange(seq_len, device=device, dtype=torch.float32)
+    dist = (idx[:, None] - idx[None, :]).abs()
+    adj = torch.exp(-dist / decay)
+    adj = adj - torch.diag_embed(torch.diagonal(adj))
+    lap = torch.diag(adj.sum(dim=-1)) - adj
+    jitter = torch.linspace(0.0, 1e-4, seq_len, device=device, dtype=torch.float32)
+    lap = lap + torch.diag(jitter)
+    _, basis = torch.linalg.eigh(lap)
+    return basis
+
+
+def _cached_graph_eigbasis(
+    seq_len: int, device: torch.device, decay: torch.Tensor
+) -> torch.Tensor:
+    decay_key = round(float(decay.detach().cpu()), 6)
+    key = (int(seq_len), _device_cache_key(device), decay_key)
+    cached = _cache_get(_GRAPH_EIGBASIS_CACHE, key)
+    if cached is not None:
+        return cached
+    return _cache_put(_GRAPH_EIGBASIS_CACHE, key, _graph_eigbasis(seq_len, device, decay))
 
 
 def _basis_reconstruct(
@@ -1320,15 +1399,11 @@ def _op_graph_eigbasis_mix(module, inputs, _):
     if not hasattr(module, "graph_eig_scale"):
         return x
     S = x.shape[1]
-    idx = torch.arange(S, device=x.device, dtype=torch.float32)
-    dist = (idx[:, None] - idx[None, :]).abs()
     decay = F.softplus(module.graph_eig_log_decay.float()) + 0.5
-    adj = torch.exp(-dist / decay)
-    adj = adj - torch.diag_embed(torch.diagonal(adj))
-    lap = torch.diag(adj.sum(dim=-1)) - adj
-    jitter = torch.linspace(0.0, 1e-4, S, device=x.device, dtype=torch.float32)
-    lap = lap + torch.diag(jitter)
-    _, basis = torch.linalg.eigh(lap)
+    if torch.is_grad_enabled() and decay.requires_grad:
+        basis = _graph_eigbasis(S, x.device, decay)
+    else:
+        basis = _cached_graph_eigbasis(S, x.device, decay)
     y = _basis_reconstruct(x, basis, module.graph_eig_scale)
     return x + _safe_linear(y, module.graph_eig_out_proj)
 
@@ -1422,7 +1497,7 @@ def _op_renyi_attention_mix(module, inputs, _):
     v = _safe_linear(x, module.renyi_v_proj)
     scores = torch.matmul(q, k.transpose(-1, -2)) / math.sqrt(max(1, x.shape[-1]))
     S = x.shape[1]
-    mask = torch.tril(torch.ones(S, S, device=x.device, dtype=torch.bool))
+    mask = _cached_tril(S, x.device, torch.bool)
     positive = F.softplus(scores.float()) + 1e-4
     positive = positive.masked_fill(~mask, 0.0)
     power = 1.0 + F.softplus(module.renyi_q_delta.float())

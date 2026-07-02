@@ -61,13 +61,13 @@ def test_basin_signatures_are_reproducible_across_processes_like() -> None:
     # re-measure, compare. (The basin seed + probe seeds are fixed.)
     from research.synthesis import novelty_distance as nd
 
-    saved = softmax_basin_signatures(dim=_DIM)
+    saved = nd.softmax_basin_signatures(dim=_DIM)
     assert nd._BASIN_CACHE.get(_DIM) is saved
     nd._BASIN_CACHE.pop(_DIM, None)
     try:
         fresh = nd._BASIN_CACHE.get(_DIM)
         assert fresh is None
-        redo = softmax_basin_signatures(dim=_DIM)
+        redo = nd.softmax_basin_signatures(dim=_DIM)
     finally:
         nd._BASIN_CACHE[_DIM] = saved  # restore
     for a, b in zip(saved, redo):

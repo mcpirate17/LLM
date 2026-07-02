@@ -2,6 +2,7 @@ import random
 
 import pytest
 import torch
+import torch.nn.functional as F
 
 from research.synthesis.compiled_op import CompiledOp
 from research.synthesis.graph import ComputationGraph, ShapeInfo
@@ -93,3 +94,56 @@ def test_discovery_templates_record_primary_core_slot(template_name, target_op):
         and slot.get("slot_classes") == ["primary_core"]
         for slot in slots
     )
+
+
+def _retention_mix_reference(op: CompiledOp, x: torch.Tensor) -> torch.Tensor:
+    batch, seq_len, dim = x.shape
+    q = op.q_proj(x)
+    k = op.k_proj(x)
+    v = op.v_proj(x)
+    decay = torch.exp(-F.softplus(op.retention_log_decay)).to(
+        device=x.device, dtype=x.dtype
+    )
+    phase = torch.cos(op.retention_phase).to(device=x.device, dtype=x.dtype)
+    state = torch.zeros(batch, dim, device=x.device, dtype=x.dtype)
+    norm = torch.zeros(batch, dim, device=x.device, dtype=x.dtype)
+    outputs = []
+    for t in range(seq_len):
+        state = decay * state + k[:, t] * v[:, t]
+        norm = decay * norm + k[:, t].abs()
+        outputs.append((q[:, t] * state * phase) / norm.clamp(min=1e-6))
+    return op.o_proj(torch.stack(outputs, dim=1))
+
+
+def _dplr_gated_delta_reference(op: CompiledOp, x: torch.Tensor) -> torch.Tensor:
+    batch, seq_len, dim = x.shape
+    q = op.q_proj(x)
+    k = op.k_proj(x)
+    v = op.v_proj(x)
+    diag = torch.sigmoid(op.diag_proj(x))
+    beta = torch.sigmoid(op.beta_proj(x))
+    low_rank = op.lr_out(torch.tanh(op.lr_in(x)))
+    state = torch.zeros(batch, dim, dim, device=x.device, dtype=x.dtype)
+    outputs = []
+    scale = dim**-0.5
+    for t in range(seq_len):
+        v_t = v[:, t] + low_rank[:, t]
+        write = v_t.unsqueeze(-1) * k[:, t].unsqueeze(-2)
+        state = diag[:, t].unsqueeze(-1) * state + beta[:, t].unsqueeze(-1) * write
+        outputs.append(torch.bmm(q[:, t].unsqueeze(1), state).squeeze(1) * scale)
+    return op.o_proj(torch.stack(outputs, dim=1))
+
+
+@pytest.mark.parametrize(
+    ("op_name", "reference"),
+    [
+        ("retention_mix", _retention_mix_reference),
+        ("dplr_gated_delta", _dplr_gated_delta_reference),
+    ],
+)
+def test_scan_rewrites_match_token_loop_reference(op_name, reference):
+    torch.manual_seed(29)
+    op = _compiled(op_name, dim=8)
+    x = torch.randn(2, 9, 8)
+
+    assert torch.allclose(op(x), reference(op, x), atol=2e-6, rtol=2e-6)

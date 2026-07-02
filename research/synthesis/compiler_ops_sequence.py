@@ -265,16 +265,29 @@ def _op_dplr_gated_delta(module, inputs, _):
         module.lr_out.bias,
     )
 
-    state = torch.zeros(B, D, D, device=x.device, dtype=x.dtype)
-    outputs = []
     scale = D**-0.5
-    for t in range(S):
-        v_t = v[:, t] + low_rank[:, t]
-        write = v_t.unsqueeze(-1) * k[:, t].unsqueeze(-2)
-        decay = diag[:, t].unsqueeze(-1)
-        state = decay * state + beta[:, t].unsqueeze(-1) * write
-        outputs.append(torch.bmm(q[:, t].unsqueeze(1), state).squeeze(1) * scale)
-    out = torch.stack(outputs, dim=1)
+    state = torch.zeros(B, D, D, device=x.device, dtype=x.dtype)
+    out = torch.empty(B, S, D, device=x.device, dtype=x.dtype)
+    v_eff = v + low_rank
+    chunk = min(32, S)
+    for c_start in range(0, S, chunk):
+        c_end = min(c_start + chunk, S)
+        c_len = c_end - c_start
+        q_c = q[:, c_start:c_end]
+        k_c = k[:, c_start:c_end]
+        v_c = v_eff[:, c_start:c_end]
+        diag_c = diag[:, c_start:c_end]
+        beta_c = beta[:, c_start:c_end]
+        write_c = beta_c.unsqueeze(-1) * (v_c.unsqueeze(-1) * k_c.unsqueeze(-2))
+        write_c[:, 0].add_(diag_c[:, 0, :].unsqueeze(-1) * state)
+        a_flat = diag_c.permute(0, 2, 1).reshape(B * D, c_len)
+        b_flat = write_c.permute(0, 2, 3, 1).reshape(B * D, D, c_len)
+        scan_h = _kogge_stone_scan_inplace_(a_flat, b_flat)
+        h_all = scan_h.reshape(B, D, D, c_len).permute(0, 3, 1, 2)
+        state = h_all[:, -1]
+        out[:, c_start:c_end] = (
+            torch.einsum("bcd,bcde->bce", q_c, h_all) * scale
+        )
     return _safe_linear(out, module.o_proj.weight, module.o_proj.bias)
 
 
@@ -678,19 +691,17 @@ def _op_retention_mix(module, inputs, _):
     q = module.q_proj(x)
     k = module.k_proj(x)
     v = module.v_proj(x)
-    decay = torch.exp(-F.softplus(module.retention_log_decay)).to(
+    log_decay = -F.softplus(module.retention_log_decay).to(
         device=x.device, dtype=x.dtype
     )
     phase = torch.cos(module.retention_phase).to(device=x.device, dtype=x.dtype)
-    state = torch.zeros(B, D, device=x.device, dtype=x.dtype)
-    norm = torch.zeros(B, D, device=x.device, dtype=x.dtype)
-    outputs = []
-    for t in range(S):
-        kv = k[:, t] * v[:, t]
-        state = decay * state + kv
-        norm = decay * norm + k[:, t].abs()
-        outputs.append((q[:, t] * state * phase) / norm.clamp(min=1e-6))
-    return module.o_proj(torch.stack(outputs, dim=1))
+    log_a = log_decay.view(1, D, 1).expand(B, D, S).contiguous()
+    kv_t = (k * v).permute(0, 2, 1).contiguous()
+    state = _parallel_associative_scan(log_a, kv_t).permute(0, 2, 1)
+    norm_t = k.abs().permute(0, 2, 1).contiguous()
+    norm = _parallel_associative_scan(log_a, norm_t).permute(0, 2, 1)
+    out = (q * state * phase.view(1, 1, D)) / norm.clamp(min=1e-6)
+    return module.o_proj(out)
 
 
 def _op_product_key_memory(module, inputs, _):
