@@ -128,6 +128,32 @@ def template_add_residual(
     return template_add_op(graph, "add", [skip_id, value_id], context=context)
 
 
+def weighted_op_choice(
+    graph: ComputationGraph,
+    rng: random.Random,
+    pool: Sequence[str],
+) -> str:
+    """Pick an op name from ``pool`` biased by the graph's per-op weights.
+
+    Reads ``graph.metadata["_op_weights"]`` — the same ``op_stats``-derived dict
+    :func:`resolve_step` consumes — so an op that clears the S1 gate more often
+    is proposed more often *within* its template, instead of every op in the
+    pool being drawn with identical probability forever regardless of measured
+    success. Falls back to uniform ``rng.choice`` when no weights are attached
+    (cold start / tests) or the effective weights are degenerate. Mirrors
+    ``resolve_step``'s ``rng.choices(candidates, weights=...)`` exactly.
+    """
+    if len(pool) <= 1:
+        return pool[0]
+    op_weights = graph.metadata.get("_op_weights")
+    if not op_weights:
+        return rng.choice(pool)
+    weights = [max(0.0, float(op_weights.get(op, 1.0))) for op in pool]
+    if sum(weights) <= 0.0:
+        return rng.choice(pool)
+    return rng.choices(list(pool), weights=weights, k=1)[0]
+
+
 def template_gated_lane_merge(
     graph: ComputationGraph,
     primary_id: int,

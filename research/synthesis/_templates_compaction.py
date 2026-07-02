@@ -21,6 +21,7 @@ from ._template_helpers import (
     _fix_dim,
     template_add_op as _add,
     template_add_residual as _residual,
+    weighted_op_choice,
 )
 from ._templates_attention_advanced import (
     _pick_norm_or_default,
@@ -62,12 +63,12 @@ def _build_compaction_block(
         graph, input_id, rng, weights, fallback_context=f"{template_ctx}.norm1"
     )
 
-    primary = rng.choice(primary_pool)
+    primary = weighted_op_choice(graph, rng, primary_pool)
     mixed = _add(graph, primary, [normed], context=f"{template_ctx}.{primary}")
 
     if primary in _SEQUENCE_COMPACTION_OPS:
         if rng.random() < 0.5:
-            secondary = rng.choice(_CHANNEL_COMPACTION_OPS)
+            secondary = weighted_op_choice(graph, rng, _CHANNEL_COMPACTION_OPS)
             mixed = _add(
                 graph, secondary, [mixed], context=f"{template_ctx}.{secondary}"
             )
@@ -76,7 +77,7 @@ def _build_compaction_block(
         # structural no-mixing gate after burning rapid-screening compute
         # (measured: overnight campaign 2026-07-02). ALWAYS pair a channel
         # primary with a sequence mixer.
-        secondary = rng.choice(_SEQUENCE_COMPACTION_OPS)
+        secondary = weighted_op_choice(graph, rng, _SEQUENCE_COMPACTION_OPS)
         mixed = _add(graph, secondary, [mixed], context=f"{template_ctx}.{secondary}")
 
     mixed = _fix_dim(graph, mixed)

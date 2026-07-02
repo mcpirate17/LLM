@@ -21,6 +21,7 @@ from ._template_helpers import (
     _fix_dim,
     template_add_op as _add,
     template_add_residual as _residual,
+    weighted_op_choice,
 )
 from ._templates_attention_advanced import (
     _pick_ffn_or_swiglu,
@@ -55,12 +56,12 @@ def _build_nmf_block(
         graph, input_id, rng, weights, fallback_context=f"{template_ctx}.norm1"
     )
 
-    primary = rng.choice(primary_pool)
+    primary = weighted_op_choice(graph, rng, primary_pool)
     mixed = _add(graph, primary, [normed], context=f"{template_ctx}.{primary}")
 
     if rng.random() < 0.5:
         secondary_pool = tuple(op for op in NMF_OPS if op != primary)
-        secondary = rng.choice(secondary_pool)
+        secondary = weighted_op_choice(graph, rng, secondary_pool)
         mixed = _add(graph, secondary, [mixed], context=f"{template_ctx}.{secondary}")
 
     mixed = _fix_dim(graph, mixed)
