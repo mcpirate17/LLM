@@ -46,6 +46,10 @@ _CODEGEN_AXIS_PREFIXES: tuple[str, ...] = (
 _LOSS_SPECIALIST_ROLES = frozenset(
     {"loss_specialist", "loss_monster", "loss_specialist_pair"}
 )
+_SOFTMAX_TWIN_REPAIR_THRESHOLD = 0.85
+_SOFTMAX_SHAPED_SCORE_NORMS = frozenset({"", "softmax", "sharpen"})
+_SCORE_NORM_SPECTRUM = ("tsallis_q", "renyi", "entmax_alpha")
+_WEAK_SCORE_NORM_SOFTMAX_BASIN = "score_norm_softmax_basin"
 
 
 @dataclass(frozen=True, slots=True)
@@ -124,6 +128,17 @@ def _float_metadata(metadata: Mapping[str, Any], *keys: str) -> float | None:
         return None
 
 
+def _truthy_metadata(metadata: Mapping[str, Any], *keys: str) -> bool:
+    raw = _metadata_value(metadata, *keys)
+    if isinstance(raw, bool):
+        return raw
+    if raw is None:
+        return False
+    if isinstance(raw, str):
+        return raw.strip().lower() in {"1", "true", "yes", "y", "on"}
+    return bool(raw)
+
+
 # A compression candidate is weak when its declared latent budget is
 # under-utilized (low effective rank) or it reconstructs poorly. These keys are
 # written by the grading path when the compiled graph contains a real
@@ -161,6 +176,42 @@ def _compression_is_weak(metadata: Mapping[str, Any]) -> bool:
         and reconstruct_mse > _COMPRESSION_MAX_RECONSTRUCT_MSE
     )
     return under_utilized or poor_reconstruct
+
+
+def _score_norm_spectrum_is_weak(metadata: Mapping[str, Any]) -> bool:
+    """Measured basin collapse that should be repaired in score-norm space."""
+
+    reason = str(
+        _metadata_value(
+            metadata,
+            "math_variant_failure_reason",
+            "variant_failure_reason",
+            "failure_reason",
+        )
+        or ""
+    )
+    if reason == "softmax_twin_regression" or _truthy_metadata(
+        metadata, "math_variant_softmax_twin_regression"
+    ):
+        return True
+
+    twin_score = _float_metadata(
+        metadata, "softmax_twin_score", "math_variant_softmax_twin_score"
+    )
+    if twin_score is None or twin_score < _SOFTMAX_TWIN_REPAIR_THRESHOLD:
+        return False
+
+    score_norm = str(
+        _metadata_value(metadata, "physics_score_norm_family", "score_norm_family")
+        or ""
+    ).strip()
+    search_track = str(_metadata_value(metadata, "search_track") or "").strip()
+    return (
+        not score_norm
+        or score_norm in _SOFTMAX_SHAPED_SCORE_NORMS
+        or score_norm in _SCORE_NORM_SPECTRUM
+        or search_track == "physics_atom"
+    )
 
 
 def _weaknesses_from_metadata(
@@ -217,6 +268,8 @@ def _weaknesses_from_metadata(
         weaknesses.append("cannot_bind")
     if _compression_is_weak(metadata):
         weaknesses.append("weak_compression")
+    if _score_norm_spectrum_is_weak(metadata):
+        weaknesses.append(_WEAK_SCORE_NORM_SOFTMAX_BASIN)
     if not weaknesses and score >= 0.55:
         weaknesses.append("promising_needs_novelty")
     return tuple(dict.fromkeys(weaknesses))
@@ -363,6 +416,38 @@ def _delta_ledger_novel_composite(
     }
 
 
+def _score_norm_spectrum_delta(score_norm: str, knob_scale: float) -> dict[str, Any]:
+    sparsity = "top_k" if score_norm == "entmax_alpha" else "learned_structured"
+    return {
+        "op_search_track": "physics_atom",
+        "op_physics_atom_kinds": "scan+basis+norm",
+        "op_physics_norm_axis": "token",
+        "op_physics_basis_axis": "token",
+        "op_physics_address_family": "reciprocal",
+        "op_physics_score_norm_family": score_norm,
+        "op_physics_aggregate_family": "semiring",
+        "op_physics_knob_scale": knob_scale,
+        "op_physics_target": "score_norm_spectrum_escape",
+        "op_dynamical_has_state": 1,
+        "op_dynamical_memory_length_class": "O(L)",
+        "op_geometric_receptive_field": "global",
+        "op_spectral_preferred_basis": "content",
+        "op_activation_sparsity_pattern": sparsity,
+    }
+
+
+def _delta_score_norm_spectrum(
+    value_pool: Mapping[str, Sequence[Any]], axes: Mapping[str, Any]
+) -> dict[str, Any]:
+    del value_pool
+    current = str(axes.get("op_physics_score_norm_family") or "")
+    score_norm = next(
+        (candidate for candidate in _SCORE_NORM_SPECTRUM if candidate != current),
+        _SCORE_NORM_SPECTRUM[0],
+    )
+    return _score_norm_spectrum_delta(score_norm, 1.75)
+
+
 def _physics_variant_patches(delta: Mapping[str, Any]) -> tuple[dict[str, Any], ...]:
     """Small grammar-bounded fan-out over atomic/physics coordinates.
 
@@ -442,6 +527,43 @@ def _physics_variant_patches(delta: Mapping[str, Any]) -> tuple[dict[str, Any], 
             },
         )
         return (*curated, *_open_discovery_variant_patches(delta))
+    if target == "score_norm_spectrum_escape":
+        return (
+            {
+                "op_physics_variant": "physv01",
+                "op_physics_seed": 1,
+                "op_physics_atom_kinds": "scan+basis",
+                "op_physics_norm_axis": "token",
+                "op_physics_basis_axis": "token",
+                "op_physics_address_family": "reciprocal",
+                "op_physics_score_norm_family": "tsallis_q",
+                "op_physics_aggregate_family": "semiring",
+                "op_physics_knob_scale": 1.75,
+            },
+            {
+                "op_physics_variant": "physv02",
+                "op_physics_seed": 2,
+                "op_physics_atom_kinds": "norm+scan+basis",
+                "op_physics_norm_axis": "channel",
+                "op_physics_basis_axis": "token",
+                "op_physics_address_family": "cosine",
+                "op_physics_score_norm_family": "renyi",
+                "op_physics_aggregate_family": "semiring",
+                "op_physics_knob_scale": 2.0,
+            },
+            {
+                "op_physics_variant": "physv03",
+                "op_physics_seed": 3,
+                "op_physics_atom_kinds": "basis+scan+norm",
+                "op_physics_norm_axis": "token",
+                "op_physics_basis_axis": "channel",
+                "op_physics_address_family": "dot",
+                "op_physics_score_norm_family": "entmax_alpha",
+                "op_physics_aggregate_family": "semiring",
+                "op_physics_knob_scale": 2.25,
+                "op_activation_sparsity_pattern": "top_k",
+            },
+        )
     curated = (
         {
             "op_physics_variant": "physv01",
@@ -705,6 +827,15 @@ _REPAIR_RULES: tuple[_RepairRule, ...] = (
             "op_spectral_preferred_basis": "content",
             "op_activation_sparsity_pattern": "learned_structured",
         },
+    ),
+    _RepairRule(
+        frozenset({_WEAK_SCORE_NORM_SOFTMAX_BASIN}),
+        "repair_score_norm_spectrum",
+        (
+            "repair measured softmax-basin score-normalization collapse by "
+            "searching Tsallis, Renyi, and entmax-alpha non-softmax spectra"
+        ),
+        dynamic_delta=_delta_score_norm_spectrum,
     ),
     _RepairRule(
         frozenset({"eliminated_s05_causality_stability"}),

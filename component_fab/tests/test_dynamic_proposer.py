@@ -691,3 +691,140 @@ def test_weak_compression_repair_spec_is_buildable(tmp_path: Path) -> None:
     y = module(x)
     assert y.shape == x.shape
     assert torch.isfinite(y).all()
+
+
+# --- score-norm spectrum repair: escape measured softmax-basin collapse ---
+
+
+def _score_norm_softmax_axes(score_norm: str = "softmax") -> dict:
+    return {
+        **base_dynamic_axes(),
+        "op_search_track": "physics_atom",
+        "op_physics_atom_kinds": "scan+basis",
+        "op_physics_basis_axis": "token",
+        "op_physics_address_family": "dot",
+        "op_physics_score_norm_family": score_norm,
+        "op_physics_aggregate_family": "mean",
+        "op_physics_knob_scale": 1.0,
+        "op_physics_target": "softmax_basin_source",
+    }
+
+
+def _seed_score_norm_softmax_basin_ledger(tmp_path: Path) -> Ledger:
+    ledger = Ledger(tmp_path / "ledger.jsonl")
+    ledger.record_grade(
+        proposal_id="softmax_basin_cand_0000000000",
+        name="softmax_basin_cand",
+        category="lane",
+        synthesis_kind="novel_hybrid",
+        cycle=1,
+        composite_score=0.4,
+        smoke_pass=True,
+        learned_signal=True,
+        metadata={
+            "math_axes": _score_norm_softmax_axes(),
+            "can_bind": True,
+            "softmax_twin_score": 0.93,
+        },
+    )
+    return ledger
+
+
+def test_collect_dynamic_cases_labels_score_norm_softmax_basin(
+    tmp_path: Path,
+) -> None:
+    ledger = _seed_score_norm_softmax_basin_ledger(tmp_path)
+
+    cases = collect_dynamic_evidence_cases(ledger)
+
+    assert cases
+    assert cases[0].weaknesses == ("score_norm_softmax_basin",)
+
+
+def test_collect_dynamic_cases_uses_math_sweep_twin_failure_reason(
+    tmp_path: Path,
+) -> None:
+    ledger = Ledger(tmp_path / "ledger.jsonl")
+    ledger.record_grade(
+        proposal_id="sweep_twin_cand_0000000000",
+        name="sweep_twin_cand",
+        category="lane",
+        synthesis_kind="novel_hybrid",
+        cycle=1,
+        composite_score=0.3,
+        smoke_pass=True,
+        learned_signal=False,
+        metadata={
+            "math_axes": _score_norm_softmax_axes("sharpen"),
+            "can_bind": True,
+            "math_variant_failure_reason": "softmax_twin_regression",
+        },
+    )
+
+    cases = collect_dynamic_evidence_cases(ledger)
+
+    assert cases
+    assert "score_norm_softmax_basin" in cases[0].weaknesses
+
+
+def test_repairs_score_norm_basin_span_non_softmax_spectrum() -> None:
+    repairs = _repairs_for_case(
+        _case(
+            "score_norm_softmax_basin",
+            axes=_score_norm_softmax_axes(),
+        ),
+        {},
+    )
+
+    assert repairs[0].name == "repair_score_norm_spectrum"
+    spectrum_repairs = [
+        repair
+        for repair in repairs
+        if repair.delta.get("op_physics_target") == "score_norm_spectrum_escape"
+    ]
+    score_norms = {
+        str(repair.delta["op_physics_score_norm_family"])
+        for repair in spectrum_repairs
+    }
+    assert score_norms >= {"tsallis_q", "renyi", "entmax_alpha"}
+    assert score_norms.isdisjoint({"softmax", "sharpen"})
+    assert {
+        repair.delta["op_physics_aggregate_family"] for repair in spectrum_repairs
+    } == {"semiring"}
+
+
+def test_dynamic_proposer_repairs_score_norm_basin_with_buildable_spectrum(
+    tmp_path: Path,
+) -> None:
+    ledger = _seed_score_norm_softmax_basin_ledger(tmp_path)
+
+    specs = enumerate_dynamic_proposals(
+        [],
+        ledger,
+        max_specs=8,
+        include_anchor_fallback=False,
+    )
+
+    spectrum_specs = [
+        spec
+        for spec in specs
+        if spec.math_axes.get("op_physics_target") == "score_norm_spectrum_escape"
+    ]
+    score_norms = {
+        str(spec.math_axes["op_physics_score_norm_family"])
+        for spec in spectrum_specs
+    }
+    assert score_norms >= {"tsallis_q", "renyi", "entmax_alpha"}
+    assert score_norms.isdisjoint({"softmax", "sharpen"})
+
+    for score_norm in ("tsallis_q", "renyi", "entmax_alpha"):
+        spec = next(
+            spec
+            for spec in spectrum_specs
+            if spec.math_axes["op_physics_score_norm_family"] == score_norm
+        )
+        module = generate_module_from_spec(spec, dim=16)
+        x = torch.randn(2, 7, 16)
+        y = module(x)
+        assert y.shape == x.shape
+        assert torch.isfinite(y).all()
