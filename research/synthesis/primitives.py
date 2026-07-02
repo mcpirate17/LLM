@@ -2180,6 +2180,19 @@ _register(
         config_keys=("n_slots", "chips", "code_family"),
     )
 )
+_register(
+    PrimitiveOp(
+        "scale_equivariant_wavelet",
+        OpCategory.MIXING,
+        1,
+        "identity",
+        has_params=True,
+        param_formula="D*D+14",  # readout + mother filter (8) + scale mix (5) + 1
+        description="NM-F6 scale-equivariant wavelet stack: one learned mother "
+        "filter shared across dyadic a-trous dilations, causal",
+        config_keys=("kernel_size", "n_scales"),
+    )
+)
 # Note: Math space ops (padic_*, tropical_*, hyp_*, clifford_*, stdp_*)
 # are dynamically registered by research.mathspaces.registry.register_all_mathspaces()
 # Do NOT register them statically here — they need execute_fn from mathspaces.

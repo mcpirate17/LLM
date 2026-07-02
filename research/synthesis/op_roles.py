@@ -240,6 +240,7 @@ _OP_ROLE_MAP: Dict[str, OpRole] = {
     "integral_control_mixer": OpRole.GATE,
     "port_hamiltonian_mix": OpRole.MIX,
     "cdma_slot_binding": OpRole.MIX,
+    "scale_equivariant_wavelet": OpRole.MIX,
     # ── Binary / multi-input ops (context rules enforce valid placement) ──
     "div_safe": OpRole.RESIDUAL,
     "cumprod_safe": OpRole.REDUCE,

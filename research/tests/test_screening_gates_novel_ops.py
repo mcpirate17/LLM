@@ -35,6 +35,7 @@ CROSS_TOKEN_NOVEL_OPS = {
     "integral_control_mixer",
     "port_hamiltonian_mix",
     "cdma_slot_binding",
+    "scale_equivariant_wavelet",
 }
 CONTENT_ADDRESSED_NOVEL_OPS = {
     "cdma_slot_binding",

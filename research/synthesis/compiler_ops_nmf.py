@@ -36,10 +36,15 @@ def _op_cdma_slot_binding(module, inputs, _config):
     return module.cdma_binding_block(inputs[0])
 
 
+def _op_scale_equivariant_wavelet(module, inputs, _config):
+    return module.wavelet_block(inputs[0])
+
+
 OP_IMPLS = {
     "idempotent_oblique_memory": _op_idempotent_oblique_memory,
     "nilpotent_lie_scan": _op_nilpotent_lie_scan,
     "integral_control_mixer": _op_integral_control_mixer,
     "port_hamiltonian_mix": _op_port_hamiltonian_mix,
     "cdma_slot_binding": _op_cdma_slot_binding,
+    "scale_equivariant_wavelet": _op_scale_equivariant_wavelet,
 }

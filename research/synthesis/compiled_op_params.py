@@ -121,6 +121,9 @@ class CompiledOpParamInitMixin(CompactionOpParamInit, NMFOpParamInit):
                 config, d_in
             ),
             "cdma_slot_binding": lambda: self._init_cdma_slot_binding(config, d_in),
+            "scale_equivariant_wavelet": lambda: self._init_scale_equivariant_wavelet(
+                config, d_in
+            ),
             "moe_2expert": lambda: (
                 setattr(self, "gate_proj", self._make_param((2, d_in), std=0.02)),
                 setattr(

@@ -167,6 +167,7 @@ SEQUENCE_MIXING_OPS: FrozenSet[str] = CONTENT_ADDRESSED_OPS | frozenset(
         "nilpotent_lie_scan",
         "integral_control_mixer",
         "port_hamiltonian_mix",
+        "scale_equivariant_wavelet",
     }
 )
 

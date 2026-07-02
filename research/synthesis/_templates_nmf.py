@@ -36,6 +36,7 @@ _NMF_STATE_OPS = (
     "idempotent_oblique_memory",
     "nilpotent_lie_scan",
     "port_hamiltonian_mix",
+    "scale_equivariant_wavelet",
 )
 NMF_OPS = _NMF_ROUTING_OPS + _NMF_STATE_OPS
 

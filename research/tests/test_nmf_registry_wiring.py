@@ -29,6 +29,7 @@ NMF_OPS = [
     "integral_control_mixer",
     "port_hamiltonian_mix",
     "cdma_slot_binding",
+    "scale_equivariant_wavelet",
 ]
 
 

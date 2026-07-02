@@ -57,6 +57,16 @@ class NMFOpParamInit:
             d_in, band=band, tau=float(cfg.get("tau", 0.5))
         )
 
+    def _init_scale_equivariant_wavelet(self, config: Dict, d_in: int) -> None:
+        from .scale_equivariant_wavelet import ScaleEquivariantWaveletStack
+
+        cfg = config or {}
+        self.wavelet_block = ScaleEquivariantWaveletStack(
+            d_in,
+            kernel_size=max(2, int(cfg.get("kernel_size", 8))),
+            n_scales=max(1, int(cfg.get("n_scales", 5))),
+        )
+
     def _init_cdma_slot_binding(self, config: Dict, d_in: int) -> None:
         from .cdma_slot_binding import CDMASlotBinding
 
