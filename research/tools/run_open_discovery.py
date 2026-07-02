@@ -24,9 +24,21 @@ def main() -> None:
     p.add_argument("--n-seeds", type=int, default=2)
     p.add_argument("--device", default="cpu")
     p.add_argument("--top", type=int, default=15)
+    p.add_argument(
+        "--no-novelty-aware",
+        dest="novelty_aware",
+        action="store_false",
+        default=True,
+        help="disable the geometric-novelty MAP-Elites axis (NM-10); on by default",
+    )
     args = p.parse_args()
 
-    disc = OpenDiscovery(dim=args.dim, n_seeds=args.n_seeds, device=args.device)
+    disc = OpenDiscovery(
+        dim=args.dim,
+        n_seeds=args.n_seeds,
+        device=args.device,
+        novelty_aware=args.novelty_aware,
+    )
     res = disc.run(iters=args.iters, seed=args.seed)
     elites = res.archive.elites
     cov = len(elites) / res.archive.total_cells
