@@ -2,11 +2,12 @@
 
 One parametric block template makes all 11 shipped NM-C compaction mixers
 (monarch/butterfly/recurrent-depth/weight-dictionary/hypernet/persistent-
-memory/block-sparse/token-merge/ternary/p-adic-lowprec/subspace-mixture)
-reachable by the grammar; the sampled op name is recorded in the node context
-so per-op attribution survives into the ledger. Every NM-C mixer is
-identity-at-init with its own internal residual/ReZero, so the block scaffold
-stays minimal: norm → mixer → residual, with an optional FFN tail.
+memory/block-sparse/token-merge/ternary/p-adic-lowprec/subspace-mixture) plus
+the two validated collapse-proof p-adic RDR gates (padic-gated-mixer /
+padic-depth-route) reachable by the grammar; the sampled op name is recorded in
+the node context so per-op attribution survives into the ledger. Every op is
+identity-at-init or highway-gated with its own internal residual/ReZero, so the
+block scaffold stays minimal: norm → mixer → residual, with an optional FFN tail.
 """
 
 from __future__ import annotations
@@ -38,6 +39,14 @@ _CHANNEL_COMPACTION_OPS = (
     "ternary_sign_mix",
     "padic_lowprec_mix",
     "subspace_mixture_mix",
+    # Validated collapse-proof p-adic RDR gates (2026-06-29; underpin the RDR
+    # scale result). Both are pointwise-over-tokens (no S-axis mixing), so they
+    # belong in the channel pool where the block ALWAYS forces a sequence
+    # secondary — that pairing keeps them gate-6 safe. They were registered +
+    # dispatchable but reachable by no template; wiring them here keeps two
+    # validated novel mechanisms in the proposable space (GLM handoff).
+    "padic_gated_mixer",
+    "padic_depth_route",
 )
 # Sequence/memory/depth mixers (cross-token or virtual depth).
 _SEQUENCE_COMPACTION_OPS = (

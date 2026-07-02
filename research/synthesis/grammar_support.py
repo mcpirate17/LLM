@@ -154,6 +154,11 @@ ROUTING_COMPRESSION_MOE_OPS: FrozenSet[str] = frozenset(
         "integral_control_mixer",
         # NM-C13: hard content-addressed slot writes (same basis as CDMA).
         "lowrank_state_memory",
+        # Validated p-adic recursion router (2026-06-29 RDR line; cf.
+        # depth_weighted_proj + padic_gate already in this set) — routing-eligible
+        # so a graph carrying it satisfies gate 5. padic_gated_mixer is NOT added:
+        # it is a per-token highway gate, not a router.
+        "padic_depth_route",
     }
 )
 
