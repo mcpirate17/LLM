@@ -90,6 +90,10 @@ COMPONENT_GRAPH_EXEMPT_TEMPLATES = frozenset(
         "arch_router_block",
         "causal_mix_block",
         "chebyshev_block",
+        # NM-C compaction blocks: shared scaffold over 11 registry ops, each op
+        # covered end-to-end by test_compaction_registry_wiring.py.
+        "compaction_mixer_block",
+        "compaction_routing_block",
         "compute_budget_block",
         "conv_residual_block",
         "cross_dim_mixer",
@@ -254,6 +258,10 @@ from ._template_novel_manifest import (
     NOVEL_MIXER_TEMPLATE_DEFAULT_WEIGHTS,
     NOVEL_MIXER_TEMPLATE_REGISTRY,
 )
+from ._template_compaction_manifest import (
+    COMPACTION_TEMPLATE_DEFAULT_WEIGHTS,
+    COMPACTION_TEMPLATE_REGISTRY,
+)
 
 # ── Import all template functions from submodules ──────────────────
 
@@ -388,6 +396,7 @@ TEMPLATES: Dict[str, TemplateFn] = {
     "gated_maximum": tpl_gated_maximum,
     "three_way_split": tpl_three_way_split,
     **NOVEL_MIXER_TEMPLATE_REGISTRY,
+    **COMPACTION_TEMPLATE_REGISTRY,
     **RESEARCH_TEMPLATE_REGISTRY,
     "spiking_residual_block": tpl_spiking_residual_block,
     "spiking_moe_block": tpl_spiking_moe_block,
@@ -489,6 +498,7 @@ DEFAULT_TEMPLATE_WEIGHTS: Dict[str, float] = {
     "latent_attn_padic_hybrid": 5.0,  # latent_attn||padic_expand + FFN
     "graph_attn_ssm_recursive": 4.5,  # graph_attn||SSM + FFN
     **NOVEL_MIXER_TEMPLATE_DEFAULT_WEIGHTS,
+    **COMPACTION_TEMPLATE_DEFAULT_WEIGHTS,
     # NB: retired template names are tracked in RETIRED_TEMPLATE_NAMES above
     # for dedup/back-compat. Their templates and weight entries have been
     # removed — pick_template iterates TEMPLATES.keys() so dangling weight

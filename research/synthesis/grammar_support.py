@@ -140,6 +140,14 @@ ROUTING_COMPRESSION_MOE_OPS: FrozenSet[str] = frozenset(
         "adaptive_rank_gate",
         "dual_compression_blend",
         "latent_attention_compressor",
+        # NM-C compaction ops that are routing/compression by this set's own
+        # criteria: sequence compression (cf. adjacent_token_merge), conditional
+        # depth (cf. depth_weighted_proj), top-k routed retrieval (cf.
+        # moe_topk/topk_gate), p-adic gating (cf. padic_gate).
+        "token_merge_mix",
+        "recurrent_depth_refine",
+        "persistent_memory_refine",
+        "padic_lowprec_mix",
     }
 )
 

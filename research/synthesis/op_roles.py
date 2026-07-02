@@ -221,6 +221,18 @@ _OP_ROLE_MAP: Dict[str, OpRole] = {
     "chebyshev_spectral_mix": OpRole.MIX,
     "kronecker_linear": OpRole.PROJECT,
     "hyp_tangent_nonlinear": OpRole.ACTIVATE,
+    # ── NM-C compaction mixers (Tier D) ─────────────────────────────
+    "monarch_mix": OpRole.PROJECT,
+    "butterfly_mix": OpRole.PROJECT,
+    "recurrent_depth_refine": OpRole.MIX,
+    "weight_dictionary_mix": OpRole.PROJECT,
+    "hypernet_layer_mix": OpRole.PROJECT,
+    "persistent_memory_refine": OpRole.MIX,
+    "block_sparse_mix": OpRole.PROJECT,
+    "token_merge_mix": OpRole.MIX,
+    "ternary_sign_mix": OpRole.PROJECT,
+    "padic_lowprec_mix": OpRole.GATE,
+    "subspace_mixture_mix": OpRole.PROJECT,
     # ── Binary / multi-input ops (context rules enforce valid placement) ──
     "div_safe": OpRole.RESIDUAL,
     "cumprod_safe": OpRole.REDUCE,

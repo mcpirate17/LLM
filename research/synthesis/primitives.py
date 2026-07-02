@@ -1944,6 +1944,156 @@ _register(
         config_keys=("chebyshev_order",),
     )
 )
+
+# ── NM-C compaction mixers (Tier D program) ──────────────────────────
+# Self-contained novel mixers from research/synthesis/<name>.py, compiled via
+# compiler_ops_compaction.py + compiled_op_params_compaction.py. Param formulas
+# are exact at the default knobs where expressible in integer D arithmetic and
+# documented approximations otherwise (monarch/butterfly need sqrt/log).
+
+_register(
+    PrimitiveOp(
+        "monarch_mix",
+        OpCategory.PARAMETERIZED,
+        1,
+        "identity",
+        has_params=True,
+        param_formula="D*D//8",  # ~2*D*sqrt(D); exact at D=256
+        description="NM-C3 Monarch-factored mixer: two block-diagonal banks, "
+        "O(D*sqrt(D)) params, identity-at-init",
+        config_keys=("block_size",),
+    )
+)
+_register(
+    PrimitiveOp(
+        "butterfly_mix",
+        OpCategory.PARAMETERIZED,
+        1,
+        "identity",
+        has_params=True,
+        param_formula="10*D",  # ~n_passes*(n/2)*log2(n), n=pow2>=D
+        description="NM-C5 butterfly orthogonal-flow mixer: O(D*logD) params, "
+        "exactly orthogonal by construction",
+        config_keys=("n_passes",),
+    )
+)
+_register(
+    PrimitiveOp(
+        "recurrent_depth_refine",
+        OpCategory.MIXING,
+        1,
+        "identity",
+        has_params=True,
+        param_formula="D*D+4",  # W + max_depth(3) anchors + sharpness
+        description="NM-C7 recurrent-depth refinement: ONE shared block to depth T "
+        "with the collapse-proof p-adic Lorentzian gate (non-softmax)",
+        config_keys=("max_depth", "p"),
+    )
+)
+_register(
+    PrimitiveOp(
+        "weight_dictionary_mix",
+        OpCategory.PARAMETERIZED,
+        1,
+        "identity",
+        has_params=True,
+        param_formula="2*D*D+12",  # n_basis(2)*D^2 + n_layers(4)*(n_basis+1)
+        description="NM-C8 shared weight-dictionary virtual depth: layers read one "
+        "basis bank, anti-tying diversity gates",
+        config_keys=("n_layers", "n_basis"),
+    )
+)
+_register(
+    PrimitiveOp(
+        "hypernet_layer_mix",
+        OpCategory.PARAMETERIZED,
+        1,
+        "identity",
+        has_params=True,
+        param_formula="D*D+D*D//8+364",  # chunk-shared out proj + embeds/MLP
+        description="NM-C9 hypernetwork-generated virtual-depth weights: generator "
+        "constant in n_layers, anti-ALBERT layer-tying gate",
+        config_keys=("n_layers", "n_roles", "n_chunks"),
+    )
+)
+_register(
+    PrimitiveOp(
+        "persistent_memory_refine",
+        OpCategory.MIXING,
+        1,
+        "identity",
+        has_params=True,
+        param_formula="2*D*D+17*D+2",  # W_q+W_o + bank(16*D) + W_v + scalars
+        description="NM-C10 persistent-memory retrieval: top-k ultrametric p-adic "
+        "reads over a learned bank (non-softmax, content-addressed)",
+        config_keys=("n_slots", "top_k", "p"),
+    )
+)
+_register(
+    PrimitiveOp(
+        "block_sparse_mix",
+        OpCategory.PARAMETERIZED,
+        1,
+        "identity",
+        has_params=True,
+        param_formula="2*D+513",  # K(8)*b(8)^2 + 2*K*grid + 1
+        description="NM-C11 native block-sparse mixer: weight exists ONLY as K "
+        "learned blocks with hard Lorentzian-STE placement (non-softmax)",
+        config_keys=("block_size", "n_blocks"),
+    )
+)
+_register(
+    PrimitiveOp(
+        "token_merge_mix",
+        OpCategory.MIXING,
+        1,
+        "identity",
+        has_params=True,
+        param_formula="D*D+16*D+2",  # 2*k(8)*D restrictions + D^2 lift + 2
+        description="NM-C12 sheaf-consistency token merge: content-aware causal "
+        "L->K compression, exclusive leak-proof read, superposition glue",
+        config_keys=("overlap_dim", "max_cluster"),
+    )
+)
+_register(
+    PrimitiveOp(
+        "ternary_sign_mix",
+        OpCategory.PARAMETERIZED,
+        1,
+        "identity",
+        has_params=True,
+        param_formula="D*D",  # full controller; deploys 2-bit (/16 VRAM)
+        description="NM-C15 ternary sign-semiring mixer: weights in {-1,0,+1}, "
+        "add/subtract forward, STE controller",
+        config_keys=("rank",),
+    )
+)
+_register(
+    PrimitiveOp(
+        "padic_lowprec_mix",
+        OpCategory.PARAMETERIZED,
+        1,
+        "identity",
+        has_params=True,
+        param_formula="3*D*D+D+1",
+        description="NM-C16 p-adic low-precision mixer: validated padic highway "
+        "gate over a padic-truncated projection (bounded relative error)",
+        config_keys=("n_digits", "p"),
+    )
+)
+_register(
+    PrimitiveOp(
+        "subspace_mixture_mix",
+        OpCategory.PARAMETERIZED,
+        1,
+        "identity",
+        has_params=True,
+        param_formula="D*D+D*D//16+4*D+1",  # m(4)*s(D/8) bottlenecks + logits
+        description="NM-C20 mixture-of-subspaces: hard learned channel partition "
+        "(Lorentzian STE), per-subspace s<<D bottlenecks, O(r*D) params",
+        config_keys=("n_subspaces", "subspace_dim"),
+    )
+)
 # Note: Math space ops (padic_*, tropical_*, hyp_*, clifford_*, stdp_*)
 # are dynamically registered by research.mathspaces.registry.register_all_mathspaces()
 # Do NOT register them statically here — they need execute_fn from mathspaces.

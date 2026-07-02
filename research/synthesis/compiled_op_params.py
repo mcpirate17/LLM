@@ -6,11 +6,12 @@ from typing import Dict, Tuple
 import torch
 import torch.nn as nn
 
+from .compiled_op_params_compaction import CompactionOpParamInit
 from .graph import ShapeInfo
 from .primitives import PrimitiveOp
 
 
-class CompiledOpParamInitMixin:
+class CompiledOpParamInitMixin(CompactionOpParamInit):
     def _make_param(self, shape: Tuple[int, ...], std: float = 0.02) -> nn.Parameter:
         return nn.Parameter(
             torch.empty(shape, dtype=torch.float32).normal_(mean=0.0, std=std)
@@ -84,6 +85,25 @@ class CompiledOpParamInitMixin:
             ),
             "moe_topk": lambda: self._init_moe_topk(config, d_in),
             "pq_embedding_moe_block": lambda: self._init_pq_embedding_moe_block(
+                config, d_in
+            ),
+            "monarch_mix": lambda: self._init_monarch_mix(config, d_in),
+            "butterfly_mix": lambda: self._init_butterfly_mix(config, d_in),
+            "recurrent_depth_refine": lambda: self._init_recurrent_depth_refine(
+                config, d_in
+            ),
+            "weight_dictionary_mix": lambda: self._init_weight_dictionary_mix(
+                config, d_in
+            ),
+            "hypernet_layer_mix": lambda: self._init_hypernet_layer_mix(config, d_in),
+            "persistent_memory_refine": lambda: self._init_persistent_memory_refine(
+                config, d_in
+            ),
+            "block_sparse_mix": lambda: self._init_block_sparse_mix(config, d_in),
+            "token_merge_mix": lambda: self._init_token_merge_mix(config, d_in),
+            "ternary_sign_mix": lambda: self._init_ternary_sign_mix(config, d_in),
+            "padic_lowprec_mix": lambda: self._init_padic_lowprec_mix(config, d_in),
+            "subspace_mixture_mix": lambda: self._init_subspace_mixture_mix(
                 config, d_in
             ),
             "moe_2expert": lambda: (
@@ -245,9 +265,7 @@ class CompiledOpParamInitMixin:
             "fno_spectral_mix": lambda: self._init_fno_spectral_mix(d_in),
             "causal_gradient_mix": lambda: self._init_causal_gradient_mix(d_in),
             "causal_laplacian_mix": lambda: self._init_causal_laplacian_mix(d_in),
-            "lie_derivative_flow_mix": lambda: self._init_lie_derivative_flow_mix(
-                d_in
-            ),
+            "lie_derivative_flow_mix": lambda: self._init_lie_derivative_flow_mix(d_in),
             "dct_spectral_mix": lambda: self._init_dct_spectral_mix(d_in),
             "graph_eigbasis_mix": lambda: self._init_graph_eigbasis_mix(d_in),
             "legendre_basis_mix": lambda: self._init_legendre_basis_mix(d_in),
