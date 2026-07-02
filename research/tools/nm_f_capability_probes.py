@@ -230,7 +230,42 @@ class RoPEAttention(nn.Module):
         return self.proj(out.transpose(1, 2).reshape(b, seq_len, d))
 
 
+class OracleCDMA(nn.Module):
+    """F9.1 oracle-assist diagnostic: the CDMA superposition/despreading path
+    with GROUND-TRUTH addressing. Slot selection, write gate, and read gate are
+    derived from token identity by ``ProbeLM._oracle_ctx`` (bijective key→slot,
+    write at value positions in the body, read at query-key positions) and set
+    on ``self.ctx`` before each forward; only ``value_compress`` and
+    ``out_lift`` are learned. Factorizes the F9 probe failure: if this solves
+    the task, the blocker is addressing trainability (F9.1 fixes suffice) and
+    the Welch interference curve becomes measurable; if it fails, the payload
+    bottleneck ``d_v = D/chips`` is the constraint. The wrapped op's unused
+    key/query/gate params receive no gradient (reported param counts include
+    them — diagnostic only, not a capability-per-param claim)."""
+
+    def __init__(self, chips: int) -> None:
+        super().__init__()
+        self.op = CDMASlotBinding(DIM, n_slots=32, chips=chips, code_family="gold")
+        self.ctx: tuple[torch.Tensor, ...] | None = None
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if self.ctx is None:
+            raise RuntimeError("oracle ctx not set — use ProbeLM with an oracle mixer")
+        write_code, write_mask, read_code, read_mask = self.ctx
+        payload = self.op.value_compress(x)  # (B, L, d_v)
+        spread = (
+            write_mask.unsqueeze(-1).unsqueeze(-1)
+            * payload.unsqueeze(-1)
+            * write_code.unsqueeze(-2)
+        )
+        memory = torch.cumsum(spread, dim=1) - spread  # strictly-past superposition
+        v_hat = (memory * read_code.unsqueeze(-2)).sum(dim=-1) / self.op.chips
+        return self.op.out_lift(v_hat * read_mask.unsqueeze(-1))
+
+
 def build_mixer(name: str) -> nn.Module:
+    if name.startswith("oracle"):
+        return OracleCDMA(chips=int(name[6:]))
     if name.startswith("cdma"):
         return DeltaWrap(
             CDMASlotBinding(DIM, n_slots=32, chips=int(name[4:]), code_family="gold")
@@ -312,7 +347,30 @@ class ProbeLM(nn.Module):
             p.numel() for p in self.norm.parameters()
         )
 
+    def _oracle_ctx(self, tokens: torch.Tensor) -> tuple[torch.Tensor, ...]:
+        """Ground-truth CDMA addressing from token identity (F9.1 diagnostic).
+        Requires n_keys ≤ n_slots (bijective key→slot; run with --n-keys 32).
+        Write: at each position whose PREVIOUS token is a key, before the QRY
+        marker (i.e. at value positions), into the key's slot. Read: at key
+        positions after the QRY marker (the queries), from the key's slot."""
+        codes = self.blocks[0].mixer.op.codes  # (n_slots, chips)
+        n_slots = codes.shape[0]
+        is_key = (tokens >= KEYS[0]) & (tokens < KEYS[0] + n_slots)
+        slot = (tokens - KEYS[0]).clamp(0, n_slots - 1)
+        seen_qry = (tokens == QUERY_TOK).cumsum(dim=1) > 0
+        prev_is_key = torch.zeros_like(is_key)
+        prev_is_key[:, 1:] = is_key[:, :-1]
+        prev_slot = torch.zeros_like(slot)
+        prev_slot[:, 1:] = slot[:, :-1]
+        write_mask = (prev_is_key & ~seen_qry).float()
+        read_mask = (is_key & seen_qry).float()
+        return codes[prev_slot], write_mask, codes[slot], read_mask
+
     def forward(self, tokens: torch.Tensor) -> torch.Tensor:
+        if isinstance(self.blocks[0].mixer, OracleCDMA):
+            ctx = self._oracle_ctx(tokens)
+            for block in self.blocks:
+                block.mixer.ctx = ctx
         x = self.embed(tokens)
         for block in self.blocks:
             x = block(x)
@@ -427,8 +485,9 @@ def run_binding_probe(args, device: torch.device) -> dict:
             },
             "non_embedding_params": ProbeLM(name).non_embedding_params(),
         }
-        if name.startswith("cdma"):
-            op = CDMASlotBinding(DIM, n_slots=32, chips=int(name[4:]))
+        if name.startswith(("cdma", "oracle")):
+            chips = int(name[4:]) if name.startswith("cdma") else int(name[6:])
+            op = CDMASlotBinding(DIM, n_slots=32, chips=chips)
             entry["welch_interference_ratio_by_pairs"] = {
                 n: (n - 1) * gold_cross_correlation_bound(op.degree) / op.chips
                 for n in eval_pairs
