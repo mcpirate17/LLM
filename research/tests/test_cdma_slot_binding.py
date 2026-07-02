@@ -260,6 +260,50 @@ def test_code_span_init() -> None:
     assert not torch.allclose(untied.query_lift.weight, untied.key_lift.weight)
 
 
+def test_payload_dim_decouples_from_chips() -> None:
+    """F9.4 knob 1: payload width is a free choice — long codes no longer starve
+    the payload (chips 128 at dim 256 was stuck at d_v = 2)."""
+    mix = CDMASlotBinding(dim=64, n_slots=8, chips=32, payload_dim=8)
+    assert mix.d_v == 8  # NOT dim // chips == 2
+    x = torch.randn(2, 6, 64)
+    assert torch.allclose(mix(x), x, atol=1e-6)  # identity-at-init preserved
+    expected = cdma_param_count(64, 32, payload_dim=8)
+    assert mix.num_parameters == expected
+    assert expected == sum(p.numel() for p in mix.parameters() if p.requires_grad)
+    # Default stays back-compatible: payload_dim=None -> dim // chips.
+    assert CDMASlotBinding(dim=64, n_slots=8, chips=32).d_v == 2
+    with pytest.raises(ValueError):
+        CDMASlotBinding(dim=60, n_slots=8, chips=32)  # None requires divisibility
+    assert CDMASlotBinding(dim=60, n_slots=8, chips=32, payload_dim=4).d_v == 4
+
+
+def test_multi_head_partitions_the_code_family() -> None:
+    """F9.4 knob 2: heads own DISJOINT slices of one code family (diversity
+    combining); single-head shapes/behavior are untouched."""
+    torch.manual_seed(0)
+    mix = CDMASlotBinding(dim=64, n_slots=8, chips=32, n_heads=2, payload_dim=4)
+    assert mix.codes.shape == (16, 32)  # H*S codes drawn from ONE family
+    assert not torch.equal(mix.codes[:8], mix.codes[8:])  # disjoint slices
+    x = torch.randn(2, 6, 64)
+    assert torch.allclose(mix(x), x, atol=1e-6)  # identity-at-init preserved
+    v_hat, write_idx, read_idx = mix.read_raw(x)
+    assert v_hat.shape == (2, 6, 2, 4)  # (B, L, H, d_v)
+    assert write_idx.shape == (2, 6, 2) and read_idx.shape == (2, 6, 2)
+    assert (write_idx < 8).all()  # per-head slot index, not family-wide
+    expected = cdma_param_count(64, 32, payload_dim=4, n_heads=2)
+    assert mix.num_parameters == expected
+    assert expected == sum(p.numel() for p in mix.parameters() if p.requires_grad)
+    # Gradient flows through both heads' address paths.
+    with torch.no_grad():
+        mix.out_lift.weight.add_(0.3 * torch.randn_like(mix.out_lift.weight))
+    mix(torch.randn(2, 6, 64)).square().mean().backward()
+    grad = mix.key_lift.weight.grad
+    assert grad is not None
+    assert grad[:32].abs().sum() > 0 and grad[32:].abs().sum() > 0
+    with pytest.raises(ValueError):
+        CDMASlotBinding(dim=64, n_slots=8, chips=32, n_heads=0)
+
+
 def test_annealed_selection_blends_to_hard() -> None:
     """F9.1 fix 2: at hardness 0 the selection is the normalized Lorentzian
     bounded-reciprocal weighting (sums to 1, argmax preserved, NOT one-hot); at

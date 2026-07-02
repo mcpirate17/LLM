@@ -154,19 +154,29 @@ def cdma_param_count(
     chips: int,
     tie_addressing: bool = True,
     learn_write_taps: bool = False,
+    payload_dim: int | None = None,
+    n_heads: int = 1,
 ) -> int:
-    """TRAINABLE params: address lift(s) (``chips·D`` tied, ``2·chips·D`` untied),
-    value compressor + output lift (``2·d_v·D``), gate (``D + 1``), plus the
+    """TRAINABLE params: address lift(s) (``H·chips·D`` tied, doubled untied),
+    value compressor + output lift (``2·H·d_v·D``), gate (``D + 1``), plus the
     write-address taps (``3·D``) only when ``learn_write_taps`` (frozen at the
     header-then-payload prior by default). Codes cost zero."""
     if dim < 1 or chips < 1:
         raise ValueError(f"dim and chips must be >= 1, got dim={dim}, chips={chips}")
-    if dim % chips != 0:
-        raise ValueError(f"chips must divide dim, got dim={dim}, chips={chips}")
-    d_v = dim // chips
-    lifts = (1 if tie_addressing else 2) * chips * dim
+    if n_heads < 1:
+        raise ValueError(f"n_heads must be >= 1, got {n_heads}")
+    if payload_dim is None:
+        if dim % chips != 0:
+            raise ValueError(
+                f"chips must divide dim when payload_dim is None, got "
+                f"dim={dim}, chips={chips}"
+            )
+        payload_dim = dim // chips
+    if payload_dim < 1:
+        raise ValueError(f"payload_dim must be >= 1, got {payload_dim}")
+    lifts = (1 if tie_addressing else 2) * n_heads * chips * dim
     taps = 3 * dim if learn_write_taps else 0
-    return lifts + taps + 2 * d_v * dim + dim + 1
+    return lifts + taps + 2 * n_heads * payload_dim * dim + dim + 1
 
 
 def _hard_top1(logits: torch.Tensor) -> torch.Tensor:
@@ -198,6 +208,12 @@ class CDMASlotBinding(nn.Module):
       * ``aux_loss``: stashed each forward — ``1 − mean(max-cosine(key lift,
         code bank))`` — a code-alignment regularizer the trainer weights and
         decays to zero; pulls the address lift onto the code constellation early.
+
+    F9.4 (2026-07-02) adds two capacity knobs, both default-off/back-compatible:
+    ``payload_dim`` decouples the payload width from ``D // chips`` (long codes
+    no longer starve the payload; state per stream is ``H·d_v·chips``), and
+    ``n_heads`` partitions ONE code family across independent heads (CDMA
+    diversity combining — decorrelated addressing errors, redundancy at load).
     """
 
     def __init__(
@@ -210,19 +226,35 @@ class CDMASlotBinding(nn.Module):
         tie_addressing: bool = True,
         selection: str = "annealed",
         learn_write_taps: bool = False,
+        payload_dim: int | None = None,
+        n_heads: int = 1,
     ) -> None:
         super().__init__()
         if n_slots < 2:
             raise ValueError(f"n_slots must be >= 2, got {n_slots}")
-        d_v = dim // chips
-        if dim % chips != 0 or d_v < 1:
-            raise ValueError(f"chips must divide dim, got dim={dim}, chips={chips}")
+        if n_heads < 1:
+            raise ValueError(f"n_heads must be >= 1, got {n_heads}")
+        # F9.4: payload width decoupled from chip count. The historical
+        # ``d_v = D // chips`` was a sizing convenience, not mathematics — it
+        # starved long codes (chips 128 ⟹ d_v 2 at dim 256). State per stream is
+        # ``H · d_v · chips`` floats either way; a free ``payload_dim`` trades
+        # state VRAM for payload capacity explicitly.
+        if payload_dim is None:
+            if dim % chips != 0:
+                raise ValueError(
+                    f"chips must divide dim when payload_dim is None, got "
+                    f"dim={dim}, chips={chips}"
+                )
+            payload_dim = dim // chips
+        if payload_dim < 1:
+            raise ValueError(f"payload_dim must be >= 1, got {payload_dim}")
         if selection not in ("annealed", "hard"):
             raise ValueError(f"unknown selection {selection!r}")
         self.d = dim
         self.n_slots = n_slots
         self.chips = chips
-        self.d_v = d_v
+        self.d_v = payload_dim
+        self.n_heads = n_heads
         self.code_family = code_family
         self.tie_addressing = tie_addressing
         self.selection = selection
@@ -230,32 +262,17 @@ class CDMASlotBinding(nn.Module):
         self.selection_hardness = 1.0 if selection == "hard" else 0.0
         self.aux_loss: torch.Tensor | None = None
         self.write_slot_usage: torch.Tensor | None = None
-        if code_family == "gold":
-            codes, self.degree = _gold_codes(n_slots, chips)
-        elif code_family == "hadamard":
-            codes = _hadamard_codes(n_slots, chips)
-            self.degree = 0
-        else:
-            raise ValueError(f"unknown code_family {code_family!r}")
-        self.register_buffer("codes", codes)  # (S, chips), fixed — never trained
-
-        self.key_lift = nn.Linear(dim, chips, bias=False)
+        codes = self._build_code_bank()
+        self.key_lift = nn.Linear(dim, n_heads * chips, bias=False)
         self.query_lift = (
-            self.key_lift if tie_addressing else nn.Linear(dim, chips, bias=False)
+            self.key_lift
+            if tie_addressing
+            else nn.Linear(dim, n_heads * chips, bias=False)
         )
-        # Code-span init (F9.3): W = codesᵀ·G/√chips makes the INITIAL addressing
-        # a decisive random hash into slots (logit spread ~√chips instead of
-        # near-uniform mush) and starts the lift inside the span the alignment
-        # aux pulls toward. Ablation 2026-07-02: this removed the seed lottery —
-        # 4/4 seeds converge (16-pair min 0.723 vs 0.343 with default init).
-        lifts = [self.key_lift] if tie_addressing else [self.key_lift, self.query_lift]
-        with torch.no_grad():
-            for lift in lifts:
-                g = torch.randn(n_slots, dim) / math.sqrt(dim)
-                lift.weight.copy_(codes.T @ g / math.sqrt(chips))
-        self.value_compress = nn.Linear(dim, d_v, bias=False)
+        self._code_span_init(codes)
+        self.value_compress = nn.Linear(dim, n_heads * payload_dim, bias=False)
         # Zero-init output lift ⟹ forward(x) == x at init (identity-at-init).
-        self.out_lift = nn.Linear(d_v, dim, bias=False)
+        self.out_lift = nn.Linear(n_heads * payload_dim, dim, bias=False)
         nn.init.zeros_(self.out_lift.weight)
         # Sigmoid-highway write gate (validated non-twin form), O(D) params.
         self.gate_weight = nn.Parameter(torch.zeros(dim))
@@ -278,10 +295,52 @@ class CDMASlotBinding(nn.Module):
             requires_grad=learn_write_taps,
         )
 
+    def _build_code_bank(self) -> torch.Tensor:
+        """F9.4: multi-head = PARTITION of one code family (``H·S`` codes drawn,
+        head ``h`` owns rows ``[h·S, (h+1)·S)``) — CDMA diversity combining:
+        independent lifts address independent code banks over independent
+        superposed states, so addressing errors decorrelate across heads and the
+        combiner can exploit agreement. Buffer stays 2-D ``(H·S, chips)`` so
+        ``n_heads=1`` is bit-identical to the single-head layout."""
+        if self.code_family == "gold":
+            codes, self.degree = _gold_codes(self.n_heads * self.n_slots, self.chips)
+        elif self.code_family == "hadamard":
+            codes = _hadamard_codes(self.n_heads * self.n_slots, self.chips)
+            self.degree = 0
+        else:
+            raise ValueError(f"unknown code_family {self.code_family!r}")
+        self.register_buffer("codes", codes)  # fixed — never trained
+        return codes
+
+    def _code_span_init(self, codes: torch.Tensor) -> None:
+        """Code-span init (F9.3): ``W = codesᵀ·G/√chips`` makes the INITIAL
+        addressing a decisive random hash into slots (logit spread ~√chips
+        instead of near-uniform mush) and starts the lift inside the span the
+        alignment aux pulls toward. Ablation 2026-07-02: removed the seed
+        lottery — 4/4 seeds converge (16-pair min 0.723 vs 0.343 with default
+        init). Per head, that head's rows come from ITS code slice."""
+        lifts = (
+            [self.key_lift] if self.tie_addressing else [self.key_lift, self.query_lift]
+        )
+        s, chips = self.n_slots, self.chips
+        with torch.no_grad():
+            for lift in lifts:
+                for head in range(self.n_heads):
+                    g = torch.randn(s, self.d) / math.sqrt(self.d)
+                    head_codes = codes[head * s : (head + 1) * s]
+                    lift.weight[head * chips : (head + 1) * chips].copy_(
+                        head_codes.T @ g / math.sqrt(chips)
+                    )
+
     @property
     def num_parameters(self) -> int:
         return cdma_param_count(
-            self.d, self.chips, self.tie_addressing, self.learn_write_taps
+            self.d,
+            self.chips,
+            self.tie_addressing,
+            self.learn_write_taps,
+            self.d_v,
+            self.n_heads,
         )
 
     def _select(self, logits: torch.Tensor) -> torch.Tensor:
@@ -310,40 +369,51 @@ class CDMASlotBinding(nn.Module):
         self, x: torch.Tensor
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Core binding math: returns ``(v_hat, write_idx, read_idx)`` where
-        ``v_hat`` is the despread payload ``(B, L, d_v)`` read from the strictly-past
-        superposition (a token never retrieves its own write)."""
-        scale = 1.0 / math.sqrt(self.chips)
-        # Write address front-end: depthwise causal 3-tap conv (identity at init).
+        ``v_hat`` is the despread payload — ``(B, L, d_v)`` single-head,
+        ``(B, L, H, d_v)`` multi-head — read from the strictly-past superposition
+        (a token never retrieves its own write). Indices are ``(B, L)``
+        single-head, ``(B, L, H)`` multi-head."""
+        b, seq_len, _ = x.shape
+        heads, s, chips = self.n_heads, self.n_slots, self.chips
+        codes = self.codes.view(heads, s, chips)
+        scale = 1.0 / math.sqrt(chips)
+        # Write address front-end: depthwise causal 3-tap conv (prev-tap prior).
         x_pad = F.pad(x.transpose(1, 2), (2, 0))  # (B, D, L+2)
         write_src = (
             x_pad[:, :, 2:] * self.write_addr_taps[:, 2].view(1, -1, 1)
             + x_pad[:, :, 1:-1] * self.write_addr_taps[:, 1].view(1, -1, 1)
             + x_pad[:, :, :-2] * self.write_addr_taps[:, 0].view(1, -1, 1)
         ).transpose(1, 2)
-        key = self.key_lift(write_src)
-        write_sel = self._select(key @ self.codes.T * scale)  # (B, L, S)
-        read_sel = self._select(self.query_lift(x) @ self.codes.T * scale)
-        write_code = write_sel @ self.codes  # (B, L, chips)
-        read_code = read_sel @ self.codes
+        key = self.key_lift(write_src).view(b, seq_len, heads, chips)
+        query = self.query_lift(x).view(b, seq_len, heads, chips)
+        write_sel = self._select(
+            torch.einsum("blhc,hsc->blhs", key, codes) * scale
+        )  # (B, L, H, S)
+        read_sel = self._select(torch.einsum("blhc,hsc->blhs", query, codes) * scale)
+        write_code = torch.einsum("blhs,hsc->blhc", write_sel, codes)
+        read_code = torch.einsum("blhs,hsc->blhc", read_sel, codes)
         # Code-alignment regularizer (F9.1 fix 3): pull the address lift onto the
         # code constellation. Stashed for the trainer; weight it and decay to 0.
         key_dir = key / key.norm(dim=-1, keepdim=True).clamp(min=1e-6)
-        cos = (key_dir @ self.codes.T * scale).max(dim=-1).values
+        cos = (torch.einsum("blhc,hsc->blhs", key_dir, codes) * scale).max(-1).values
         self.aux_loss = 1.0 - cos.mean()
         # Mean write-slot usage over the batch (differentiable) — collapse
         # diagnostic and the hook for utilization-diversity training pressure.
-        self.write_slot_usage = write_sel.mean(dim=(0, 1))
+        self.write_slot_usage = write_sel.mean(dim=(0, 1)).reshape(-1)
         gate = torch.sigmoid(x @ self.gate_weight + self.gate_bias)  # (B, L)
-        payload = self.value_compress(x)  # (B, L, d_v)
+        payload = self.value_compress(x).view(b, seq_len, heads, self.d_v)
         spread = (
-            gate.unsqueeze(-1).unsqueeze(-1)
+            gate.view(b, seq_len, 1, 1, 1)
             * payload.unsqueeze(-1)
             * write_code.unsqueeze(-2)
-        )  # (B, L, d_v, chips)
+        )  # (B, L, H, d_v, chips)
         # Exact associative prefix sum, exclusive: state of strictly earlier tokens.
         memory = torch.cumsum(spread, dim=1) - spread
-        v_hat = (memory * read_code.unsqueeze(-2)).sum(dim=-1) / self.chips
-        return v_hat, write_sel.argmax(dim=-1), read_sel.argmax(dim=-1)
+        v_hat = (memory * read_code.unsqueeze(-2)).sum(dim=-1) / chips
+        write_idx, read_idx = write_sel.argmax(dim=-1), read_sel.argmax(dim=-1)
+        if heads == 1:  # single-head keeps the historical shapes exactly
+            return v_hat.squeeze(2), write_idx.squeeze(-1), read_idx.squeeze(-1)
+        return v_hat, write_idx, read_idx
 
     def read_raw(
         self, x: torch.Tensor
@@ -352,6 +422,9 @@ class CDMASlotBinding(nn.Module):
         return self._bind_and_despread(x)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """``(B, L, D) -> (B, L, D)``: residual + despread-payload lift."""
+        """``(B, L, D) -> (B, L, D)``: residual + despread-payload lift (heads
+        concatenated — the lift is the diversity combiner)."""
         v_hat, _, _ = self._bind_and_despread(x)
+        if self.n_heads > 1:
+            v_hat = v_hat.flatten(-2)
         return x + self.out_lift(v_hat)

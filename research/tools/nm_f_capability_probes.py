@@ -30,6 +30,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import re
 import statistics
 import time
 from pathlib import Path
@@ -284,11 +285,27 @@ def build_mixer(name: str) -> nn.Module:
     if name.startswith("oracle"):
         return OracleCDMA(chips=int(name[6:]))
     if name.startswith("cdma"):
-        # n_slots=64 ≥ n_keys: F9.2 ablation — 32 slots for 64 keys forces slot
-        # sharing (the queried key collides with another bound key ~47% of the
-        # time at 16 pairs), which was most of the high-load falloff.
+        # Name grammar: cdma{chips}[p{payload_dim}][h{n_heads}], e.g. cdma128p8,
+        # cdma32h2. n_slots=64 ≥ n_keys: F9.2 ablation — 32 slots for 64 keys
+        # forces slot sharing (the queried key collides with another bound key
+        # ~47% of the time at 16 pairs), most of the high-load falloff.
+        spec = re.fullmatch(r"cdma(\d+)(?:p(\d+))?(?:h(\d+))?", name)
+        if spec is None:
+            raise ValueError(f"bad cdma mixer spec {name!r}")
+        chips, payload, heads = (
+            int(spec.group(1)),
+            int(spec.group(2)) if spec.group(2) else None,
+            int(spec.group(3)) if spec.group(3) else 1,
+        )
         return DeltaWrap(
-            CDMASlotBinding(DIM, n_slots=64, chips=int(name[4:]), code_family="gold")
+            CDMASlotBinding(
+                DIM,
+                n_slots=64,
+                chips=chips,
+                code_family="gold",
+                payload_dim=payload,
+                n_heads=heads,
+            )
         )
     if name == "integral":
         return DeltaWrap(IntegralControlMixer(DIM))
@@ -535,9 +552,9 @@ def run_binding_probe(args, device: torch.device) -> dict:
             },
             "non_embedding_params": ProbeLM(name).non_embedding_params(),
         }
-        if name.startswith(("cdma", "oracle")):
-            chips = int(name[4:]) if name.startswith("cdma") else int(name[6:])
-            op = CDMASlotBinding(DIM, n_slots=32, chips=chips)
+        chips_match = re.match(r"(?:cdma|oracle)(\d+)", name)
+        if chips_match:
+            op = CDMASlotBinding(DIM, n_slots=32, chips=int(chips_match.group(1)))
             entry["welch_interference_ratio_by_pairs"] = {
                 n: (n - 1) * gold_cross_correlation_bound(op.degree) / op.chips
                 for n in eval_pairs
