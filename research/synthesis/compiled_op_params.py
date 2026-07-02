@@ -124,6 +124,9 @@ class CompiledOpParamInitMixin(CompactionOpParamInit, NMFOpParamInit):
             "scale_equivariant_wavelet": lambda: self._init_scale_equivariant_wavelet(
                 config, d_in
             ),
+            "nonabelian_group_conv": lambda: self._init_nonabelian_group_conv(
+                config, d_in
+            ),
             "moe_2expert": lambda: (
                 setattr(self, "gate_proj", self._make_param((2, d_in), std=0.02)),
                 setattr(

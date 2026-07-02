@@ -2193,6 +2193,20 @@ _register(
         config_keys=("kernel_size", "n_scales"),
     )
 )
+_register(
+    PrimitiveOp(
+        "nonabelian_group_conv",
+        OpCategory.MIXING,
+        1,
+        "identity",
+        has_params=True,
+        param_formula="72*D+8",  # select (G*D+G) + value (G*m*D) + readout, G=8,m=4
+        description="NM-F7 nonabelian group conv: token-selected transport by a "
+        "nonabelian group's regular representation, order-sensitive by "
+        "noncommutativity (scrambled-rep control falsifies)",
+        config_keys=("group_order", "state_width"),
+    )
+)
 # Note: Math space ops (padic_*, tropical_*, hyp_*, clifford_*, stdp_*)
 # are dynamically registered by research.mathspaces.registry.register_all_mathspaces()
 # Do NOT register them statically here — they need execute_fn from mathspaces.

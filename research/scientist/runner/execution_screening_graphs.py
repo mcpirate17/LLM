@@ -168,6 +168,9 @@ SEQUENCE_MIXING_OPS: FrozenSet[str] = CONTENT_ADDRESSED_OPS | frozenset(
         "integral_control_mixer",
         "port_hamiltonian_mix",
         "scale_equivariant_wavelet",
+        # NM-F7: transports state across the sequence by a group action — a
+        # genuine cross-token mixer, so gate 6 must not kill an F7-only graph.
+        "nonabelian_group_conv",
     }
 )
 

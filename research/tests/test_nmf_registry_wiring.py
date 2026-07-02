@@ -30,6 +30,7 @@ NMF_OPS = [
     "port_hamiltonian_mix",
     "cdma_slot_binding",
     "scale_equivariant_wavelet",
+    "nonabelian_group_conv",
 ]
 
 

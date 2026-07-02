@@ -40,6 +40,10 @@ def _op_scale_equivariant_wavelet(module, inputs, _config):
     return module.wavelet_block(inputs[0])
 
 
+def _op_nonabelian_group_conv(module, inputs, _config):
+    return module.group_conv_block(inputs[0])
+
+
 OP_IMPLS = {
     "idempotent_oblique_memory": _op_idempotent_oblique_memory,
     "nilpotent_lie_scan": _op_nilpotent_lie_scan,
@@ -47,4 +51,5 @@ OP_IMPLS = {
     "port_hamiltonian_mix": _op_port_hamiltonian_mix,
     "cdma_slot_binding": _op_cdma_slot_binding,
     "scale_equivariant_wavelet": _op_scale_equivariant_wavelet,
+    "nonabelian_group_conv": _op_nonabelian_group_conv,
 }

@@ -38,6 +38,7 @@ _NMF_STATE_OPS = (
     "nilpotent_lie_scan",
     "port_hamiltonian_mix",
     "scale_equivariant_wavelet",
+    "nonabelian_group_conv",
 )
 NMF_OPS = _NMF_ROUTING_OPS + _NMF_STATE_OPS
 

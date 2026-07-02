@@ -36,6 +36,7 @@ CROSS_TOKEN_NOVEL_OPS = {
     "port_hamiltonian_mix",
     "cdma_slot_binding",
     "scale_equivariant_wavelet",
+    "nonabelian_group_conv",
 }
 CONTENT_ADDRESSED_NOVEL_OPS = {
     "cdma_slot_binding",
@@ -93,6 +94,6 @@ def test_validation_gate_sites_are_config_aware() -> None:
         assert "stage1_validation_loss_ratio_threshold" in src, (
             f"{fname}: validation gate lost its config awareness"
         )
-        assert "> 0.6\n" not in src and "> 0.6)" not in src.replace(
-            "getattr", ""
-        ), f"{fname}: hard-coded 0.6 validation gate reintroduced"
+        assert "> 0.6\n" not in src and "> 0.6)" not in src.replace("getattr", ""), (
+            f"{fname}: hard-coded 0.6 validation gate reintroduced"
+        )

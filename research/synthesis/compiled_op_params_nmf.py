@@ -79,3 +79,19 @@ class NMFOpParamInit:
             chips=chips,
             code_family=str(cfg.get("code_family", "gold")),
         )
+
+    def _init_nonabelian_group_conv(self, config: Dict, d_in: int) -> None:
+        from .nonabelian_group_conv import NonabelianGroupConv
+
+        cfg = config or {}
+        # group_order must be even and >= 6 (nonabelian dihedral); clamp up.
+        order = int(cfg.get("group_order", 8))
+        if order < 6:
+            order = 6
+        if order % 2 != 0:
+            order += 1
+        self.group_conv_block = NonabelianGroupConv(
+            d_in,
+            group_order=order,
+            state_width=max(1, int(cfg.get("state_width", 4))),
+        )
