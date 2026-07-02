@@ -118,6 +118,19 @@ CONTENT_ADDRESSED_OPS: FrozenSet[str] = frozenset(
         "gated_progressive_attention",
         "gated_linear_attention",
         "associative_memory",
+        # Novel content-addressed retrieval mechanisms (2026-07-02 registry
+        # wiring). Each retrieves by CONTENT, not position, by construction:
+        # CDMA spreading-code slot binding (hard top-1 code addressing),
+        # rank-r slot-factor state memory (Lorentzian key-matched writes,
+        # bilinear reads), ultrametric top-k bank retrieval, and idempotent
+        # key-subspace overwrite memory (S·q reads). The 2026-07-02 overnight
+        # campaign measured these being structurally gated as "not
+        # content-addressed" because this hand-list predated them — a gate
+        # silently killing the novel branch.
+        "cdma_slot_binding",
+        "lowrank_state_memory",
+        "persistent_memory_refine",
+        "idempotent_oblique_memory",
     }
 )
 
@@ -143,6 +156,17 @@ SEQUENCE_MIXING_OPS: FrozenSet[str] = CONTENT_ADDRESSED_OPS | frozenset(
         "long_conv_hyena",
         "mixture_of_recursions",
         "cawn_mixer",
+        # Novel cross-token mixers (2026-07-02 registry wiring): sheaf token
+        # merge (sequence compression + exclusive reads), recurrent-depth
+        # refinement, nilpotent-Lie signature scan, integral-control
+        # retention, port-Hamiltonian scan. Channel-only NM ops (monarch,
+        # butterfly, subspace, ternary, ...) are deliberately NOT here —
+        # gate 6 exists to require genuine token mixing.
+        "token_merge_mix",
+        "recurrent_depth_refine",
+        "nilpotent_lie_scan",
+        "integral_control_mixer",
+        "port_hamiltonian_mix",
     }
 )
 

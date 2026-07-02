@@ -68,6 +68,7 @@ from ...meta_analysis.priors import (
 )
 from ..ml_influence_policy import component_is_allowed
 from ..notebook import LabNotebook, ExperimentEntry
+from ...synthesis.grammar_support import ROUTING_COMPRESSION_MOE_OPS
 
 import logging
 
@@ -75,7 +76,11 @@ logger = logging.getLogger(__name__)
 
 # Gate 5 constant: routing/MoE/sparse/compression ops required for efficiency scoring.
 # Module-level to avoid re-instantiation per graph in the screening loop.
-_EFFICIENCY_OPS = frozenset(
+# UNIONED with the grammar's ROUTING_COMPRESSION_MOE_OPS so newly registered
+# routing-class ops are never invisible to gate 5 — the 2026-07-02 overnight
+# campaign measured gate5 killing graphs whose only routing op was a freshly
+# wired novel mechanism (the hand-list had drifted from the registry).
+_EFFICIENCY_OPS = ROUTING_COMPRESSION_MOE_OPS | frozenset(
     {
         "arch_router",
         "compute_budget_router",
