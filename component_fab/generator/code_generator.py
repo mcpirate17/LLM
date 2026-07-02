@@ -56,6 +56,8 @@ from .primitive_templates import (
     GraphDiffusionLane,
     HyperbolicAdapterLane,
     CliffordAdapterLane,
+    CliffordRotorAdapterLane,
+    CliffordRotorSandwichLane,
     LambdaFunctionalAdapterLane,
     LambdaFunctionalLane,
     LinearStateSpaceLane,
@@ -276,6 +278,8 @@ def _dispatch_math_knob(
         adapter = _axis(math_axes, "op_clifford_adapter")
         if adapter in ("geometric_product", "") and dim % 4 == 0:
             return CliffordAttention(dim)
+        if adapter == "rotor_sandwich" and dim % 4 == 0:
+            return CliffordRotorSandwichLane(dim)
     if family == "hyperbolic":
         adapter = _axis(math_axes, "op_hyperbolic_adapter")
         if adapter in ("poincare_projection", ""):
@@ -421,6 +425,8 @@ def _apply_math_knobs(
             module = PadicAdapterLane(module, dim)
         elif knob == "clifford_knob":
             module = CliffordAdapterLane(module, dim)
+        elif knob == "clifford_rotor_sandwich":
+            module = CliffordRotorAdapterLane(module, dim)
         elif knob == "hyperbolic_knob":
             module = HyperbolicAdapterLane(module, dim)
         elif knob in ("lambda_functional_blend", "lambda_functional_token_basis"):

@@ -26,6 +26,8 @@ from component_fab.generator.primitive_templates import (
     HyperbolicAdapterLane,
     CliffordAdapterLane,
     CliffordAttention,
+    CliffordRotorAdapterLane,
+    CliffordRotorSandwichLane,
     LambdaFunctionalAdapterLane,
     LambdaFunctionalLane,
     LowRankAdapterLane,
@@ -309,6 +311,13 @@ def test_dispatch_exotic_algebra_math_knob_families() -> None:
         ),
         (
             {
+                "op_math_family": "clifford",
+                "op_clifford_adapter": "rotor_sandwich",
+            },
+            CliffordRotorSandwichLane,
+        ),
+        (
+            {
                 "op_math_family": "hyperbolic",
                 "op_hyperbolic_adapter": "poincare_projection",
             },
@@ -322,6 +331,27 @@ def test_dispatch_exotic_algebra_math_knob_families() -> None:
         y = module(x)
         assert y.shape == x.shape
         assert torch.isfinite(y).all()
+
+
+def test_dispatch_clifford_rotor_sandwich_is_identity_at_init() -> None:
+    module = generate_module(
+        {
+            "op_math_family": "clifford",
+            "op_clifford_adapter": "rotor_sandwich",
+        },
+        dim=16,
+    )
+    assert isinstance(module, CliffordRotorSandwichLane)
+    x = torch.randn(2, 8, 16)
+
+    closed = module(x)
+    with torch.no_grad():
+        module.rotor_angle.fill_(0.4)
+    opened = module(x)
+
+    assert torch.allclose(closed, x, atol=1e-6)
+    assert not torch.allclose(opened, x)
+    assert torch.isfinite(opened).all()
 
 
 def test_dispatch_composes_math_knobs_over_base_lane() -> None:
@@ -450,6 +480,22 @@ def test_dispatch_composes_clifford_and_hyperbolic_knobs() -> None:
     assert isinstance(module.base.base, TropicalAttention)
     x = torch.randn(2, 8, 16)
     assert torch.isfinite(module(x)).all()
+
+
+def test_dispatch_composes_clifford_rotor_knob_over_base_lane() -> None:
+    module = generate_module(
+        {
+            "op_algebraic_space": "tropical",
+            "op_math_knobs": ("clifford_rotor_sandwich",),
+        },
+        dim=16,
+    )
+    assert isinstance(module, CliffordRotorAdapterLane)
+    assert isinstance(module.base, TropicalAttention)
+    x = torch.randn(2, 8, 16)
+    y = module(x)
+    assert y.shape == x.shape
+    assert torch.isfinite(y).all()
 
 
 def test_dispatch_site_recursion_wraps_anchor_mixer() -> None:

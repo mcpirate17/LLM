@@ -82,6 +82,16 @@ def test_auto_deepen_math_knobs_adds_bounded_natural_siblings() -> None:
     assert len(set(ids)) == len(ids)
 
 
+def test_auto_deepen_math_knobs_adds_clifford_rotor_sibling() -> None:
+    expanded = auto_deepen_math_knobs(DEFAULT_MATH_KNOBS, max_new=13)
+    knobs = {knob.knob_id: knob for knob in expanded}
+
+    rotor = knobs["clifford_rotor_sandwich"]
+    assert rotor.family == "clifford"
+    assert rotor.axes["op_clifford_adapter"] == "rotor_sandwich"
+    assert rotor.axes["op_math_deepening_source"] == "clifford_knob"
+
+
 def test_auto_deepen_math_knobs_skips_families_with_multiple_variants() -> None:
     base = next(
         knob for knob in DEFAULT_MATH_KNOBS if knob.knob_id == "calculus_finite_difference"

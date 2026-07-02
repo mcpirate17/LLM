@@ -216,11 +216,75 @@ class PadicAdapterLane(_ResidualAdapterLane):
         self.n_levels = levels
 
 
+def _cl20_geometric_product(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+    """Vectorized geometric product for Cl(2,0) packed as [1, e1, e2, e12]."""
+
+    a0, a1, a2, a12 = a.unbind(dim=-1)
+    b0, b1, b2, b12 = b.unbind(dim=-1)
+    return torch.stack(
+        (
+            a0 * b0 + a1 * b1 + a2 * b2 - a12 * b12,
+            a0 * b1 + a1 * b0 - a2 * b12 + a12 * b2,
+            a0 * b2 + a1 * b12 + a2 * b0 - a12 * b1,
+            a0 * b12 + a1 * b2 - a2 * b1 + a12 * b0,
+        ),
+        dim=-1,
+    )
+
+
+def _cl20_reverse(mv: torch.Tensor) -> torch.Tensor:
+    """Reverse involution: scalar/vector grades unchanged, bivector sign flips."""
+
+    return torch.stack(
+        (mv[..., 0], mv[..., 1], mv[..., 2], -mv[..., 3]),
+        dim=-1,
+    )
+
+
+class CliffordRotorSandwichLane(nn.Module):
+    """Pointwise Cl(2,0) rotor sandwich ``R x ~R``.
+
+    This is a geometric-product composition, not attention: each 4-channel
+    multivector is transformed by a learned even rotor initialized to identity.
+    """
+
+    def __init__(self, dim: int) -> None:
+        if dim % 4 != 0:
+            raise ValueError(f"dim {dim} must be divisible by 4 for Cl(2,0)")
+        super().__init__()
+        self.dim = dim
+        self.n_mv = dim // 4
+        self.rotor_angle = nn.Parameter(torch.zeros(self.n_mv))
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        batch_size, seq_len, _ = x.shape
+        mv = x.reshape(batch_size, seq_len, self.n_mv, 4)
+        theta = self.rotor_angle.to(device=x.device, dtype=x.dtype).view(
+            1, 1, self.n_mv
+        )
+        zeros = torch.zeros_like(theta)
+        rotor = torch.stack(
+            (torch.cos(theta), zeros, zeros, torch.sin(theta)),
+            dim=-1,
+        )
+        rotated = _cl20_geometric_product(
+            _cl20_geometric_product(rotor, mv), _cl20_reverse(rotor)
+        )
+        return rotated.reshape(batch_size, seq_len, self.dim)
+
+
 class CliffordAdapterLane(_ResidualAdapterLane):
     """Wrap a base lane with Clifford geometric-product composition."""
 
     def __init__(self, base: nn.Module, dim: int) -> None:
         super().__init__(base, CliffordAttention(dim), dim)
+
+
+class CliffordRotorAdapterLane(_ResidualAdapterLane):
+    """Wrap a base lane with pointwise Cl(2,0) rotor-sandwich composition."""
+
+    def __init__(self, base: nn.Module, dim: int) -> None:
+        super().__init__(base, CliffordRotorSandwichLane(dim), dim)
 
 
 class HyperbolicAdapterLane(_ResidualAdapterLane):

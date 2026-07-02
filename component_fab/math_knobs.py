@@ -232,6 +232,16 @@ AUTO_DEEPENING_MATH_KNOBS: tuple[MathKnob, ...] = (
         rationale="auto-deepened graph sibling: learned path-Laplacian weighting",
     ),
     MathKnob(
+        knob_id="clifford_rotor_sandwich",
+        family="clifford",
+        axes={
+            "op_clifford_adapter": "rotor_sandwich",
+            "op_math_deepening_source": "clifford_knob",
+        },
+        cost_class="low",
+        rationale="auto-deepened Clifford sibling: pointwise rotor-sandwich geometric product",
+    ),
+    MathKnob(
         knob_id="lambda_functional_token_basis",
         family="lambda_functional",
         axes={

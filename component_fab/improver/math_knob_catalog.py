@@ -315,7 +315,7 @@ def enumerate_adaptive_math_knob_compositions(
     db_path: Path | str = DEFAULT_META_DB,
     axis_lift: AxisLiftReport | None = None,
     include_auto_deepening: bool = True,
-    max_auto_deepened_knobs: int = 12,
+    max_auto_deepened_knobs: int = 13,
 ) -> list[ProposalSpec]:
     """Generate knob specs with ledger-guided pruning and ranking.
 
