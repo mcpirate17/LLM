@@ -18,6 +18,7 @@ from component_fab.improver.adaptive import (
     build_anchor_pool,
 )
 from component_fab.improver.axis_variants import (
+    DATA_ROUTE_AXIS_VARIANTS,
     anchor_axes_for_op,
     enumerate_axis_variants,
 )
@@ -113,6 +114,44 @@ def enumerate_training_regime_variants(
     return out
 
 
+def enumerate_data_route_variants(
+    anchor_op_names: Sequence[str],
+    *,
+    max_specs: int = 24,
+) -> list[ProposalSpec]:
+    """Attach data folding/packing/routing genotypes to existing anchor specs."""
+
+    if max_specs <= 0:
+        return []
+    out: list[ProposalSpec] = []
+    for name in anchor_op_names:
+        anchor = anchor_axes_for_op(name)
+        if anchor is None:
+            continue
+        for variant in DATA_ROUTE_AXIS_VARIANTS:
+            out.append(
+                build_spec_from_axes(
+                    f"route_{anchor.op_name}_{variant.delta_name}",
+                    {**anchor.axes, **variant.delta},
+                    witness_ops=(anchor.op_name,),
+                    anchor_axes=anchor.axes,
+                    rationale=(
+                        "Search-visible data folding/packing route: "
+                        f"{variant.rationale}. Grade capability at matched token budget."
+                    ),
+                    notes=(
+                        f"anchor={anchor.op_name}",
+                        "source=data_route_axis",
+                        "data_route_routes_tokens_into_mixer_sooner",
+                    ),
+                    fingerprint_dispatched_axes=True,
+                )
+            )
+            if len(out) >= max_specs:
+                return out
+    return out
+
+
 def enumerate_cycle_specs(
     ledger: Ledger,
     anchors: Sequence[str],
@@ -131,7 +170,9 @@ def enumerate_cycle_specs(
     max_nas_specs: int = 6,
     max_name_free_specs: int = 12,
     max_training_specs: int = 24,
+    max_data_route_specs: int = 24,
     include_training_regimes: bool = True,
+    include_data_routes: bool = False,
     include_name_free_physics: bool = True,
     nas_archive_guided: bool = False,
     tier2_feedback_by_id: Mapping[str, Tier2Feedback] | None = None,
@@ -196,6 +237,12 @@ def enumerate_cycle_specs(
             anchor_list,
             max_specs=max_training_specs,
         )
+    data_route_specs: list[ProposalSpec] = []
+    if include_data_routes:
+        data_route_specs = enumerate_data_route_variants(
+            anchor_list,
+            max_specs=max_data_route_specs,
+        )
 
     static_axis_specs: list[ProposalSpec] = []
     static_cross_specs: list[ProposalSpec] = []
@@ -233,5 +280,6 @@ def enumerate_cycle_specs(
         + frontier_specs
         + nas_specs
         + training_specs
+        + data_route_specs
         + ledger_specs
     )

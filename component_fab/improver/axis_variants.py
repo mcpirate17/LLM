@@ -18,6 +18,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Sequence
 
+from research.synthesis.data_pipeline_grammar import (
+    DEFAULT_DATA_ROUTE_VARIANT_NAMES,
+    data_route_to_axes,
+    implemented_data_route_specs,
+)
+
 from ..proposer.spec_generator import ProposalSpec, build_spec_from_axes
 from .math_knobs import DEFAULT_MATH_KNOBS, MathKnob
 
@@ -523,32 +529,14 @@ DEFAULT_AXIS_VARIANT_TEMPLATES: tuple[AxisVariant, ...] = (
 # (``research/tools/data_route_ab.py``) consumes these via
 # ``data_pipeline_grammar.data_route_from_axes`` so a candidate carries its data
 # route as a genotype, not a hidden training detail.
-DATA_ROUTE_AXIS_VARIANTS: tuple[AxisVariant, ...] = (
+_DATA_ROUTE_SPECS = implemented_data_route_specs()
+DATA_ROUTE_AXIS_VARIANTS: tuple[AxisVariant, ...] = tuple(
     AxisVariant(
-        delta_name="data_reverse",
-        delta={"op_data_order": "reverse"},
-        rationale="feed each window in reverse — predict the previous token",
-    ),
-    AxisVariant(
-        delta_name="data_bidirectional",
-        delta={"op_data_order": "bidirectional"},
-        rationale="fold the window in half: first half forward, second reversed",
-    ),
-    AxisVariant(
-        delta_name="data_fold8",
-        delta={"op_seq_fold": 8},
-        rationale="serpentine fold-8 of the window (boustrophedon locality)",
-    ),
-    AxisVariant(
-        delta_name="data_doc_boundary",
-        delta={"op_data_pack": "doc_boundary"},
-        rationale="sample windows that never cross a document boundary",
-    ),
-    AxisVariant(
-        delta_name="data_surprisal_route",
-        delta={"op_data_route": "surprisal_split", "op_data_carrier_fraction": 0.3},
-        rationale="route the hardest 30% (by monster surprisal) to the carrier lane",
-    ),
+        delta_name=f"data_{name}",
+        delta=data_route_to_axes(_DATA_ROUTE_SPECS[name]),
+        rationale=f"evaluate data route {name}: {_DATA_ROUTE_SPECS[name].key}",
+    )
+    for name in DEFAULT_DATA_ROUTE_VARIANT_NAMES
 )
 
 

@@ -85,6 +85,17 @@ def _add_loop_args(parser: argparse.ArgumentParser) -> None:
         help="max measured physics/name-free experiment specs per cycle",
     )
     parser.add_argument(
+        "--enable-data-routes",
+        action="store_true",
+        help="enable WS-2 data folding/packing route proposals",
+    )
+    parser.add_argument(
+        "--max-data-route-specs",
+        default=24,
+        type=int,
+        help="max WS-2 data-route proposal specs per cycle when enabled",
+    )
+    parser.add_argument(
         "--disable-name-free-physics",
         action="store_true",
         help="disable the measured physics/name-free experiment proposal track",
@@ -286,6 +297,8 @@ def _drive_loop(
             max_cross_product_specs=args.max_cross_product_specs,
             max_nas_specs=args.max_nas_specs,
             max_name_free_specs=args.max_name_free_specs,
+            max_data_route_specs=args.max_data_route_specs,
+            include_data_routes=args.enable_data_routes,
             include_name_free_physics=not args.disable_name_free_physics,
             nas_archive_guided=args.nas_archive_guided,
             run_range_probe=args.range_probe,

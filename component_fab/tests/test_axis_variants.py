@@ -22,7 +22,14 @@ def test_data_route_variants_round_trip_to_valid_specs() -> None:
     # candidate can carry it as a genotype consumed by the LM A/B.
     assert DATA_ROUTE_AXIS_VARIANTS, "expected non-empty data-route variants"
     names = {v.delta_name for v in DATA_ROUTE_AXIS_VARIANTS}
-    assert {"data_reverse", "data_doc_boundary", "data_surprisal_route"} <= names
+    assert {
+        "data_reverse",
+        "data_doc_boundary",
+        "data_surprisal_split_30",
+        "data_fold16_vertical_alternate",
+        "data_fold16_sparse_vertical",
+        "data_fold16_intermittent_horizontal",
+    } <= names
     for variant in DATA_ROUTE_AXIS_VARIANTS:
         spec = data_route_from_axes(variant.delta)  # raises on an invalid axis value
         assert not spec.is_identity, f"{variant.delta_name} must change the data route"

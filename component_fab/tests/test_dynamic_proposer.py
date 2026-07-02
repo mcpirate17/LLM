@@ -14,9 +14,11 @@ from component_fab.proposer.dynamic import (
 from component_fab.state.ledger import Ledger, PROMOTION_PROMOTED, PROMOTION_REJECTED
 from component_fab.improver.axis_variants import DEFAULT_META_DB
 from component_fab.proposer.enumeration import (
+    enumerate_data_route_variants,
     enumerate_cycle_specs,
     enumerate_training_regime_variants,
 )
+from component_fab.improver.axis_variants import AnchorAxes
 from component_fab.tests.conftest import base_dynamic_axes
 from research.synthesis.training_regime_grammar import (
     AXIS_TRAIN_REGIME,
@@ -233,6 +235,101 @@ def test_autonomous_cycle_can_include_training_regime_specs(
     training_specs = [spec for spec in specs if spec.math_axes.get(AXIS_TRAIN_REGIME)]
     assert len(training_specs) == 1
     assert training_specs[0].math_axes[AXIS_TRAIN_REGIME] == "embed_warm_then_all"
+
+
+def test_data_route_variants_emit_adjustable_fold_axes(monkeypatch) -> None:
+    def fake_anchor_axes_for_op(name: str) -> AnchorAxes:
+        return AnchorAxes(
+            op_name=name,
+            axes={
+                "op_algebraic_space": "tropical",
+                "op_dynamical_has_state": 0,
+            },
+            eval_count=4,
+            pass_rate=0.5,
+        )
+
+    monkeypatch.setattr(
+        "component_fab.proposer.enumeration.anchor_axes_for_op",
+        fake_anchor_axes_for_op,
+    )
+
+    specs = enumerate_data_route_variants(["carrier"], max_specs=32)
+    by_name = {spec.name: spec for spec in specs}
+
+    vertical = next(
+        spec for spec in specs if "data_fold16_vertical_alternate" in spec.name
+    )
+    sparse = next(spec for spec in specs if "data_fold16_sparse_vertical" in spec.name)
+    intermittent = next(
+        spec for spec in specs if "data_fold16_intermittent_horizontal" in spec.name
+    )
+    half = next(spec for spec in specs if "data_fold16_vertical_half" in spec.name)
+
+    assert any(name.startswith("route_carrier_data_") for name in by_name)
+    assert vertical.math_axes["op_seq_fold"] == 16
+    assert vertical.math_axes["op_seq_fold_orientation"] == "vertical"
+    assert vertical.math_axes["op_seq_fold_direction"] == "alternate"
+    assert sparse.math_axes["op_seq_fold_pattern"] == "sparse"
+    assert intermittent.math_axes["op_seq_fold_pattern"] == "intermittent"
+    assert intermittent.math_axes["op_seq_fold_orientation"] == "horizontal"
+    assert half.math_axes["op_seq_fold_fraction"] == 0.5
+    assert all(
+        "data_route_routes_tokens_into_mixer_sooner" in spec.notes for spec in specs
+    )
+
+
+def test_autonomous_cycle_can_opt_into_data_route_specs(
+    monkeypatch, tmp_path: Path
+) -> None:
+    def fake_anchor_axes_for_op(name: str) -> AnchorAxes:
+        return AnchorAxes(
+            op_name=name,
+            axes={
+                "op_algebraic_space": "tropical",
+                "op_dynamical_has_state": 0,
+            },
+            eval_count=4,
+            pass_rate=0.5,
+        )
+
+    monkeypatch.setattr(
+        "component_fab.proposer.enumeration.anchor_axes_for_op",
+        fake_anchor_axes_for_op,
+    )
+    ledger = Ledger(tmp_path / "ledger.jsonl")
+
+    disabled = enumerate_cycle_specs(
+        ledger,
+        ["carrier"],
+        cycle=1,
+        include_static_variants=False,
+        include_frontier=False,
+        include_nas=False,
+        include_training_regimes=False,
+        include_data_routes=False,
+        include_name_free_physics=False,
+        max_knob_specs=0,
+        max_dynamic_specs=0,
+    )
+    enabled = enumerate_cycle_specs(
+        ledger,
+        ["carrier"],
+        cycle=1,
+        include_static_variants=False,
+        include_frontier=False,
+        include_nas=False,
+        include_training_regimes=False,
+        include_data_routes=True,
+        max_data_route_specs=2,
+        include_name_free_physics=False,
+        max_knob_specs=0,
+        max_dynamic_specs=0,
+    )
+
+    assert not any("source=data_route_axis" in spec.notes for spec in disabled)
+    assert len(enabled) == 2
+    assert all("source=data_route_axis" in spec.notes for spec in enabled)
 
 
 def test_ledger_entry_reconstructs_dynamic_spec_by_exact_axes(tmp_path: Path) -> None:

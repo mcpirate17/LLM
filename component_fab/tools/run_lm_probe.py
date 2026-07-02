@@ -76,6 +76,8 @@ def _all_specs(anchors: tuple[str, ...], ledger: Ledger) -> list[ProposalSpec]:
         max_cross_pairs=80,
         max_knob_specs=128,
         max_dynamic_specs=128,
+        include_data_routes=True,
+        max_data_route_specs=128,
     )
 
 

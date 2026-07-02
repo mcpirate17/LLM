@@ -40,6 +40,7 @@ from dataclasses import replace
 from research.synthesis.data_pipeline_grammar import (
     DataRouteSpec,
     apply_data_route,
+    batchable_data_route_specs,
     data_route_to_axes,
 )
 from research.tools.embed_warmup_ab import (
@@ -60,17 +61,14 @@ from research.training.window_packing import (
     pack_window_starts,
 )
 
-# Route conditions: the natural-order baseline plus the implemented permutations
-# and packings. order/fold permute the sampled window; doc_boundary changes which
-# window is sampled (never crossing a document boundary).
+# Route conditions: the natural-order baseline plus the batch-applicable
+# permutations and packings. order/fold permute the sampled window; doc_boundary
+# changes which window is sampled (never crossing a document boundary). Segment
+# routes such as surprisal_split need a route-prior-aware paired block and stay
+# out of this generic next-token A/B so they are never silent no-ops.
 _ROUTE_CONDITIONS: dict[str, DataRouteSpec] = {
     "natural": DataRouteSpec(),
-    "reverse": DataRouteSpec(order="reverse"),
-    "bidirectional": DataRouteSpec(order="bidirectional"),
-    "fold8": DataRouteSpec(fold=8),
-    "fold16": DataRouteSpec(fold=16),
-    "fold32": DataRouteSpec(fold=32),
-    "doc_boundary": DataRouteSpec(pack="doc_boundary"),
+    **batchable_data_route_specs(),
     "doc_boundary_reverse": DataRouteSpec(pack="doc_boundary", order="reverse"),
 }
 
@@ -186,11 +184,14 @@ def run_condition(
 
 
 def _summarize(results: list[dict[str, Any]]) -> dict[str, Any]:
-    """Per-route mean final capability + convergence speed vs the natural baseline."""
+    """Per-route seed-robust capability + convergence speed vs natural."""
     nat = [r["final"]["val_loss"] for r in results if r["condition"] == "natural"]
-    target = float(np.mean(nat)) if nat else float("inf")
+    nat_top1 = [r["final"]["top1_acc"] for r in results if r["condition"] == "natural"]
+    target = float(np.median(nat)) if nat else float("inf")
+    baseline_top1 = float(np.median(nat_top1)) if nat_top1 else float("nan")
     summary: dict[str, Any] = {
-        "baseline_natural_val_loss": round(target, 4),
+        "baseline_natural_median_val_loss": round(target, 4),
+        "baseline_natural_median_top1": round(baseline_top1, 4),
         "by_condition": {},
     }
     conditions = dict.fromkeys(r["condition"] for r in results)
@@ -206,8 +207,19 @@ def _summarize(results: list[dict[str, Any]]) -> dict[str, Any]:
         summary["by_condition"][cond] = {
             "mean_final_val_loss": round(float(np.mean(finals)), 4),
             "mean_final_top1": round(float(np.mean(top1s)), 4),
+            "median_final_val_loss": round(float(np.median(finals)), 4),
+            "median_final_top1": round(float(np.median(top1s)), 4),
+            "delta_median_val_loss_vs_natural": round(
+                float(np.median(finals)) - target, 4
+            ),
+            "delta_median_top1_vs_natural": round(
+                float(np.median(top1s)) - baseline_top1, 4
+            ),
             "mean_steps_to_natural_final": (
                 round(float(np.mean(s2t)), 1) if s2t else None
+            ),
+            "median_steps_to_natural_final": (
+                round(float(np.median(s2t)), 1) if s2t else None
             ),
             "n_reached_baseline": f"{len(s2t)}/{len(runs)}",
         }

@@ -12,9 +12,11 @@ from research.synthesis.data_pipeline_grammar import (
     SEQ_FOLDS,
     DataRouteSpec,
     apply_data_route,
+    batchable_data_route_specs,
     data_route_from_axes,
     data_route_to_axes,
     gate_bias_from_segments,
+    implemented_data_route_specs,
     route_permutation,
     route_segment_ids,
     route_segments_from_surprisal,
@@ -32,6 +34,10 @@ def test_spec_validates_enum_values() -> None:
         {"pack": "nope"},
         {"order": "sideways"},
         {"fold": 7},
+        {"fold_fraction": 0.33},
+        {"fold_direction": "sideways"},
+        {"fold_pattern": "always"},
+        {"fold_orientation": "diagonal"},
         {"route": "everywhere"},
     ):
         with pytest.raises(ValueError):
@@ -40,13 +46,24 @@ def test_spec_validates_enum_values() -> None:
 
 def test_axes_round_trip() -> None:
     spec = DataRouteSpec(
-        order="bidirectional", fold=16, route="surprisal_split", carrier_fraction=0.25
+        order="bidirectional",
+        fold=16,
+        fold_fraction=0.5,
+        fold_direction="backward",
+        fold_pattern="sparse",
+        fold_orientation="vertical",
+        route="surprisal_split",
+        carrier_fraction=0.25,
     )
     axes = data_route_to_axes(spec)
     assert axes == {
         "op_data_pack": "contiguous",
         "op_data_order": "bidirectional",
         "op_seq_fold": 16,
+        "op_seq_fold_fraction": 0.5,
+        "op_seq_fold_direction": "backward",
+        "op_seq_fold_pattern": "sparse",
+        "op_seq_fold_orientation": "vertical",
         "op_data_route": "surprisal_split",
         "op_data_carrier_fraction": 0.25,
     }
@@ -96,6 +113,116 @@ def test_fold_is_serpentine_permutation() -> None:
     ]
 
 
+def test_vertical_fold_interleaves_distant_segments() -> None:
+    tokens = torch.arange(16).reshape(1, 16)
+    out = apply_data_route(
+        tokens,
+        DataRouteSpec(
+            fold=8,
+            fold_direction="forward",
+            fold_orientation="vertical",
+        ),
+    )
+    assert out.flatten().tolist() == [
+        0,
+        2,
+        4,
+        6,
+        8,
+        10,
+        12,
+        14,
+        1,
+        3,
+        5,
+        7,
+        9,
+        11,
+        13,
+        15,
+    ]
+
+
+def test_fold_fraction_controls_how_much_of_window_is_folded() -> None:
+    tokens = torch.arange(32).reshape(1, 32)
+    out = apply_data_route(
+        tokens,
+        DataRouteSpec(
+            fold=8,
+            fold_fraction=0.5,
+            fold_direction="forward",
+            fold_orientation="vertical",
+        ),
+    )
+    assert out.flatten()[:16].tolist() == [
+        0,
+        2,
+        4,
+        6,
+        8,
+        10,
+        12,
+        14,
+        1,
+        3,
+        5,
+        7,
+        9,
+        11,
+        13,
+        15,
+    ]
+    assert out.flatten()[16:].tolist() == list(range(16, 32))
+
+
+def test_sparse_fold_leaves_gaps_in_place() -> None:
+    tokens = torch.arange(32).reshape(1, 32)
+    out = apply_data_route(
+        tokens,
+        DataRouteSpec(
+            fold=8,
+            fold_pattern="sparse",
+            fold_direction="forward",
+            fold_orientation="vertical",
+        ),
+    ).flatten()
+    assert out[1::2].tolist() == list(range(1, 32, 2))
+    assert out[0::2].tolist() == [
+        0,
+        4,
+        8,
+        12,
+        16,
+        20,
+        24,
+        28,
+        2,
+        6,
+        10,
+        14,
+        18,
+        22,
+        26,
+        30,
+    ]
+
+
+def test_intermittent_fold_alternates_active_and_cooldown_blocks() -> None:
+    tokens = torch.arange(32).reshape(1, 32)
+    out = apply_data_route(
+        tokens,
+        DataRouteSpec(
+            fold=8,
+            fold_pattern="intermittent",
+            fold_direction="backward",
+        ),
+    ).flatten()
+    assert out[:8].tolist() == [1, 0, 3, 2, 5, 4, 7, 6]
+    assert out[8:16].tolist() == list(range(8, 16))
+    assert out[16:24].tolist() == [17, 16, 19, 18, 21, 20, 23, 22]
+    assert out[24:].tolist() == list(range(24, 32))
+
+
 def test_route_is_always_a_token_preserving_permutation() -> None:
     tokens = torch.randint(0, 50, (3, 32))
     for order in DATA_ORDERS:
@@ -112,6 +239,10 @@ def test_route_permutation_is_a_bijection() -> None:
         for fold in SEQ_FOLDS:
             perm = route_permutation(32, DataRouteSpec(order=order, fold=fold))
             assert torch.equal(perm.sort().values, torch.arange(32))
+    for spec in implemented_data_route_specs().values():
+        if spec.pack == "contiguous":
+            perm = route_permutation(64, spec)
+            assert torch.equal(perm.sort().values, torch.arange(64))
 
 
 def test_apply_is_deterministic() -> None:
@@ -145,8 +276,32 @@ def test_sampler_emits_only_wired_specs() -> None:
         spec = sample_data_route_spec(gen)
         assert spec.pack == "contiguous" and spec.route == "none"
         assert spec.order in DATA_ORDERS and spec.fold in SEQ_FOLDS
-        # every sampled spec must be appliable (no fail-loud path)
+        # every sampled spec must be applicable (no fail-loud path)
         apply_data_route(torch.arange(64).reshape(2, 32), spec)
+
+
+def test_implemented_route_catalog_exposes_aggressive_fold_controls() -> None:
+    specs = implemented_data_route_specs()
+    assert {
+        "fold16_vertical_alternate",
+        "fold32_vertical_alternate",
+        "fold16_vertical_half",
+        "fold16_sparse_vertical",
+        "fold16_intermittent_horizontal",
+    } <= set(specs)
+    assert specs["fold16_vertical_half"].fold_fraction == 0.5
+    assert specs["fold16_sparse_vertical"].fold_pattern == "sparse"
+    assert specs["fold16_intermittent_horizontal"].fold_pattern == "intermittent"
+    assert specs["fold32_vertical_alternate"].fold_orientation == "vertical"
+
+
+def test_batchable_route_catalog_excludes_model_side_segment_routes() -> None:
+    specs = batchable_data_route_specs()
+    assert "surprisal_split_30" not in specs
+    assert "local_global_30" not in specs
+    assert "fold16_vertical_alternate" in specs
+    assert "doc_boundary" in specs
+    assert all(spec.route == "none" for spec in specs.values())
 
 
 def test_sampler_is_deterministic_for_seed() -> None:
