@@ -94,6 +94,10 @@ COMPONENT_GRAPH_EXEMPT_TEMPLATES = frozenset(
         # covered end-to-end by test_compaction_registry_wiring.py.
         "compaction_mixer_block",
         "compaction_routing_block",
+        # NM-F operator blocks: shared scaffold over 5 registry ops, each op
+        # covered end-to-end by test_nmf_registry_wiring.py.
+        "nmf_mixer_block",
+        "nmf_routing_block",
         "compute_budget_block",
         "conv_residual_block",
         "cross_dim_mixer",
@@ -262,6 +266,10 @@ from ._template_compaction_manifest import (
     COMPACTION_TEMPLATE_DEFAULT_WEIGHTS,
     COMPACTION_TEMPLATE_REGISTRY,
 )
+from ._template_nmf_manifest import (
+    NMF_TEMPLATE_DEFAULT_WEIGHTS,
+    NMF_TEMPLATE_REGISTRY,
+)
 
 # ── Import all template functions from submodules ──────────────────
 
@@ -397,6 +405,7 @@ TEMPLATES: Dict[str, TemplateFn] = {
     "three_way_split": tpl_three_way_split,
     **NOVEL_MIXER_TEMPLATE_REGISTRY,
     **COMPACTION_TEMPLATE_REGISTRY,
+    **NMF_TEMPLATE_REGISTRY,
     **RESEARCH_TEMPLATE_REGISTRY,
     "spiking_residual_block": tpl_spiking_residual_block,
     "spiking_moe_block": tpl_spiking_moe_block,
@@ -499,6 +508,7 @@ DEFAULT_TEMPLATE_WEIGHTS: Dict[str, float] = {
     "graph_attn_ssm_recursive": 4.5,  # graph_attn||SSM + FFN
     **NOVEL_MIXER_TEMPLATE_DEFAULT_WEIGHTS,
     **COMPACTION_TEMPLATE_DEFAULT_WEIGHTS,
+    **NMF_TEMPLATE_DEFAULT_WEIGHTS,
     # NB: retired template names are tracked in RETIRED_TEMPLATE_NAMES above
     # for dedup/back-compat. Their templates and weight entries have been
     # removed — pick_template iterates TEMPLATES.keys() so dangling weight

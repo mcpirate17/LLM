@@ -7,11 +7,12 @@ import torch
 import torch.nn as nn
 
 from .compiled_op_params_compaction import CompactionOpParamInit
+from .compiled_op_params_nmf import NMFOpParamInit
 from .graph import ShapeInfo
 from .primitives import PrimitiveOp
 
 
-class CompiledOpParamInitMixin(CompactionOpParamInit):
+class CompiledOpParamInitMixin(CompactionOpParamInit, NMFOpParamInit):
     def _make_param(self, shape: Tuple[int, ...], std: float = 0.02) -> nn.Parameter:
         return nn.Parameter(
             torch.empty(shape, dtype=torch.float32).normal_(mean=0.0, std=std)
@@ -106,6 +107,17 @@ class CompiledOpParamInitMixin(CompactionOpParamInit):
             "subspace_mixture_mix": lambda: self._init_subspace_mixture_mix(
                 config, d_in
             ),
+            "idempotent_oblique_memory": lambda: self._init_idempotent_oblique_memory(
+                config, d_in
+            ),
+            "nilpotent_lie_scan": lambda: self._init_nilpotent_lie_scan(config, d_in),
+            "integral_control_mixer": lambda: self._init_integral_control_mixer(
+                config, d_in
+            ),
+            "port_hamiltonian_mix": lambda: self._init_port_hamiltonian_mix(
+                config, d_in
+            ),
+            "cdma_slot_binding": lambda: self._init_cdma_slot_binding(config, d_in),
             "moe_2expert": lambda: (
                 setattr(self, "gate_proj", self._make_param((2, d_in), std=0.02)),
                 setattr(

@@ -148,6 +148,10 @@ ROUTING_COMPRESSION_MOE_OPS: FrozenSet[str] = frozenset(
         "recurrent_depth_refine",
         "persistent_memory_refine",
         "padic_lowprec_mix",
+        # NM-F ops that qualify: hard top-1 slot addressing = token-conditional
+        # routing (cf. topk_gate); anti-windup integral gate (cf. padic_gate).
+        "cdma_slot_binding",
+        "integral_control_mixer",
     }
 )
 

@@ -2094,6 +2094,77 @@ _register(
         config_keys=("n_subspaces", "subspace_dim"),
     )
 )
+
+# ── NM-F forced-structure operator families ──────────────────────────
+# Self-contained novel operators from research/synthesis/<name>.py, compiled
+# via compiler_ops_nmf.py + compiled_op_params_nmf.py. F6 wavelet joins once
+# its files are committed by the owning lane.
+
+_register(
+    PrimitiveOp(
+        "idempotent_oblique_memory",
+        OpCategory.MIXING,
+        1,
+        "identity",
+        has_params=True,
+        param_formula="4*D*D+5*D+1",  # 4 lifts + rank(4)*D controller + gate
+        description="NM-F2 idempotent oblique-projection memory: exact same-key "
+        "overwrite law (P^2=P), no additive fast-weight blend",
+        config_keys=("rank",),
+    )
+)
+_register(
+    PrimitiveOp(
+        "nilpotent_lie_scan",
+        OpCategory.MIXING,
+        1,
+        "identity",
+        has_params=True,
+        param_formula="320*D",  # 2 lifts (2kD) + readout ((k^2+2k)D), k=16
+        description="NM-F3 nilpotent-Lie signature scan: Chen-identity exact "
+        "semigroup, zero-param order-sensitive group law",
+        config_keys=("lift_dim",),
+    )
+)
+_register(
+    PrimitiveOp(
+        "integral_control_mixer",
+        OpCategory.MIXING,
+        1,
+        "identity",
+        has_params=True,
+        param_formula="2*D*D+4*D+1",
+        description="NM-F4 integral-control mixer: internal model principle, "
+        "exact retention through a closed anti-windup gate",
+        config_keys=("anti_windup", "s_max"),
+    )
+)
+_register(
+    PrimitiveOp(
+        "port_hamiltonian_mix",
+        OpCategory.MIXING,
+        1,
+        "identity",
+        has_params=True,
+        param_formula="2*D*D+7*D-9",  # banded skew (band 4) + r/lambda + gate
+        description="NM-F5 port-Hamiltonian mixer: energy-norm contraction by "
+        "theorem, collapse-proof by construction",
+        config_keys=("band", "tau"),
+    )
+)
+_register(
+    PrimitiveOp(
+        "cdma_slot_binding",
+        OpCategory.MIXING,
+        1,
+        "identity",
+        has_params=True,
+        param_formula="D*D//16+33*D+1",  # tied lift (32D) + value/out + gate
+        description="NM-F9 CDMA slot binding: zero-param spreading-code binding "
+        "law, hard top-1 slot addressing (non-softmax)",
+        config_keys=("n_slots", "chips", "code_family"),
+    )
+)
 # Note: Math space ops (padic_*, tropical_*, hyp_*, clifford_*, stdp_*)
 # are dynamically registered by research.mathspaces.registry.register_all_mathspaces()
 # Do NOT register them statically here — they need execute_fn from mathspaces.

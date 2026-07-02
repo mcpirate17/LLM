@@ -21,6 +21,7 @@ ROUTING_CAPABLE_TEMPLATE_NAMES: FrozenSet[str] = frozenset(
         "codex_ssm_mla_gated_block",
         "compaction_routing_block",
         "compute_budget_block",
+        "nmf_routing_block",
         "conditional_compute",
         "depth_gated_block",
         "depth_gated_block_matmul_norm",

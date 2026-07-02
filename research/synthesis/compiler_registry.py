@@ -19,6 +19,7 @@ def load_split_op_modules() -> None:
         "compiler_ops_mathspaces": ".compiler_ops_mathspaces",
         "compiler_ops_routing": ".compiler_ops_routing",
         "compiler_ops_compaction": ".compiler_ops_compaction",
+        "compiler_ops_nmf": ".compiler_ops_nmf",
         "true_routing_ops": ".true_routing_ops",
     }
     for label in split_modules:
