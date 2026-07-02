@@ -415,22 +415,26 @@ static std::tuple<torch::Tensor, torch::Tensor> div_safe_backward_f32(torch::Ten
 // ═══ Registration ═══
 
 void bind_kernels(py::module_ &m) {
+    // Pure-tensor kernels never touch Python objects: release the GIL for the
+    // duration of each call so other Python threads (dashboard/API, loaders)
+    // keep running while a kernel executes.
+    const auto nogil = py::call_guard<py::gil_scoped_release>();
     // Unary f32
-    m.def("relu_f32", &relu_f32); m.def("gelu_f32", &gelu_f32); m.def("silu_f32", &silu_f32);
-    m.def("square_f32", &square_f32); m.def("abs_f32", &abs_f32); m.def("neg_f32", &neg_f32);
-    m.def("reciprocal_f32", &reciprocal_f32); m.def("log_f32", &log_f32); m.def("sqrt_f32", &sqrt_f32);
-    m.def("sin_f32", &sin_f32); m.def("cos_f32", &cos_f32); m.def("tanh_f32", &tanh_f32);
-    m.def("sigmoid_f32", &sigmoid_f32); m.def("exp_f32", &exp_f32); m.def("sign_ste_f32", &sign_ste_f32);
+    m.def("relu_f32", &relu_f32, nogil); m.def("gelu_f32", &gelu_f32, nogil); m.def("silu_f32", &silu_f32, nogil);
+    m.def("square_f32", &square_f32, nogil); m.def("abs_f32", &abs_f32, nogil); m.def("neg_f32", &neg_f32, nogil);
+    m.def("reciprocal_f32", &reciprocal_f32, nogil); m.def("log_f32", &log_f32, nogil); m.def("sqrt_f32", &sqrt_f32, nogil);
+    m.def("sin_f32", &sin_f32, nogil); m.def("cos_f32", &cos_f32, nogil); m.def("tanh_f32", &tanh_f32, nogil);
+    m.def("sigmoid_f32", &sigmoid_f32, nogil); m.def("exp_f32", &exp_f32, nogil); m.def("sign_ste_f32", &sign_ste_f32, nogil);
     // Binary f32
-    m.def("add_f32", &add_f32); m.def("mul_f32", &mul_f32); m.def("sub_f32", &sub_f32);
-    m.def("silu_mul_f32", &silu_mul_f32);
-    m.def("tropical_add_f32", &tropical_add_f32); m.def("maximum_f32", &maximum_f32);
-    m.def("minimum_f32", &minimum_f32); m.def("div_safe_f32", &div_safe_f32); m.def("outer_product_f32", &outer_product_f32);
+    m.def("add_f32", &add_f32, nogil); m.def("mul_f32", &mul_f32, nogil); m.def("sub_f32", &sub_f32, nogil);
+    m.def("silu_mul_f32", &silu_mul_f32, nogil);
+    m.def("tropical_add_f32", &tropical_add_f32, nogil); m.def("maximum_f32", &maximum_f32, nogil);
+    m.def("minimum_f32", &minimum_f32, nogil); m.def("div_safe_f32", &div_safe_f32, nogil); m.def("outer_product_f32", &outer_product_f32, nogil);
     // Reductions
-    m.def("sum_f32", &sum_f32); m.def("mean_f32", &mean_f32);
-    m.def("linear_cka_f32", &linear_cka_f32, "Linear CKA similarity score");
-    m.def("sequence_self_similarity_f32", &sequence_self_similarity_f32, "Mean cosine self-similarity for [S,D] or [P,S,D] reps");
-    m.def("mean_abs_linear_delta_f32", &mean_abs_linear_delta_f32, "Mean absolute linear-logit delta for [S,D]/[B,S,D] deltas and [V,D] weights");
+    m.def("sum_f32", &sum_f32, nogil); m.def("mean_f32", &mean_f32, nogil);
+    m.def("linear_cka_f32", &linear_cka_f32, nogil, "Linear CKA similarity score");
+    m.def("sequence_self_similarity_f32", &sequence_self_similarity_f32, nogil, "Mean cosine self-similarity for [S,D] or [P,S,D] reps");
+    m.def("mean_abs_linear_delta_f32", &mean_abs_linear_delta_f32, nogil, "Mean absolute linear-logit delta for [S,D]/[B,S,D] deltas and [V,D] weights");
     m.def(
         "sensitivity_collect_f32",
         &sensitivity_collect_f32,
@@ -438,35 +442,35 @@ void bind_kernels(py::module_ &m) {
         "Collect per-position sensitivity row norms via LibTorch autograd"
     );
     // Linear algebra
-    m.def("matmul_f32", &matmul_f32);
-    m.def("tropical_matmul_f32", &tropical_matmul_f32);
-    m.def("tropical_matmul_batched_f32", &tropical_matmul_batched_f32);
-    m.def("tropical_matmul_batched_backward_f32", &tropical_matmul_batched_backward_f32);
-    m.def("linear_f32", &linear_f32);
+    m.def("matmul_f32", &matmul_f32, nogil);
+    m.def("tropical_matmul_f32", &tropical_matmul_f32, nogil);
+    m.def("tropical_matmul_batched_f32", &tropical_matmul_batched_f32, nogil);
+    m.def("tropical_matmul_batched_backward_f32", &tropical_matmul_batched_backward_f32, nogil);
+    m.def("linear_f32", &linear_f32, nogil);
     // Normalization
-    m.def("rmsnorm_f32", &rmsnorm_f32); m.def("layernorm_f32", &layernorm_f32);
+    m.def("rmsnorm_f32", &rmsnorm_f32, nogil); m.def("layernorm_f32", &layernorm_f32, nogil);
     // Softmax
-    m.def("softmax_f32", &softmax_f32); m.def("softmax_seq_f32", &softmax_seq_f32);
+    m.def("softmax_f32", &softmax_f32, nogil); m.def("softmax_seq_f32", &softmax_seq_f32, nogil);
     // Structural
-    m.def("transpose2d_f32", &transpose2d_f32); m.def("causal_mask_f32", &causal_mask_f32);
+    m.def("transpose2d_f32", &transpose2d_f32, nogil); m.def("causal_mask_f32", &causal_mask_f32, nogil);
     // Fused
-    m.def("matmul_relu_f32", &matmul_relu_f32); m.def("matmul_gelu_f32", &matmul_gelu_f32);
-    m.def("matmul_bias_relu_f32", &matmul_bias_relu_f32); m.def("layernorm_residual_f32", &layernorm_residual_f32);
-    m.def("fused_linear_gelu_f32", &fused_linear_gelu_f32);
+    m.def("matmul_relu_f32", &matmul_relu_f32, nogil); m.def("matmul_gelu_f32", &matmul_gelu_f32, nogil);
+    m.def("matmul_bias_relu_f32", &matmul_bias_relu_f32, nogil); m.def("layernorm_residual_f32", &layernorm_residual_f32, nogil);
+    m.def("fused_linear_gelu_f32", &fused_linear_gelu_f32, nogil);
     // FP16
-    m.def("relu_f16", &relu_f16); m.def("gelu_f16", &gelu_f16); m.def("silu_f16", &silu_f16);
-    m.def("sigmoid_f16", &sigmoid_f16); m.def("add_f16", &add_f16); m.def("mul_f16", &mul_f16);
-    m.def("matmul_f16", &matmul_f16); m.def("softmax_f16", &softmax_f16);
-    m.def("rmsnorm_f16", &rmsnorm_f16);
+    m.def("relu_f16", &relu_f16, nogil); m.def("gelu_f16", &gelu_f16, nogil); m.def("silu_f16", &silu_f16, nogil);
+    m.def("sigmoid_f16", &sigmoid_f16, nogil); m.def("add_f16", &add_f16, nogil); m.def("mul_f16", &mul_f16, nogil);
+    m.def("matmul_f16", &matmul_f16, nogil); m.def("softmax_f16", &softmax_f16, nogil);
+    m.def("rmsnorm_f16", &rmsnorm_f16, nogil);
     // Backward
-    m.def("relu_backward_f32", &relu_backward_f32); m.def("sigmoid_backward_f32", &sigmoid_backward_f32);
-    m.def("tanh_backward_f32", &tanh_backward_f32); m.def("gelu_backward_f32", &gelu_backward_f32);
-    m.def("silu_backward_f32", &silu_backward_f32); m.def("add_backward_f32", &add_backward_f32);
-    m.def("mul_backward_f32", &mul_backward_f32); m.def("sub_backward_f32", &sub_backward_f32);
-    m.def("matmul_backward_f32", &matmul_backward_f32); m.def("softmax_backward_f32", &softmax_backward_f32);
-    m.def("layernorm_backward_f32", &layernorm_backward_f32); m.def("rmsnorm_backward_f32", &rmsnorm_backward_f32);
-    m.def("maximum_backward_f32", &maximum_backward_f32); m.def("minimum_backward_f32", &minimum_backward_f32);
-    m.def("div_safe_backward_f32", &div_safe_backward_f32);
+    m.def("relu_backward_f32", &relu_backward_f32, nogil); m.def("sigmoid_backward_f32", &sigmoid_backward_f32, nogil);
+    m.def("tanh_backward_f32", &tanh_backward_f32, nogil); m.def("gelu_backward_f32", &gelu_backward_f32, nogil);
+    m.def("silu_backward_f32", &silu_backward_f32, nogil); m.def("add_backward_f32", &add_backward_f32, nogil);
+    m.def("mul_backward_f32", &mul_backward_f32, nogil); m.def("sub_backward_f32", &sub_backward_f32, nogil);
+    m.def("matmul_backward_f32", &matmul_backward_f32, nogil); m.def("softmax_backward_f32", &softmax_backward_f32, nogil);
+    m.def("layernorm_backward_f32", &layernorm_backward_f32, nogil); m.def("rmsnorm_backward_f32", &rmsnorm_backward_f32, nogil);
+    m.def("maximum_backward_f32", &maximum_backward_f32, nogil); m.def("minimum_backward_f32", &minimum_backward_f32, nogil);
+    m.def("div_safe_backward_f32", &div_safe_backward_f32, nogil);
     // Cumulative ops
     m.def("cumsum_f32", [](torch::Tensor x) -> torch::Tensor {
         CHECK_INPUT(x);

@@ -725,63 +725,67 @@ static torch::Tensor calibrated_branch_merge_f32_wrap(
 // ═══ Registration ═══
 
 void bind_ops(py::module_ &m) {
+    // Pure-tensor kernels never touch Python objects: release the GIL for the
+    // duration of each call so other Python threads (dashboard/API, loaders)
+    // keep running while a kernel executes.
+    const auto nogil = py::call_guard<py::gil_scoped_release>();
     // Parameterized
-    m.def("sliding_window_mask_f32", &sliding_window_mask_f32); m.def("sort_seq_f32", &sort_seq_f32);
-    m.def("argsort_seq_f32", &argsort_seq_f32);
-    m.def("conv1d_seq_f32", &conv1d_seq_f32); m.def("selective_scan_f32", &selective_scan_f32);
-    m.def("topk_gate_f32", &topk_gate_f32); m.def("basis_expansion_f32", &basis_expansion_f32);
-    m.def("sparse_threshold_f32", &sparse_threshold_f32); m.def("token_pool_restore_f32", &token_pool_restore_f32);
-    m.def("difficulty_scorer_f32", &difficulty_scorer_f32);
-    m.def("lane_router_threshold_f32", &lane_router_threshold_f32);
-    m.def("token_gate_trace_f32", &token_gate_trace_f32);
-    m.def("sparse_span_extract_f32", &sparse_span_extract_f32);
-    m.def("load_balance_loss_f32", &load_balance_loss_f32);
-    m.def("conditional_dispatch_f32", &conditional_dispatch_f32);
-    m.def("conditional_dispatch_backward_f32", &conditional_dispatch_backward_f32);
-    m.def("conditional_gather_f32", &conditional_gather_f32);
-    m.def("conditional_gather_backward_f32", &conditional_gather_backward_f32);
-    m.def("adaptive_route_dispatch_f32", &adaptive_route_dispatch_f32);
-    m.def("route_topk_indices_f32", &route_topk_indices_f32);
-    m.def("route_lane_argmax_f32", &route_lane_argmax_f32);
-    m.def("route_recursion_depth_f32", &route_recursion_depth_f32);
-    m.def("token_merge_simple_f32", &token_merge_simple_f32);
+    m.def("sliding_window_mask_f32", &sliding_window_mask_f32, nogil); m.def("sort_seq_f32", &sort_seq_f32, nogil);
+    m.def("argsort_seq_f32", &argsort_seq_f32, nogil);
+    m.def("conv1d_seq_f32", &conv1d_seq_f32, nogil); m.def("selective_scan_f32", &selective_scan_f32, nogil);
+    m.def("topk_gate_f32", &topk_gate_f32, nogil); m.def("basis_expansion_f32", &basis_expansion_f32, nogil);
+    m.def("sparse_threshold_f32", &sparse_threshold_f32, nogil); m.def("token_pool_restore_f32", &token_pool_restore_f32, nogil);
+    m.def("difficulty_scorer_f32", &difficulty_scorer_f32, nogil);
+    m.def("lane_router_threshold_f32", &lane_router_threshold_f32, nogil);
+    m.def("token_gate_trace_f32", &token_gate_trace_f32, nogil);
+    m.def("sparse_span_extract_f32", &sparse_span_extract_f32, nogil);
+    m.def("load_balance_loss_f32", &load_balance_loss_f32, nogil);
+    m.def("conditional_dispatch_f32", &conditional_dispatch_f32, nogil);
+    m.def("conditional_dispatch_backward_f32", &conditional_dispatch_backward_f32, nogil);
+    m.def("conditional_gather_f32", &conditional_gather_f32, nogil);
+    m.def("conditional_gather_backward_f32", &conditional_gather_backward_f32, nogil);
+    m.def("adaptive_route_dispatch_f32", &adaptive_route_dispatch_f32, nogil);
+    m.def("route_topk_indices_f32", &route_topk_indices_f32, nogil);
+    m.def("route_lane_argmax_f32", &route_lane_argmax_f32, nogil);
+    m.def("route_recursion_depth_f32", &route_recursion_depth_f32, nogil);
+    m.def("token_merge_simple_f32", &token_merge_simple_f32, nogil);
     // Compression / Linear variants
-    m.def("linear_low_rank_f32", &linear_low_rank_f32);
-    m.def("linear_block_sparse_f32", &linear_block_sparse_f32);
-    m.def("nm_sparse_mask_f32", &nm_sparse_mask_f32);
-    m.def("linear_grouped_f32", &linear_grouped_f32);
-    m.def("linear_bottleneck_f32", &linear_bottleneck_f32);
-    m.def("linear_shared_basis_f32", &linear_shared_basis_f32);
-    m.def("linear_tied_f32", &linear_tied_f32);
+    m.def("linear_low_rank_f32", &linear_low_rank_f32, nogil);
+    m.def("linear_block_sparse_f32", &linear_block_sparse_f32, nogil);
+    m.def("nm_sparse_mask_f32", &nm_sparse_mask_f32, nogil);
+    m.def("linear_grouped_f32", &linear_grouped_f32, nogil);
+    m.def("linear_bottleneck_f32", &linear_bottleneck_f32, nogil);
+    m.def("linear_shared_basis_f32", &linear_shared_basis_f32, nogil);
+    m.def("linear_tied_f32", &linear_tied_f32, nogil);
     // Hyperbolic
-    m.def("exp_map_f32", &exp_map_f32); m.def("log_map_f32", &log_map_f32);
-    m.def("exp_map_backward_f32", &exp_map_backward_f32); m.def("log_map_backward_f32", &log_map_backward_f32);
-    m.def("poincare_add_f32", &poincare_add_f32); m.def("hyp_linear_f32", &hyp_linear_f32);
-    m.def("hyperbolic_norm_f32", &hyperbolic_norm_f32); m.def("hyp_tangent_nonlinear_f32", &hyp_tangent_nonlinear_f32);
-    m.def("hyp_distance_f32", &hyp_distance_f32); m.def("hyperbolic_mobius_add_f32", &hyperbolic_mobius_add_f32);
-    m.def("hyperbolic_distance_f32", &hyperbolic_distance_f32);
+    m.def("exp_map_f32", &exp_map_f32, nogil); m.def("log_map_f32", &log_map_f32, nogil);
+    m.def("exp_map_backward_f32", &exp_map_backward_f32, nogil); m.def("log_map_backward_f32", &log_map_backward_f32, nogil);
+    m.def("poincare_add_f32", &poincare_add_f32, nogil); m.def("hyp_linear_f32", &hyp_linear_f32, nogil);
+    m.def("hyperbolic_norm_f32", &hyperbolic_norm_f32, nogil); m.def("hyp_tangent_nonlinear_f32", &hyp_tangent_nonlinear_f32, nogil);
+    m.def("hyp_distance_f32", &hyp_distance_f32, nogil); m.def("hyperbolic_mobius_add_f32", &hyperbolic_mobius_add_f32, nogil);
+    m.def("hyperbolic_distance_f32", &hyperbolic_distance_f32, nogil);
     // Tropical
-    m.def("tropical_center_f32", &tropical_center_f32);
-    m.def("tropical_attention_f32", &tropical_attention_f32);
-    m.def("tropical_gate_f32", &tropical_gate_f32);
-    m.def("tropical_router_f32", &tropical_router_f32);
+    m.def("tropical_center_f32", &tropical_center_f32, nogil);
+    m.def("tropical_attention_f32", &tropical_attention_f32, nogil);
+    m.def("tropical_gate_f32", &tropical_gate_f32, nogil);
+    m.def("tropical_router_f32", &tropical_router_f32, nogil);
     // P-adic
-    m.def("padic_gate_f32", &padic_gate_f32);
-    m.def("padic_expand_f32", &padic_expand_f32);
-    m.def("padic_residual_f32", &padic_residual_f32); m.def("ultrametric_attention_f32", &ultrametric_attention_f32);
+    m.def("padic_gate_f32", &padic_gate_f32, nogil);
+    m.def("padic_expand_f32", &padic_expand_f32, nogil);
+    m.def("padic_residual_f32", &padic_residual_f32, nogil); m.def("ultrametric_attention_f32", &ultrametric_attention_f32, nogil);
     // Clifford
-    m.def("rotor_transform_f32", &rotor_transform_f32); m.def("grade_select_f32", &grade_select_f32);
-    m.def("grade_mix_f32", &grade_mix_f32); m.def("clifford_attention_f32", &clifford_attention_f32);
-    m.def("clifford_geometric_product_cl30_f32", &clifford_geometric_product_cl30_f32);
-    m.def("clifford_rotor_transform_cl30_f32", &clifford_rotor_transform_cl30_f32);
+    m.def("rotor_transform_f32", &rotor_transform_f32, nogil); m.def("grade_select_f32", &grade_select_f32, nogil);
+    m.def("grade_mix_f32", &grade_mix_f32, nogil); m.def("clifford_attention_f32", &clifford_attention_f32, nogil);
+    m.def("clifford_geometric_product_cl30_f32", &clifford_geometric_product_cl30_f32, nogil);
+    m.def("clifford_rotor_transform_cl30_f32", &clifford_rotor_transform_cl30_f32, nogil);
     // Spiking
-    m.def("lif_neuron_f32", &lif_neuron_f32); m.def("lif_neuron_with_state_f32", &lif_neuron_with_state_f32);
-    m.def("spike_rate_code_f32", &spike_rate_code_f32);
-    m.def("stdp_attention_f32", &stdp_attention_f32);
+    m.def("lif_neuron_f32", &lif_neuron_f32, nogil); m.def("lif_neuron_with_state_f32", &lif_neuron_with_state_f32, nogil);
+    m.def("spike_rate_code_f32", &spike_rate_code_f32, nogil);
+    m.def("stdp_attention_f32", &stdp_attention_f32, nogil);
     // SwiGLU / RWKV / Gather
-    m.def("swiglu_f32", &swiglu_f32);
-    m.def("rwkv_channel_f32", &rwkv_channel_f32);
-    m.def("gather_topk_f32", &gather_topk_f32);
+    m.def("swiglu_f32", &swiglu_f32, nogil);
+    m.def("rwkv_channel_f32", &rwkv_channel_f32, nogil);
+    m.def("gather_topk_f32", &gather_topk_f32, nogil);
     // IO
     m.def("read_csv_f32", &read_csv_f32, py::arg("filename"), py::arg("max_rows"), py::arg("max_cols"), py::arg("delimiter") = ',');
     m.def("filter_f32", &filter_f32, py::arg("data"), py::arg("col_idx"), py::arg("val"), py::arg("op"));
@@ -793,16 +797,16 @@ void bind_ops(py::module_ &m) {
     m.def("file_writer_txt_f32", &file_writer_txt_f32,
           py::arg("filename"), py::arg("data"), py::arg("overwrite") = false);
     // Reference arch
-    m.def("embedding_lookup_f32", &embedding_lookup_f32); m.def("rope_rotate_f32", &rope_rotate_f32);
-    m.def("gated_linear_f32", &gated_linear_f32); m.def("cosine_similarity_f32", &cosine_similarity_f32);
-    m.def("rwkv_time_mixing_f32", &rwkv_time_mixing_f32);
-    m.def("rwkv_wkv_scan_f32", &rwkv_wkv_scan_f32);
-    m.def("embedding_lookup_backward_f32", &embedding_lookup_backward_f32);
-    m.def("gated_linear_backward_f32", &gated_linear_backward_f32);
-    m.def("gromov_delta_f32", &gromov_delta_f32);
+    m.def("embedding_lookup_f32", &embedding_lookup_f32, nogil); m.def("rope_rotate_f32", &rope_rotate_f32, nogil);
+    m.def("gated_linear_f32", &gated_linear_f32, nogil); m.def("cosine_similarity_f32", &cosine_similarity_f32, nogil);
+    m.def("rwkv_time_mixing_f32", &rwkv_time_mixing_f32, nogil);
+    m.def("rwkv_wkv_scan_f32", &rwkv_wkv_scan_f32, nogil);
+    m.def("embedding_lookup_backward_f32", &embedding_lookup_backward_f32, nogil);
+    m.def("gated_linear_backward_f32", &gated_linear_backward_f32, nogil);
+    m.def("gromov_delta_f32", &gromov_delta_f32, nogil);
     // Routing ops (routing_ops.c)
-    m.def("transpose_sd_f32", &transpose_sd_f32_wrap);
-    m.def("gated_lane_blend_f32", &gated_lane_blend_f32_wrap);
-    m.def("depth_gated_transform_f32", &depth_gated_transform_f32_wrap);
-    m.def("calibrated_branch_merge_f32", &calibrated_branch_merge_f32_wrap);
+    m.def("transpose_sd_f32", &transpose_sd_f32_wrap, nogil);
+    m.def("gated_lane_blend_f32", &gated_lane_blend_f32_wrap, nogil);
+    m.def("depth_gated_transform_f32", &depth_gated_transform_f32_wrap, nogil);
+    m.def("calibrated_branch_merge_f32", &calibrated_branch_merge_f32_wrap, nogil);
 }

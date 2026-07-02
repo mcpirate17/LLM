@@ -26,10 +26,20 @@ setup(
             sources=sources,
             include_dirs=[os.path.abspath("include"), os.path.abspath("bindings")],
             extra_compile_args={
-                "cxx": ["-O3", "-march=native", "-fopenmp", "-DARIA_HAS_OPENMP"],
+                # Host LTO (-flto=auto) inlines across the pybind TUs and the
+                # CPU kernel unity build; nvcc objects simply aren't LTO'd.
+                # -fno-math-errno: kernels never read errno from libm calls.
+                "cxx": [
+                    "-O3",
+                    "-march=native",
+                    "-fopenmp",
+                    "-flto=auto",
+                    "-fno-math-errno",
+                    "-DARIA_HAS_OPENMP",
+                ],
                 "nvcc": ["-O3", "-DARIA_HAS_OPENMP"],
             },
-            extra_link_args=["-lgomp"],
+            extra_link_args=["-lgomp", "-flto=auto"],
         )
     ],
     cmdclass={"build_ext": BuildExtension},
