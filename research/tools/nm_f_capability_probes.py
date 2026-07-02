@@ -243,8 +243,11 @@ class OracleCDMA(nn.Module):
     key/query/gate params receive no gradient (reported param counts include
     them — diagnostic only, not a capability-per-param claim)."""
 
-    def __init__(self, chips: int) -> None:
+    def __init__(self, chips: int, mode: str = "both") -> None:
         super().__init__()
+        if mode not in ("both", "write", "read"):
+            raise ValueError(f"unknown oracle mode {mode!r}")
+        self.mode = mode  # which side(s) get ground-truth addressing
         self.op = CDMASlotBinding(DIM, n_slots=32, chips=chips, code_family="gold")
         self.ctx: tuple[torch.Tensor, ...] | None = None
 
@@ -252,6 +255,16 @@ class OracleCDMA(nn.Module):
         if self.ctx is None:
             raise RuntimeError("oracle ctx not set — use ProbeLM with an oracle mixer")
         write_code, write_mask, read_code, read_mask = self.ctx
+        scale = 1.0 / math.sqrt(self.op.chips)
+        codes = self.op.codes
+        if self.mode == "read":  # learned write side (select + gate), oracle read
+            write_sel = self.op._select(self.op.key_lift(x) @ codes.T * scale)
+            write_code = write_sel @ codes
+            write_mask = torch.sigmoid(x @ self.op.gate_weight + self.op.gate_bias)
+        if self.mode == "write":  # oracle write side, learned read (no mask)
+            read_sel = self.op._select(self.op.query_lift(x) @ codes.T * scale)
+            read_code = read_sel @ codes
+            read_mask = torch.ones_like(read_mask)
         payload = self.op.value_compress(x)  # (B, L, d_v)
         spread = (
             write_mask.unsqueeze(-1).unsqueeze(-1)
@@ -264,6 +277,10 @@ class OracleCDMA(nn.Module):
 
 
 def build_mixer(name: str) -> nn.Module:
+    if name.startswith("owrite"):  # oracle write, LEARNED read
+        return OracleCDMA(chips=int(name[6:]), mode="write")
+    if name.startswith("oread"):  # oracle read, LEARNED write
+        return OracleCDMA(chips=int(name[5:]), mode="read")
     if name.startswith("oracle"):
         return OracleCDMA(chips=int(name[6:]))
     if name.startswith("cdma"):
@@ -380,6 +397,19 @@ class ProbeLM(nn.Module):
 # ── train / eval ──
 
 
+def _trainable_cdma_ops(model: ProbeLM) -> list[CDMASlotBinding]:
+    """CDMA ops with at least one LEARNED addressing side: DeltaWrap-wrapped
+    (fully learned) and half-oracle mixers. Full oracles are excluded."""
+    ops = []
+    for block in model.blocks:
+        mixer = block.mixer
+        if isinstance(mixer, DeltaWrap) and isinstance(mixer.op, CDMASlotBinding):
+            ops.append(mixer.op)
+        elif isinstance(mixer, OracleCDMA) and mixer.mode != "both":
+            ops.append(mixer.op)
+    return ops
+
+
 def train_model(
     model: ProbeLM,
     sample_batch,
@@ -389,21 +419,35 @@ def train_model(
     gen: torch.Generator,
     lr: float = 3e-3,
 ) -> list[float]:
+    """F9.1 schedule for CDMA ops (no-op for everything else): selection
+    hardness anneals 0→1 over the first 60% of steps (soft Lorentzian → hard
+    top-1 deploy behavior); the code-alignment aux weight decays 0.1→0 over the
+    first 50%."""
     opt = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=0.01)
     sched = torch.optim.lr_scheduler.CosineAnnealingLR(
         opt, T_max=steps, eta_min=lr / 10
     )
+    cdma_ops = _trainable_cdma_ops(model)
     losses: list[float] = []
     model.train()
-    for _ in range(steps):
+    for step in range(steps):
+        aux_weight = 0.1 * max(0.0, 1.0 - step / (0.5 * steps))
+        for op in cdma_ops:
+            op.selection_hardness = min(1.0, step / (0.6 * steps))
         x, y = sample_batch(batch, gen)
         loss = F.cross_entropy(model(x).flatten(0, 1), y.flatten(), ignore_index=-100)
+        if cdma_ops and aux_weight > 0.0:
+            aux_terms = [op.aux_loss for op in cdma_ops if op.aux_loss is not None]
+            if aux_terms:  # half-oracles skip _bind_and_despread and stash none
+                loss = loss + aux_weight * sum(aux_terms)
         opt.zero_grad(set_to_none=True)
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
         opt.step()
         sched.step()
         losses.append(float(loss.detach()))
+    for op in cdma_ops:
+        op.selection_hardness = 1.0  # deploy/eval at exact hard top-1
     return losses
 
 

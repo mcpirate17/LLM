@@ -94,8 +94,15 @@ def test_hadamard_codes_exactly_orthogonal() -> None:
 
 def _surgery(mix: CDMASlotBinding) -> None:
     """Wire the lifts so tokens are ``[code | payload | 0…]``: key/query = first
-    ``chips`` dims, payload = next ``d_v`` dims, gate forced open."""
+    ``chips`` dims, payload = next ``d_v`` dims, gate forced open, selection
+    pinned hard (the deploy behavior the exactness tests specify), and the
+    write-address taps pinned to the CURRENT position (these tests bind key and
+    payload on one token; the default previous-tap init is the two-token
+    header-then-payload prior)."""
+    mix.selection_hardness = 1.0
     with torch.no_grad():
+        mix.write_addr_taps.zero_()
+        mix.write_addr_taps[:, 2] = 1.0  # current-position tap
         mix.key_lift.weight.zero_()
         mix.key_lift.weight[:, : mix.chips] = torch.eye(mix.chips)
         mix.query_lift.weight.zero_()
@@ -193,11 +200,67 @@ def test_backward_flows_through_hard_selection() -> None:
 
 def test_param_count_excludes_codes() -> None:
     dim, chips = 64, 32
-    mix = CDMASlotBinding(dim=dim, n_slots=16, chips=chips, code_family="gold")
-    expected = 2 * chips * dim + 2 * (dim // chips) * dim + dim + 1
-    assert cdma_param_count(dim, chips) == expected
-    assert mix.num_parameters == expected
-    assert expected == sum(p.numel() for p in mix.parameters())
+    d_v = dim // chips
+    tied = CDMASlotBinding(dim=dim, n_slots=16, chips=chips, code_family="gold")
+    expected_tied = chips * dim + 3 * dim + 2 * d_v * dim + dim + 1
+    assert cdma_param_count(dim, chips) == expected_tied
+    assert tied.num_parameters == expected_tied
+    assert expected_tied == sum(p.numel() for p in tied.parameters())
+    untied = CDMASlotBinding(
+        dim=dim, n_slots=16, chips=chips, code_family="gold", tie_addressing=False
+    )
+    expected_untied = expected_tied + chips * dim
+    assert cdma_param_count(dim, chips, tie_addressing=False) == expected_untied
+    assert expected_untied == sum(p.numel() for p in untied.parameters())
+
+
+def test_tied_addressing_shares_the_lift() -> None:
+    """F9.1 fix 1: the query lift IS the key lift (one module, one gradient) by
+    default; untied mode keeps two."""
+    tied = CDMASlotBinding(dim=64, n_slots=8, chips=32)
+    assert tied.query_lift is tied.key_lift
+    untied = CDMASlotBinding(dim=64, n_slots=8, chips=32, tie_addressing=False)
+    assert untied.query_lift is not untied.key_lift
+
+
+def test_annealed_selection_blends_to_hard() -> None:
+    """F9.1 fix 2: at hardness 0 the selection is the normalized Lorentzian
+    bounded-reciprocal weighting (sums to 1, argmax preserved, NOT one-hot); at
+    hardness 1 it is exactly the v1 hard top-1."""
+    torch.manual_seed(0)
+    mix = CDMASlotBinding(dim=64, n_slots=8, chips=32)
+    assert mix.selection == "annealed" and mix.selection_hardness == 0.0
+    logits = torch.randn(3, 5, 8)
+    soft = mix._select(logits)
+    assert torch.allclose(soft.sum(dim=-1), torch.ones(3, 5), atol=1e-6)
+    assert torch.equal(soft.argmax(dim=-1), logits.argmax(dim=-1))
+    assert soft.max() < 1.0  # genuinely soft, not one-hot
+    mix.selection_hardness = 1.0
+    hard = mix._select(logits)
+    idx = logits.argmax(dim=-1)
+    assert torch.equal(hard.detach().argmax(dim=-1), idx)
+    assert torch.allclose(hard.detach().max(dim=-1).values, torch.ones(3, 5), atol=1e-6)
+    pinned = CDMASlotBinding(dim=64, n_slots=8, chips=32, selection="hard")
+    assert pinned.selection_hardness == 1.0
+    with pytest.raises(ValueError):
+        CDMASlotBinding(dim=64, n_slots=8, chips=32, selection="warm")
+
+
+def test_code_alignment_aux_loss() -> None:
+    """F9.1 fix 3: ``aux_loss`` is stashed per forward, finite, in [0, 2], and
+    exactly 0 when the key lift outputs a code (perfect constellation
+    alignment)."""
+    mix = CDMASlotBinding(dim=32, n_slots=8, chips=8, code_family="hadamard")
+    assert mix.aux_loss is None  # not computed before any forward
+    x = torch.randn(2, 6, 32)
+    mix(x)
+    assert mix.aux_loss is not None
+    assert 0.0 <= float(mix.aux_loss.detach()) <= 2.0
+    _surgery(mix)  # key lift = identity on the code prefix
+    x_aligned = torch.zeros(1, 4, 32)
+    x_aligned[0, :, :8] = mix.codes[:4]  # tokens ARE codes ⟹ cos = 1 ⟹ loss = 0
+    mix(x_aligned)
+    assert float(mix.aux_loss.detach()) == pytest.approx(0.0, abs=1e-5)
 
 
 def test_invalid_configs_fail_fast() -> None:

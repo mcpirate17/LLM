@@ -149,15 +149,17 @@ def _hadamard_codes(n_slots: int, chips: int) -> torch.Tensor:
     return h[:n_slots].contiguous()
 
 
-def cdma_param_count(dim: int, chips: int) -> int:
-    """Trainable params: key+query lifts (``2·chips·D``), value compressor +
-    output lift (``2·d_v·D``), gate (``D + 1``). Codes cost zero."""
+def cdma_param_count(dim: int, chips: int, tie_addressing: bool = True) -> int:
+    """Trainable params: address lift(s) (``chips·D`` tied, ``2·chips·D`` untied),
+    write-address taps (``3·D``), value compressor + output lift (``2·d_v·D``),
+    gate (``D + 1``). Codes cost zero."""
     if dim < 1 or chips < 1:
         raise ValueError(f"dim and chips must be >= 1, got dim={dim}, chips={chips}")
     if dim % chips != 0:
         raise ValueError(f"chips must divide dim, got dim={dim}, chips={chips}")
     d_v = dim // chips
-    return 2 * chips * dim + 2 * d_v * dim + dim + 1
+    lifts = (1 if tie_addressing else 2) * chips * dim
+    return lifts + 3 * dim + 2 * d_v * dim + dim + 1
 
 
 def _hard_top1(logits: torch.Tensor) -> torch.Tensor:
@@ -170,7 +172,26 @@ def _hard_top1(logits: torch.Tensor) -> torch.Tensor:
 
 
 class CDMASlotBinding(nn.Module):
-    """Code-division multiplexed slot binding over a single superposed state."""
+    """Code-division multiplexed slot binding over a single superposed state.
+
+    v2 (F9.1, 2026-07-02). The oracle-assist diagnostic proved the binding law
+    end-to-end in a trained model (16 bindings in one 256-d state at 0.999) and
+    isolated the v1 failure entirely in ADDRESSING trainability — hard top-1 STE
+    over random-init lifts never co-aligns its write and read paths. Three fixes,
+    all defaults, deploy math unchanged:
+
+      * ``tie_addressing=True``: ``query_lift ≡ key_lift`` (one shared module) —
+        querying uses the key token, so tying halves the co-alignment problem.
+      * ``selection="annealed"``: selection weights start as a Lorentzian
+        bounded-reciprocal weighting over the correlation gap (the validated
+        non-softmax, NM-11-clean form — reciprocal-of-distance, no exponentials,
+        no temperature-softmax), blended toward hard top-1 STE via the
+        trainer-settable ``selection_hardness ∈ [0, 1]``. Hardness 1.0 is exactly
+        the v1 hard path and is the deploy target; ``selection="hard"`` pins it.
+      * ``aux_loss``: stashed each forward — ``1 − mean(max-cosine(key lift,
+        code bank))`` — a code-alignment regularizer the trainer weights and
+        decays to zero; pulls the address lift onto the code constellation early.
+    """
 
     def __init__(
         self,
@@ -179,6 +200,8 @@ class CDMASlotBinding(nn.Module):
         n_slots: int = 8,
         chips: int = 32,
         code_family: str = "gold",
+        tie_addressing: bool = True,
+        selection: str = "annealed",
     ) -> None:
         super().__init__()
         if n_slots < 2:
@@ -186,11 +209,18 @@ class CDMASlotBinding(nn.Module):
         d_v = dim // chips
         if dim % chips != 0 or d_v < 1:
             raise ValueError(f"chips must divide dim, got dim={dim}, chips={chips}")
+        if selection not in ("annealed", "hard"):
+            raise ValueError(f"unknown selection {selection!r}")
         self.d = dim
         self.n_slots = n_slots
         self.chips = chips
         self.d_v = d_v
         self.code_family = code_family
+        self.tie_addressing = tie_addressing
+        self.selection = selection
+        # Trainer-settable anneal knob; 1.0 == pure hard top-1 (deploy behavior).
+        self.selection_hardness = 1.0 if selection == "hard" else 0.0
+        self.aux_loss: torch.Tensor | None = None
         if code_family == "gold":
             codes, self.degree = _gold_codes(n_slots, chips)
         elif code_family == "hadamard":
@@ -201,7 +231,9 @@ class CDMASlotBinding(nn.Module):
         self.register_buffer("codes", codes)  # (S, chips), fixed — never trained
 
         self.key_lift = nn.Linear(dim, chips, bias=False)
-        self.query_lift = nn.Linear(dim, chips, bias=False)
+        self.query_lift = (
+            self.key_lift if tie_addressing else nn.Linear(dim, chips, bias=False)
+        )
         self.value_compress = nn.Linear(dim, d_v, bias=False)
         # Zero-init output lift ⟹ forward(x) == x at init (identity-at-init).
         self.out_lift = nn.Linear(d_v, dim, bias=False)
@@ -209,10 +241,37 @@ class CDMASlotBinding(nn.Module):
         # Sigmoid-highway write gate (validated non-twin form), O(D) params.
         self.gate_weight = nn.Parameter(torch.zeros(dim))
         self.gate_bias = nn.Parameter(torch.zeros(1))
+        # Write-path address front-end (F9.1 fix 4): in CDMA the modulator and
+        # correlator share a code but not a front-end. Writing addresses by the
+        # key that PRECEDES the payload token; reading addresses by the current
+        # token. A depthwise causal 3-tap conv on the WRITE address path only,
+        # initialized on the PREVIOUS tap — the header-then-payload prior of the
+        # half-oracle diagnostic (learned-read solved 0.97+, learned-write stuck
+        # at current-position addressing). With this init the tied lift sees the
+        # SAME input distribution (key-position states) in both roles, so
+        # write/read co-alignment is automatic rather than discovered.
+        self.write_addr_taps = nn.Parameter(
+            torch.tensor([[0.0, 1.0, 0.0]]).repeat(dim, 1)
+        )
 
     @property
     def num_parameters(self) -> int:
-        return cdma_param_count(self.d, self.chips)
+        return cdma_param_count(self.d, self.chips, self.tie_addressing)
+
+    def _select(self, logits: torch.Tensor) -> torch.Tensor:
+        """Slot-selection weights over the last dim. Hard mode / hardness 1.0:
+        exact top-1 STE. Annealed: blend with a Lorentzian bounded-reciprocal
+        weighting of the correlation gap — ``1/(1 + gap²)`` normalized by its sum
+        (reciprocal-of-distance, NOT a softmax; → one-hot as training sharpens
+        the gap and ``selection_hardness → 1``)."""
+        hard = _hard_top1(logits)
+        h = float(self.selection_hardness)
+        if self.selection == "hard" or h >= 1.0:
+            return hard
+        gap = logits.max(dim=-1, keepdim=True).values - logits
+        lorentz = 1.0 / (1.0 + gap * gap)
+        soft = lorentz / lorentz.sum(dim=-1, keepdim=True)
+        return h * hard + (1.0 - h) * soft
 
     def interference_bound(self) -> float:
         """Per-slot despread interference amplitude bound: ``t(n)/chips`` for Gold
@@ -228,10 +287,23 @@ class CDMASlotBinding(nn.Module):
         ``v_hat`` is the despread payload ``(B, L, d_v)`` read from the strictly-past
         superposition (a token never retrieves its own write)."""
         scale = 1.0 / math.sqrt(self.chips)
-        write_sel = _hard_top1(self.key_lift(x) @ self.codes.T * scale)  # (B,L,S)
-        read_sel = _hard_top1(self.query_lift(x) @ self.codes.T * scale)
+        # Write address front-end: depthwise causal 3-tap conv (identity at init).
+        x_pad = F.pad(x.transpose(1, 2), (2, 0))  # (B, D, L+2)
+        write_src = (
+            x_pad[:, :, 2:] * self.write_addr_taps[:, 2].view(1, -1, 1)
+            + x_pad[:, :, 1:-1] * self.write_addr_taps[:, 1].view(1, -1, 1)
+            + x_pad[:, :, :-2] * self.write_addr_taps[:, 0].view(1, -1, 1)
+        ).transpose(1, 2)
+        key = self.key_lift(write_src)
+        write_sel = self._select(key @ self.codes.T * scale)  # (B, L, S)
+        read_sel = self._select(self.query_lift(x) @ self.codes.T * scale)
         write_code = write_sel @ self.codes  # (B, L, chips)
         read_code = read_sel @ self.codes
+        # Code-alignment regularizer (F9.1 fix 3): pull the address lift onto the
+        # code constellation. Stashed for the trainer; weight it and decay to 0.
+        key_dir = key / key.norm(dim=-1, keepdim=True).clamp(min=1e-6)
+        cos = (key_dir @ self.codes.T * scale).max(dim=-1).values
+        self.aux_loss = 1.0 - cos.mean()
         gate = torch.sigmoid(x @ self.gate_weight + self.gate_bias)  # (B, L)
         payload = self.value_compress(x)  # (B, L, d_v)
         spread = (
