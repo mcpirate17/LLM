@@ -43,6 +43,7 @@ _SEQUENCE_COMPACTION_OPS = (
     "recurrent_depth_refine",
     "persistent_memory_refine",
     "token_merge_mix",
+    "lowrank_state_memory",
 )
 COMPACTION_OPS = _CHANNEL_COMPACTION_OPS + _SEQUENCE_COMPACTION_OPS
 

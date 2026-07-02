@@ -233,6 +233,7 @@ _OP_ROLE_MAP: Dict[str, OpRole] = {
     "ternary_sign_mix": OpRole.PROJECT,
     "padic_lowprec_mix": OpRole.GATE,
     "subspace_mixture_mix": OpRole.PROJECT,
+    "lowrank_state_memory": OpRole.MIX,
     # ── NM-F forced-structure operators ─────────────────────────────
     "idempotent_oblique_memory": OpRole.MIX,
     "nilpotent_lie_scan": OpRole.MIX,

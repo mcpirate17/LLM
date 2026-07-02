@@ -107,6 +107,9 @@ class CompiledOpParamInitMixin(CompactionOpParamInit, NMFOpParamInit):
             "subspace_mixture_mix": lambda: self._init_subspace_mixture_mix(
                 config, d_in
             ),
+            "lowrank_state_memory": lambda: self._init_lowrank_state_memory(
+                config, d_in
+            ),
             "idempotent_oblique_memory": lambda: self._init_idempotent_oblique_memory(
                 config, d_in
             ),

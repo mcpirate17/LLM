@@ -117,6 +117,14 @@ class CompactionOpParamInit:
             d_in, n_digits=int(cfg.get("n_digits", 4)), p=int(cfg.get("p", 2))
         )
 
+    def _init_lowrank_state_memory(self, config: Dict, d_in: int) -> None:
+        from .lowrank_state_memory import LowRankStateMemory
+
+        cfg = config or {}
+        # rank must be < dim (the low-rank state claim).
+        rank = max(1, min(int(cfg.get("rank", 8)), d_in - 1))
+        self.lowrank_state_block = LowRankStateMemory(d_in, rank=rank)
+
     def _init_subspace_mixture_mix(self, config: Dict, d_in: int) -> None:
         from .subspace_mixture_mix import SubspaceMixtureMix
 

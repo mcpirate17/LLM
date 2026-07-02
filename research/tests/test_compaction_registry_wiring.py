@@ -40,6 +40,7 @@ NM_C_OPS = [
     "ternary_sign_mix",
     "padic_lowprec_mix",
     "subspace_mixture_mix",
+    "lowrank_state_memory",
 ]
 
 
@@ -121,7 +122,9 @@ def test_routing_variant_always_emits_routing_op() -> None:
     for seed in range(8):
         graph = ComputationGraph(model_dim=64)
         inp = graph.add_input()
-        out = TEMPLATES["compaction_routing_block"](graph, inp, random.Random(seed), None)
+        out = TEMPLATES["compaction_routing_block"](
+            graph, inp, random.Random(seed), None
+        )
         graph.set_output(out)
         ops = {n.op_name for n in graph.nodes.values()}
         assert ops & ROUTING_COMPRESSION_MOE_OPS, f"seed {seed}: {sorted(ops)}"

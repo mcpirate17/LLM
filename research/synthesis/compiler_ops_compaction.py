@@ -60,6 +60,10 @@ def _op_subspace_mixture_mix(module, inputs, _config):
     return module.subspace_mixture_block(inputs[0])
 
 
+def _op_lowrank_state_memory(module, inputs, _config):
+    return module.lowrank_state_block(inputs[0])
+
+
 OP_IMPLS = {
     "monarch_mix": _op_monarch_mix,
     "butterfly_mix": _op_butterfly_mix,
@@ -72,4 +76,5 @@ OP_IMPLS = {
     "ternary_sign_mix": _op_ternary_sign_mix,
     "padic_lowprec_mix": _op_padic_lowprec_mix,
     "subspace_mixture_mix": _op_subspace_mixture_mix,
+    "lowrank_state_memory": _op_lowrank_state_memory,
 }

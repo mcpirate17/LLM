@@ -152,6 +152,8 @@ ROUTING_COMPRESSION_MOE_OPS: FrozenSet[str] = frozenset(
         # routing (cf. topk_gate); anti-windup integral gate (cf. padic_gate).
         "cdma_slot_binding",
         "integral_control_mixer",
+        # NM-C13: hard content-addressed slot writes (same basis as CDMA).
+        "lowrank_state_memory",
     }
 )
 

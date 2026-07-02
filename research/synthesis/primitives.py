@@ -2095,6 +2095,21 @@ _register(
     )
 )
 
+_register(
+    PrimitiveOp(
+        "lowrank_state_memory",
+        OpCategory.MIXING,
+        1,
+        "identity",
+        has_params=True,
+        param_formula="4*D*D+9*D+10",  # 4 lifts + salt (8D) + decay/gate
+        description="NM-C13 low-rank-native state memory: state IS rank-r "
+        "factor banks (O(r*D) VRAM, never DxD), hard Lorentzian slot writes, "
+        "unnormalized bilinear reads",
+        config_keys=("rank", "lorentz_gamma"),
+    )
+)
+
 # ── NM-F forced-structure operator families ──────────────────────────
 # Self-contained novel operators from research/synthesis/<name>.py, compiled
 # via compiler_ops_nmf.py + compiled_op_params_nmf.py. F6 wavelet joins once

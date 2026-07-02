@@ -19,6 +19,7 @@ ROUTING_CAPABLE_TEMPLATE_NAMES: FrozenSet[str] = frozenset(
         "cascaded_early_exit",
         "cawn_mixer_block",
         "codex_ssm_mla_gated_block",
+        "compaction_mixer_block",
         "compaction_routing_block",
         "compute_budget_block",
         "nmf_routing_block",
