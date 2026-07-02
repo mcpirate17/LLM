@@ -149,17 +149,24 @@ def _hadamard_codes(n_slots: int, chips: int) -> torch.Tensor:
     return h[:n_slots].contiguous()
 
 
-def cdma_param_count(dim: int, chips: int, tie_addressing: bool = True) -> int:
-    """Trainable params: address lift(s) (``chips·D`` tied, ``2·chips·D`` untied),
-    write-address taps (``3·D``), value compressor + output lift (``2·d_v·D``),
-    gate (``D + 1``). Codes cost zero."""
+def cdma_param_count(
+    dim: int,
+    chips: int,
+    tie_addressing: bool = True,
+    learn_write_taps: bool = False,
+) -> int:
+    """TRAINABLE params: address lift(s) (``chips·D`` tied, ``2·chips·D`` untied),
+    value compressor + output lift (``2·d_v·D``), gate (``D + 1``), plus the
+    write-address taps (``3·D``) only when ``learn_write_taps`` (frozen at the
+    header-then-payload prior by default). Codes cost zero."""
     if dim < 1 or chips < 1:
         raise ValueError(f"dim and chips must be >= 1, got dim={dim}, chips={chips}")
     if dim % chips != 0:
         raise ValueError(f"chips must divide dim, got dim={dim}, chips={chips}")
     d_v = dim // chips
     lifts = (1 if tie_addressing else 2) * chips * dim
-    return lifts + 3 * dim + 2 * d_v * dim + dim + 1
+    taps = 3 * dim if learn_write_taps else 0
+    return lifts + taps + 2 * d_v * dim + dim + 1
 
 
 def _hard_top1(logits: torch.Tensor) -> torch.Tensor:
@@ -202,6 +209,7 @@ class CDMASlotBinding(nn.Module):
         code_family: str = "gold",
         tie_addressing: bool = True,
         selection: str = "annealed",
+        learn_write_taps: bool = False,
     ) -> None:
         super().__init__()
         if n_slots < 2:
@@ -245,18 +253,25 @@ class CDMASlotBinding(nn.Module):
         # correlator share a code but not a front-end. Writing addresses by the
         # key that PRECEDES the payload token; reading addresses by the current
         # token. A depthwise causal 3-tap conv on the WRITE address path only,
-        # initialized on the PREVIOUS tap — the header-then-payload prior of the
+        # pinned to the PREVIOUS tap — the header-then-payload prior of the
         # half-oracle diagnostic (learned-read solved 0.97+, learned-write stuck
-        # at current-position addressing). With this init the tied lift sees the
+        # at current-position addressing). With this shift the tied lift sees the
         # SAME input distribution (key-position states) in both roles, so
-        # write/read co-alignment is automatic rather than discovered.
+        # write/read co-alignment is automatic rather than discovered. FROZEN by
+        # default (F9.2 ablation 2026-07-02: letting the taps train away from the
+        # prior costs up to 0.23 accuracy at 16 bound pairs — the exact shift is
+        # structure, not a starting point); ``learn_write_taps=True`` opts in.
+        self.learn_write_taps = learn_write_taps
         self.write_addr_taps = nn.Parameter(
-            torch.tensor([[0.0, 1.0, 0.0]]).repeat(dim, 1)
+            torch.tensor([[0.0, 1.0, 0.0]]).repeat(dim, 1),
+            requires_grad=learn_write_taps,
         )
 
     @property
     def num_parameters(self) -> int:
-        return cdma_param_count(self.d, self.chips, self.tie_addressing)
+        return cdma_param_count(
+            self.d, self.chips, self.tie_addressing, self.learn_write_taps
+        )
 
     def _select(self, logits: torch.Tensor) -> torch.Tensor:
         """Slot-selection weights over the last dim. Hard mode / hardness 1.0:

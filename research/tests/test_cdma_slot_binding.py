@@ -193,25 +193,40 @@ def test_backward_flows_through_hard_selection() -> None:
     mix(x).square().mean().backward()
     assert x.grad is not None and torch.isfinite(x.grad).all()
     for name, param in mix.named_parameters():
+        if not param.requires_grad:  # write taps are frozen structure by default
+            continue
         assert param.grad is not None and torch.isfinite(param.grad).all(), name
     assert mix.key_lift.weight.grad.abs().sum() > 0
     assert mix.value_compress.weight.grad.abs().sum() > 0
 
 
-def test_param_count_excludes_codes() -> None:
+def test_param_count_excludes_codes_and_frozen_taps() -> None:
     dim, chips = 64, 32
     d_v = dim // chips
     tied = CDMASlotBinding(dim=dim, n_slots=16, chips=chips, code_family="gold")
-    expected_tied = chips * dim + 3 * dim + 2 * d_v * dim + dim + 1
+    expected_tied = chips * dim + 2 * d_v * dim + dim + 1  # no taps: frozen default
     assert cdma_param_count(dim, chips) == expected_tied
     assert tied.num_parameters == expected_tied
-    assert expected_tied == sum(p.numel() for p in tied.parameters())
+    assert expected_tied == sum(p.numel() for p in tied.parameters() if p.requires_grad)
     untied = CDMASlotBinding(
         dim=dim, n_slots=16, chips=chips, code_family="gold", tie_addressing=False
     )
     expected_untied = expected_tied + chips * dim
     assert cdma_param_count(dim, chips, tie_addressing=False) == expected_untied
-    assert expected_untied == sum(p.numel() for p in untied.parameters())
+    assert expected_untied == sum(
+        p.numel() for p in untied.parameters() if p.requires_grad
+    )
+
+
+def test_write_taps_frozen_by_default_learnable_opt_in() -> None:
+    """F9.2: the previous-tap write shift is STRUCTURE — frozen at the
+    header-then-payload prior (ablation: training it away costs up to 0.23 at 16
+    pairs). ``learn_write_taps=True`` opts back in and counts the 3·D params."""
+    frozen = CDMASlotBinding(dim=64, n_slots=8, chips=32)
+    assert not frozen.write_addr_taps.requires_grad
+    learn = CDMASlotBinding(dim=64, n_slots=8, chips=32, learn_write_taps=True)
+    assert learn.write_addr_taps.requires_grad
+    assert learn.num_parameters == frozen.num_parameters + 3 * 64
 
 
 def test_tied_addressing_shares_the_lift() -> None:

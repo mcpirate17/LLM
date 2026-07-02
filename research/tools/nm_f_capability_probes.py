@@ -284,8 +284,11 @@ def build_mixer(name: str) -> nn.Module:
     if name.startswith("oracle"):
         return OracleCDMA(chips=int(name[6:]))
     if name.startswith("cdma"):
+        # n_slots=64 ≥ n_keys: F9.2 ablation — 32 slots for 64 keys forces slot
+        # sharing (the queried key collides with another bound key ~47% of the
+        # time at 16 pairs), which was most of the high-load falloff.
         return DeltaWrap(
-            CDMASlotBinding(DIM, n_slots=32, chips=int(name[4:]), code_family="gold")
+            CDMASlotBinding(DIM, n_slots=64, chips=int(name[4:]), code_family="gold")
         )
     if name == "integral":
         return DeltaWrap(IntegralControlMixer(DIM))
@@ -350,11 +353,13 @@ class ProbeLM(nn.Module):
     def __init__(self, mixer_name: str) -> None:
         super().__init__()
         self.embed = nn.Embedding(VOCAB, DIM)
+        # Local conv only for state mixers WITHOUT their own shift pathway:
+        # attention has previous-token heads; CDMA has the frozen write-address
+        # taps (F9.2 ablation: the block conv POLLUTES its read addresses —
+        # removing it was worth ~0.10 accuracy).
+        local = mixer_name in ("integral", "ema")
         self.blocks = nn.ModuleList(
-            [
-                ProbeBlock(build_mixer(mixer_name), local=mixer_name != "attn")
-                for _ in range(N_BLOCKS)
-            ]
+            [ProbeBlock(build_mixer(mixer_name), local=local) for _ in range(N_BLOCKS)]
         )
         self.norm = RMSNorm(DIM)
         self.head = nn.Linear(DIM, VOCAB, bias=False)
