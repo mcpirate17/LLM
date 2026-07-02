@@ -153,10 +153,129 @@ class ECCCodewordEmbedding(nn.Module):
         )
 
 
-class ECCCodewordOutputHead(nn.Module):
-    """Logit head that shares an ``ECCCodewordEmbedding`` without dense weights."""
+class ModuloHashEmbedding(nn.Module):
+    """Equal-budget collision control for compact embedding experiments."""
 
-    def __init__(self, embedding: ECCCodewordEmbedding) -> None:
+    def __init__(
+        self,
+        vocab_size: int,
+        dim: int,
+        *,
+        n_buckets: int,
+        init_std: float = 0.02,
+    ) -> None:
+        super().__init__()
+        if vocab_size <= 0:
+            raise ValueError("vocab_size must be positive")
+        if dim <= 0:
+            raise ValueError("dim must be positive")
+        if n_buckets <= 0:
+            raise ValueError("n_buckets must be positive")
+        self.vocab_size = vocab_size
+        self.dim = dim
+        self.n_buckets = n_buckets
+        self.init_std = init_std
+        self.weight = nn.Parameter(torch.empty(n_buckets, dim))
+        self.register_buffer(
+            "bucket_ids",
+            torch.arange(vocab_size, dtype=torch.long).remainder(n_buckets),
+            persistent=True,
+        )
+        self.reset_parameters()
+
+    def reset_parameters(self) -> None:
+        nn.init.normal_(self.weight, mean=0.0, std=self.init_std)
+
+    def compact_parameter_count(self) -> int:
+        return int(self.weight.numel())
+
+    def dense_parameter_count(self) -> int:
+        return int(self.vocab_size * self.dim)
+
+    def compression_ratio(self) -> float:
+        return self.dense_parameter_count() / max(1, self.compact_parameter_count())
+
+    def forward(self, ids: torch.Tensor) -> torch.Tensor:
+        return self.weight[self.bucket_ids[ids.to(dtype=torch.long)]]
+
+    def materialize_weight(self, *, dtype: torch.dtype | None = None) -> torch.Tensor:
+        weight = self.weight[self.bucket_ids]
+        if dtype is not None and weight.dtype != dtype:
+            weight = weight.to(dtype=dtype)
+        return weight
+
+    def extra_repr(self) -> str:
+        return (
+            f"vocab_size={self.vocab_size}, dim={self.dim}, "
+            f"n_buckets={self.n_buckets}, "
+            f"compact_params={self.compact_parameter_count()}"
+        )
+
+
+class JLLowRankEmbedding(nn.Module):
+    """Equal-budget Johnson-Lindenstrauss low-rank embedding control."""
+
+    def __init__(
+        self,
+        vocab_size: int,
+        dim: int,
+        *,
+        rank: int,
+        seed: int = 5,
+        init_std: float = 0.02,
+    ) -> None:
+        super().__init__()
+        if vocab_size <= 0:
+            raise ValueError("vocab_size must be positive")
+        if dim <= 0:
+            raise ValueError("dim must be positive")
+        if rank <= 0:
+            raise ValueError("rank must be positive")
+        self.vocab_size = vocab_size
+        self.dim = dim
+        self.rank = rank
+        self.seed = seed
+        self.init_std = init_std
+        generator = torch.Generator().manual_seed(seed)
+        codes = torch.randn(vocab_size, rank, generator=generator)
+        self.register_buffer("codes", F.normalize(codes, dim=-1), persistent=True)
+        self.basis = nn.Parameter(torch.empty(rank, dim))
+        self.reset_parameters(generator=generator)
+
+    def reset_parameters(self, *, generator: torch.Generator | None = None) -> None:
+        nn.init.normal_(
+            self.basis, mean=0.0, std=self.init_std, generator=generator
+        )
+
+    def compact_parameter_count(self) -> int:
+        return int(self.basis.numel())
+
+    def dense_parameter_count(self) -> int:
+        return int(self.vocab_size * self.dim)
+
+    def compression_ratio(self) -> float:
+        return self.dense_parameter_count() / max(1, self.compact_parameter_count())
+
+    def forward(self, ids: torch.Tensor) -> torch.Tensor:
+        return self.codes[ids.to(dtype=torch.long)] @ self.basis
+
+    def materialize_weight(self, *, dtype: torch.dtype | None = None) -> torch.Tensor:
+        weight = self.codes @ self.basis
+        if dtype is not None and weight.dtype != dtype:
+            weight = weight.to(dtype=dtype)
+        return weight
+
+    def extra_repr(self) -> str:
+        return (
+            f"vocab_size={self.vocab_size}, dim={self.dim}, rank={self.rank}, "
+            f"compact_params={self.compact_parameter_count()}"
+        )
+
+
+class MaterializedWeightOutputHead(nn.Module):
+    """Shared logit head for compact embeddings without dense head parameters."""
+
+    def __init__(self, embedding: nn.Module) -> None:
         super().__init__()
         self.vocab_size = embedding.vocab_size
         self.dim = embedding.dim
@@ -164,12 +283,26 @@ class ECCCodewordOutputHead(nn.Module):
         self.__dict__["_embedding"] = embedding
 
     @property
-    def embedding(self) -> ECCCodewordEmbedding:
+    def embedding(self) -> nn.Module:
         return self.__dict__["_embedding"]
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         weight = self.embedding.materialize_weight(dtype=x.dtype)
         return F.linear(x, weight)
+
+    def extra_repr(self) -> str:
+        return f"vocab_size={self.vocab_size}, dim={self.dim}, shared=materialized"
+
+
+class ECCCodewordOutputHead(MaterializedWeightOutputHead):
+    """Logit head that shares an ``ECCCodewordEmbedding`` without dense weights."""
+
+    def __init__(self, embedding: ECCCodewordEmbedding) -> None:
+        super().__init__(embedding)
+
+    @property
+    def embedding(self) -> ECCCodewordEmbedding:
+        return self.__dict__["_embedding"]
 
     def extra_repr(self) -> str:
         return f"vocab_size={self.vocab_size}, dim={self.dim}, shared=ecc_codeword"

@@ -126,6 +126,12 @@ def build_tiny_lm(
     use_rope: bool = True,
     use_ffn: bool = False,
     ffn_mult: int = 4,
+    embedding_kind: str = "dense",
+    ecc_code_length: int = 8,
+    ecc_field_size: int = 257,
+    hash_n_buckets: int | None = None,
+    jl_rank: int | None = None,
+    jl_seed: int = 5,
     stable_init: bool = False,
     device: str = "cpu",
 ) -> TinyLM:
@@ -139,6 +145,12 @@ def build_tiny_lm(
         max_seq_len=max_seq_len,
         use_ffn=use_ffn,
         ffn_mult=ffn_mult,
+        embedding_kind=embedding_kind,
+        ecc_code_length=ecc_code_length,
+        ecc_field_size=ecc_field_size,
+        hash_n_buckets=hash_n_buckets,
+        jl_rank=jl_rank,
+        jl_seed=jl_seed,
     )
     model = TinyLM(lane_factory, cfg)
     if stable_init:

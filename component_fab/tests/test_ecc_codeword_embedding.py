@@ -9,8 +9,16 @@ from torch import nn
 from component_fab.generator.ecc_codeword_embedding import (
     ECCCodewordEmbedding,
     ECCCodewordOutputHead,
+    JLLowRankEmbedding,
+    MaterializedWeightOutputHead,
+    ModuloHashEmbedding,
 )
-from component_fab.harness.tiny_lm import TinyLM, TinyLMConfig, count_trainable_params
+from component_fab.harness.tiny_lm import (
+    TinyLM,
+    TinyLMConfig,
+    count_trainable_params,
+)
+from component_fab.harness.training_probe import build_tiny_lm
 
 
 def test_polynomial_codewords_have_error_correcting_distance() -> None:
@@ -121,3 +129,52 @@ def test_tinylm_ecc_embedding_is_opt_in_compact_and_trainable() -> None:
     assert ecc_model.embed.compact_parameter_count() < dense_model.embed.weight.numel()
     assert count_trainable_params(ecc_model) < count_trainable_params(dense_model)
     assert ecc_model.embed.symbol_tables.grad is not None
+
+
+def test_tinylm_exposes_equal_budget_hash_and_jl_controls() -> None:
+    torch.manual_seed(3)
+    cfg_hash = TinyLMConfig(
+        vocab_size=128,
+        dim=32,
+        n_blocks=1,
+        embedding_kind="modulo_hash",
+        hash_n_buckets=17,
+    )
+    cfg_jl = TinyLMConfig(
+        vocab_size=128,
+        dim=32,
+        n_blocks=1,
+        embedding_kind="jl_low_rank",
+        jl_rank=17,
+        jl_seed=11,
+    )
+
+    hash_model = TinyLM(lambda _dim: nn.Identity(), cfg_hash)
+    jl_model = TinyLM(lambda _dim: nn.Identity(), cfg_jl)
+    ids = torch.randint(0, 128, (2, 5))
+
+    assert isinstance(hash_model.embed, ModuloHashEmbedding)
+    assert isinstance(hash_model.lm_head, MaterializedWeightOutputHead)
+    assert hash_model.embed.compact_parameter_count() == 17 * 32
+    assert hash_model(ids).shape == (2, 5, 128)
+
+    assert isinstance(jl_model.embed, JLLowRankEmbedding)
+    assert isinstance(jl_model.lm_head, MaterializedWeightOutputHead)
+    assert jl_model.embed.compact_parameter_count() == 17 * 32
+    assert jl_model(ids).shape == (2, 5, 128)
+
+
+def test_build_tiny_lm_threads_ecc_embedding_options() -> None:
+    model = build_tiny_lm(
+        lambda _dim: nn.Identity(),
+        vocab_size=128,
+        dim=32,
+        n_blocks=1,
+        max_seq_len=8,
+        embedding_kind="ecc_codeword",
+        ecc_code_length=8,
+        ecc_field_size=17,
+    )
+
+    assert isinstance(model.embed, ECCCodewordEmbedding)
+    assert model.embed.compact_parameter_count() == 17 * 32

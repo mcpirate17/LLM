@@ -24,6 +24,9 @@ from torch import nn
 from ..generator.ecc_codeword_embedding import (
     ECCCodewordEmbedding,
     ECCCodewordOutputHead,
+    JLLowRankEmbedding,
+    MaterializedWeightOutputHead,
+    ModuloHashEmbedding,
 )
 from ..generator.primitive_templates._core import get_causal_mask
 from .primitives import CausalDepthwiseConv1d, swiglu
@@ -53,6 +56,9 @@ class TinyLMConfig:
     embedding_kind: str = "dense"
     ecc_code_length: int = 8
     ecc_field_size: int = 257
+    hash_n_buckets: int | None = None
+    jl_rank: int | None = None
+    jl_seed: int = 5
 
 
 class _MLP(nn.Module):
@@ -150,6 +156,19 @@ class TinyLM(nn.Module):
                 code_length=config.ecc_code_length,
                 field_size=config.ecc_field_size,
             )
+        elif config.embedding_kind == "modulo_hash":
+            self.embed = ModuloHashEmbedding(
+                config.vocab_size,
+                config.dim,
+                n_buckets=config.hash_n_buckets or config.ecc_field_size,
+            )
+        elif config.embedding_kind == "jl_low_rank":
+            self.embed = JLLowRankEmbedding(
+                config.vocab_size,
+                config.dim,
+                rank=config.jl_rank or config.ecc_field_size,
+                seed=config.jl_seed,
+            )
         else:
             raise ValueError(f"unknown TinyLM embedding kind: {config.embedding_kind!r}")
         self.pos_embed: nn.Embedding | None
@@ -172,6 +191,8 @@ class TinyLM(nn.Module):
         self.final_norm = nn.LayerNorm(config.dim)
         if isinstance(self.embed, ECCCodewordEmbedding):
             self.lm_head = ECCCodewordOutputHead(self.embed)
+        elif isinstance(self.embed, (ModuloHashEmbedding, JLLowRankEmbedding)):
+            self.lm_head = MaterializedWeightOutputHead(self.embed)
         else:
             self.lm_head = nn.Linear(config.dim, config.vocab_size, bias=False)
             # Tie embedding and head weights to keep param count low.

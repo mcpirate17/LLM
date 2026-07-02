@@ -256,6 +256,12 @@ def _task_model(
     *,
     dim: int,
     n_blocks: int,
+    embedding_kind: str,
+    ecc_code_length: int,
+    ecc_field_size: int,
+    hash_n_buckets: int | None,
+    jl_rank: int | None,
+    jl_seed: int,
     device: str,
 ) -> TinyLM:
     return build_tiny_lm(
@@ -265,6 +271,12 @@ def _task_model(
         n_blocks=n_blocks,
         max_seq_len=task.seq_len,
         use_position_embedding=True,
+        embedding_kind=embedding_kind,
+        ecc_code_length=ecc_code_length,
+        ecc_field_size=ecc_field_size,
+        hash_n_buckets=hash_n_buckets,
+        jl_rank=jl_rank,
+        jl_seed=jl_seed,
         device=device,
     )
 
@@ -283,6 +295,12 @@ def run_one_task(
     n_train_steps: int = 500,
     batch_size: int = 32,
     learning_rate: float = 3e-3,
+    embedding_kind: str = "dense",
+    ecc_code_length: int = 8,
+    ecc_field_size: int = 257,
+    hash_n_buckets: int | None = None,
+    jl_rank: int | None = None,
+    jl_seed: int = 5,
     seed: int = 0,
     device: str = "cpu",
 ) -> HardBindingResult:
@@ -292,7 +310,19 @@ def run_one_task(
     moving part is ``lane_factory``.
     """
     rng = seeded_generator(seed)
-    model = _task_model(lane_factory, task, dim=dim, n_blocks=n_blocks, device=device)
+    model = _task_model(
+        lane_factory,
+        task,
+        dim=dim,
+        n_blocks=n_blocks,
+        embedding_kind=embedding_kind,
+        ecc_code_length=ecc_code_length,
+        ecc_field_size=ecc_field_size,
+        hash_n_buckets=hash_n_buckets,
+        jl_rank=jl_rank,
+        jl_seed=jl_seed,
+        device=device,
+    )
     generate = _BATCH_GENERATORS[task.name]
     trace = train_token_task(
         model,
@@ -329,6 +359,12 @@ def run_one_task_checkpoints(
     n_blocks: int = 2,
     batch_size: int = 32,
     learning_rate: float = 3e-3,
+    embedding_kind: str = "dense",
+    ecc_code_length: int = 8,
+    ecc_field_size: int = 257,
+    hash_n_buckets: int | None = None,
+    jl_rank: int | None = None,
+    jl_seed: int = 5,
     seed: int = 0,
     device: str = "cpu",
     n_eval_batches: int = 8,
@@ -351,7 +387,19 @@ def run_one_task_checkpoints(
         raise ValueError("eval_at_steps must contain at least one positive step")
 
     rng = seeded_generator(seed)
-    model = _task_model(lane_factory, task, dim=dim, n_blocks=n_blocks, device=device)
+    model = _task_model(
+        lane_factory,
+        task,
+        dim=dim,
+        n_blocks=n_blocks,
+        embedding_kind=embedding_kind,
+        ecc_code_length=ecc_code_length,
+        ecc_field_size=ecc_field_size,
+        hash_n_buckets=hash_n_buckets,
+        jl_rank=jl_rank,
+        jl_seed=jl_seed,
+        device=device,
+    )
     generate = _BATCH_GENERATORS[task.name]
     trace = train_token_task(
         model,
