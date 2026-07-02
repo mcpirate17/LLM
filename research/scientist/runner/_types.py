@@ -377,6 +377,11 @@ class RunConfig:
     auto_go_no_go: bool = True  # auto-record go/no-go decisions at escalation
     # Stage pass thresholds (overridable by LLM per-cycle)
     stage1_loss_ratio_threshold: float = 0.4
+    # S1 validation-generalization gate. The 0.6 default is calibrated for the
+    # production regime (dim 256/n6/cl100k, where S1 passers measure 0.43-0.50);
+    # at vocab-256/n2 it is uncrossable (measured 0.700-0.985 across 3 batches,
+    # 2026-07-02) - override when running a differently-scaled regime.
+    stage1_validation_loss_ratio_threshold: float = 0.6
     stage05_stability_threshold: float = 0.5
     investigation_loss_ratio_threshold: float = 0.15
     investigation_robustness_threshold: float = 0.5

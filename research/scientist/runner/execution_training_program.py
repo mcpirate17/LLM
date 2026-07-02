@@ -214,13 +214,15 @@ class _ExecutionTrainingProgramMixin:
         _scale = max(0.0, 1.0 - _init / 50.0)
         _adaptive_thr = _base_thr + (1.0 - _base_thr) * _scale
         result["passed"] = raw_ratio < _adaptive_thr
-        # Validation loss gate
+        # Validation loss gate (config-aware: 0.6 is calibrated for the
+        # production dim256/n6/cl100k regime; other regimes override).
         _vlr = result.get("validation_loss_ratio")
-        if result["passed"] and _vlr is not None and _vlr > 0.6:
+        _vlr_thr = float(getattr(config, "stage1_validation_loss_ratio_threshold", 0.6))
+        if result["passed"] and _vlr is not None and _vlr > _vlr_thr:
             result["passed"] = False
             result["error_type"] = "insufficient_learning"
             result["error"] = (
-                f"Validation loss ratio {_vlr:.4f} > 0.60 — "
+                f"Validation loss ratio {_vlr:.4f} > {_vlr_thr:.2f} — "
                 f"model memorized training but failed to generalize"
             )
         # Inflight checks already flagged this run; override pass.
